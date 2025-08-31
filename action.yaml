@@ -1,0 +1,60 @@
+name: "Advisory lock service for CI workflows"
+description: "Acquires a lock at the start of a job and automatically releases it at the end."
+author: "Mihai Bojin"
+
+inputs:
+  GITHUB_TOKEN:
+    description: 'GitHub token used to authenticate API requests.  Pass it from "secrets.GITHUB_TOKEN". Can also be specified as an environment variable.'
+    required: false
+  DATABASE_URL:
+    description: "Database credentials for storing the locks."
+    required: false
+  command:
+    description: "The command to execute: 'lock' or 'release'."
+    required: true
+  id:
+    description: "An unique identifier for the lock."
+    required: true
+  reason:
+    description: "Optional: Why was the lock acquired in the first place?"
+    required: false
+    default: ""
+  expiration:
+    description: "Defines the lock's expiration. Defaults to 60 seconds."
+    required: false
+    default: "60"
+  max-wait:
+    description: "The maximum time to wait for a lock, in seconds. Use -1 to wait for a time equal to the lock duration - this is the default behavior."
+    required: false
+    default: "-1"
+  poll-interval:
+    description: "The time to wait between retrying to acquire a lock, in seconds. Defaults to every 10 seconds."
+    required: false
+    default: "10"
+  auto-release:
+    description: "Decides if the lock should be automatically released at the end of the job. Defaults to true."
+    required: false
+    default: "true"
+  disable-pr-updates:
+    description: "Decides if a status update comment should be posted on a PR when the lock is acquired or released. Defaults to true."
+    required: false
+    default: "false"
+  SLACK_BOT_TOKEN:
+    description: "Specify a Slack bot token (xoxb-...) to post updates to a channel. Needs the `chat:write` permission. Can also be passed as an environment variable. If not specified, no Slack notifications will be sent."
+    required: false
+  slack-channel:
+    description: "The channel ID where to post Slack notifications. Required if SLACK_BOT_TOKEN is specified."
+    required: false
+
+outputs:
+  status:
+    description: "The status of the action: 'locked', 'released', 'failed', or 'skipped'."
+
+runs:
+  using: "node24"
+  main: "dist/main/index.js"
+  post: "dist/post/index.js"
+
+branding:
+  icon: "lock"
+  color: "purple"
