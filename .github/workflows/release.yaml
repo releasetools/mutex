@@ -1,0 +1,29 @@
+name: Test release
+
+on:
+  push:
+    tags:
+      - "v1.*.*"
+
+jobs:
+  test:
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔒 Acquire Lock (and auto-release on completion)
+        uses: releasetools/mutex@v1
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          command: "lock"
+          id: "verify-release-v0"
+          reason: "Verify released v1 version"
+
+      - name: ⏳ Mock action - wait 5 seconds and then continue
+        run: sleep 5

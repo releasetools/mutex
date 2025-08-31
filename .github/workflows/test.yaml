@@ -12,7 +12,7 @@ jobs:
   test01:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: 🔒 Acquire Lock (and auto-release on completion)
@@ -32,7 +32,7 @@ jobs:
   test02:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: 🔒 Acquire Lock
@@ -63,7 +63,7 @@ jobs:
   test03:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: 🔒 Acquire Lock (and auto-release on completion)
