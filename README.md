@@ -23,6 +23,9 @@ Here is an example of how to use the `mutex` action in a workflow:
 ```yaml
 - name: Acquire Lock
   uses: releasetools/mutex@v1
+  permissions:
+    contents: read
+    pull-requests: write
   env:
     DATABASE_URL: ${{ secrets.DATABASE_URL }}
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -49,7 +52,13 @@ Connection string for a PostgreSQL database. The action will create a table name
 
 #### `GITHUB_TOKEN`
 
-The action needs access to the GitHub API. It can be passed via `${{ secrets.GITHUB_TOKEN }}`.
+The action needs access to the GitHub API. It can be passed via `${{ secrets.GITHUB_TOKEN }}`. The workflow needs additional permissions:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+```
 
 #### `SLACK_BOT_TOKEN`
 
