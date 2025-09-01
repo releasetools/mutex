@@ -36,6 +36,8 @@ Here is an example of how to use the `mutex` action in a workflow:
     slack-channel: "#ci-cd"
 ```
 
+Any other workflows or actions using a `mutex` on the same lock `id`, will not run until the lock is released.
+
 ## Configuration
 
 ### Prerequisites
