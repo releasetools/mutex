@@ -1,6 +1,10 @@
 name: "Advisory lock service for CI workflows"
-description: "Acquires a lock at the start of a job and automatically releases it at the end."
+description: "Prevents race conditions in CI/CD pipelines by acquiring advisory locks that ensure only one job can access shared resources concurrently."
 author: "Mihai Bojin"
+
+branding:
+  icon: "lock"
+  color: "yellow"
 
 inputs:
   GITHUB_TOKEN:
@@ -54,7 +58,3 @@ runs:
   using: "node24"
   main: "dist/main/index.js"
   post: "dist/post/index.js"
-
-branding:
-  icon: "lock"
-  color: "purple"

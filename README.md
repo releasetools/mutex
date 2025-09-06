@@ -144,3 +144,28 @@ rt git::release --major --sign --force --push v1.0.0
 ```
 
 Since `mutex` is a Javascript-based action, no other step is needed to make a new release available.
+
+### Release notes
+
+Use the template below to draft new releases. Update the changelog section to include all relevant changes/features/bugfixes.
+
+```markdown
+## Summary
+
+- An advisory lock service for CI/CD pipelines, implemented as a GitHub Action.
+- It prevents race conditions by acquiring locks that ensure only one job can access shared resources at the same time.
+
+## Features
+
+- **Advisory Locking**: Create and manage locks within your GitHub Actions workflows.
+- **Pull Request Integration**: Lock and release events are posted as PR comments.
+- **Slack Notifications**: Choose if you want to be notified on Slack about locking events.
+- **Easy Disabling**: Skip locking for specific pull requests by:
+  - adding a `SKIP_MUTEX` label
+  - including `SKIP_MUTEX` in the PR's description or comment
+  - or defining `SKIP_MUTEX=1` as an environment variable.
+
+## Changelog
+
+- TBD.
+```
