@@ -4,5 +4,8 @@
   "search.exclude": {
     "dist/**": true,
     "lib/**": true
-  }
+  },
+  "license.default": "apache-2.0",
+  "license.author": "Mihai Bojin",
+  "license.year": "2025"
 }

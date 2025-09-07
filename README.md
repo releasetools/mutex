@@ -1,5 +1,7 @@
 # mutex
 
+[![CodeQL](https://github.com/releasetools/mutex/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/releasetools/mutex/security/code-scanning)
+
 An advisory lock service for CI/CD workflows, implemented as a GitHub Action. It helps prevent race conditions and ensures that critical sections of your pipeline are executed by only one job at a time.
 
 ## How it works
@@ -135,12 +137,53 @@ You can learn about creating GitHub actions in this [tutorial](https://docs.gith
 
 ## Releasing
 
-You can use [rt](https://github.com/releasetools/cli) to create release tags.
+You can use [releasetools-cli](https://github.com/releasetools/cli) to create release tags.
 
 Run this command to tag the HEAD commit and also update the `v1` tag.
 
 ```shell
-rt git::release --major --sign --force --push v1.0.0
+releasetools git::release --major --sign --force --push v1.0.2
 ```
 
 Since `mutex` is a Javascript-based action, no other step is needed to make a new release available.
+
+### Release notes
+
+Use the template below to draft new releases. Update the changelog section to include all relevant changes/features/bugfixes.
+
+```markdown
+## Summary
+
+- An advisory lock service for CI/CD pipelines, implemented as a GitHub Action.
+- It prevents race conditions by acquiring locks that ensure only one job can access shared resources at the same time.
+
+## Features
+
+- **Advisory Locking**: Create and manage locks within your GitHub Actions workflows.
+- **Pull Request Integration**: Lock and release events are posted as PR comments.
+- **Slack Notifications**: Choose if you want to be notified on Slack about locking events.
+- **Easy Disabling**: Skip locking for specific pull requests by:
+  - adding a `SKIP_MUTEX` label
+  - including `SKIP_MUTEX` in the PR's description or comment
+  - or defining `SKIP_MUTEX=1` as an environment variable.
+
+## Changelog
+
+- TBD.
+```
+
+## License
+
+Copyright &copy; 2025 Mihai Bojin
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+<http://www.apache.org/licenses/LICENSE-2.0>
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
