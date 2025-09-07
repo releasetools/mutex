@@ -135,12 +135,12 @@ You can learn about creating GitHub actions in this [tutorial](https://docs.gith
 
 ## Releasing
 
-You can use [rt](https://github.com/releasetools/cli) to create release tags.
+You can use [releasetools-cli](https://github.com/releasetools/cli) to create release tags.
 
 Run this command to tag the HEAD commit and also update the `v1` tag.
 
 ```shell
-rt git::release --major --sign --force --push v1.0.0
+releasetools git::release --major --sign --force --push v1.0.2
 ```
 
 Since `mutex` is a Javascript-based action, no other step is needed to make a new release available.
@@ -169,3 +169,19 @@ Use the template below to draft new releases. Update the changelog section to in
 
 - TBD.
 ```
+
+## License
+
+Copyright &copy; 2025 Mihai Bojin
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+<http://www.apache.org/licenses/LICENSE-2.0>
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

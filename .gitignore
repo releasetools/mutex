@@ -176,6 +176,7 @@ out
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
+!.vscode/templates
 !.vscode/*.code-snippets
 
 # Local History for Visual Studio Code
