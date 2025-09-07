@@ -2,7 +2,7 @@
   "name": "mutex",
   "version": "1.0.1",
   "private": true,
-  "description": "Advisory lock service for CI workflows",
+  "description": "Advisory lock service for CI/CD pipelines. Prevents race conditions by ensuring mutual exclusion: only one job can access shared resources concurrently.",
   "main": "lib/main.js",
   "scripts": {
     "clean": "rm -rf lib dist",

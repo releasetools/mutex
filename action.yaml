@@ -1,5 +1,5 @@
-name: "Advisory lock service for CI workflows"
-description: "Prevents race conditions in CI/CD pipelines by acquiring advisory locks that ensure only one job can access shared resources concurrently."
+name: "Advisory lock service for CI/CD pipelines"
+description: "Prevents race conditions in CI workflows by ensuring mutual exclusion: only one job can access shared resources concurrently"
 author: "Mihai Bojin"
 
 branding:
