@@ -1,5 +1,7 @@
 # mutex
 
+[![CodeQL](https://github.com/releasetools/mutex/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/releasetools/mutex/security/code-scanning)
+
 An advisory lock service for CI/CD workflows, implemented as a GitHub Action. It helps prevent race conditions and ensures that critical sections of your pipeline are executed by only one job at a time.
 
 ## How it works
