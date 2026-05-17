@@ -16,7 +16,7 @@
  */
 
 import * as core from "@actions/core";
-import { loadRequiredFromEnvOrGHAInput } from "./helpers";
+import { loadRequiredFromEnvOrGHAInput } from "./helpers.js";
 
 export class MutexSettings {
   dbConnectionString: string;

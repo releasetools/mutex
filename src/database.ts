@@ -17,11 +17,11 @@
 
 import * as core from "@actions/core";
 import { Pool } from "pg";
-import { LockResult, MutexInterface } from "./mutex";
-import { TABLE_NAME } from "./constants";
-import { MutexSettings } from "./configuration";
-import { printWarning, sleep } from "./helpers";
-import format = require("pg-format");
+import { LockResult, MutexInterface } from "./mutex.js";
+import { TABLE_NAME } from "./constants.js";
+import { MutexSettings } from "./configuration.js";
+import { printWarning, sleep } from "./helpers.js";
+import format from "pg-format";
 
 export class DatabaseMutex implements MutexInterface {
   settings: MutexSettings;

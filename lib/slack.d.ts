@@ -1,4 +1,4 @@
-import { MutexSettings } from "./configuration";
+import { MutexSettings } from "./configuration.js";
 export declare class SlackClient {
     private settings;
     private slack;

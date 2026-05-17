@@ -17,12 +17,12 @@
 
 import { WebClient } from "@slack/web-api";
 import * as core from "@actions/core";
-import { MutexSettings } from "./configuration";
+import { MutexSettings } from "./configuration.js";
 import {
   loadFromEnvOrGHAInput,
   loadRequiredNonEmptyFromGHAInput,
   printError,
-} from "./helpers";
+} from "./helpers.js";
 
 export class SlackClient {
   private settings: MutexSettings;

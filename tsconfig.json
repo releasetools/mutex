@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "es2022",
-    "module": "commonjs",
+    "module": "nodenext",
     "outDir": "./lib",
     "rootDir": "./src",
     "strict": true,
@@ -10,7 +10,9 @@
     "forceConsistentCasingInFileNames": true,
     "sourceMap": true,
     "declaration": true,
-    "types": ["jest", "node"]
+    "types": ["jest", "node"],
+    "moduleResolution": "nodenext",
+    "isolatedModules": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "**/*.test.ts"]

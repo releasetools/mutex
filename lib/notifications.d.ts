@@ -1,5 +1,5 @@
-import { MutexSettings } from "./configuration";
-import { GitHubClient } from "./github";
+import { MutexSettings } from "./configuration.js";
+import { GitHubClient } from "./github.js";
 export declare class Notifications {
     private settings;
     private slack;

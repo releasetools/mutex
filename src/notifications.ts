@@ -15,9 +15,9 @@
  *
  */
 
-import { MutexSettings } from "./configuration";
-import { GitHubClient } from "./github";
-import { SlackClient } from "./slack";
+import { MutexSettings } from "./configuration.js";
+import { GitHubClient } from "./github.js";
+import { SlackClient } from "./slack.js";
 import * as core from "@actions/core";
 
 export class Notifications {

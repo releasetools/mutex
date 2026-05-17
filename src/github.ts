@@ -17,15 +17,14 @@
 
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { WebhookPayload } from "@actions/github/lib/interfaces";
 import { GitHub } from "@actions/github/lib/utils";
-import { SKIP_LABEL } from "./constants";
-import { loadRequiredFromEnvOrGHAInput } from "./helpers";
+import { SKIP_LABEL } from "./constants.js";
+import { loadRequiredFromEnvOrGHAInput } from "./helpers.js";
 
 export class GitHubClient {
   octokit: InstanceType<typeof GitHub>;
   context: typeof github.context;
-  pr: WebhookPayload["pull_request"] | undefined;
+  pr: typeof github.context.payload.pull_request;
   owner: string;
   repo: string;
 
