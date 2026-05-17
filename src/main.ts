@@ -15,11 +15,11 @@
  *
  */
 
-import { MutexSettings } from "./configuration";
-import { GitHubClient, setFailed, setSkipped } from "./github";
-import { DatabaseMutex } from "./database";
-import { shouldRunAction, tryLock, tryRelease } from "./mutex";
-import { Notifications } from "./notifications";
+import { MutexSettings } from "./configuration.js";
+import { GitHubClient, setFailed, setSkipped } from "./github.js";
+import { DatabaseMutex } from "./database.js";
+import { shouldRunAction, tryLock, tryRelease } from "./mutex.js";
+import { Notifications } from "./notifications.js";
 
 export async function run(): Promise<void> {
   try {

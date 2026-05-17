@@ -1,6 +1,6 @@
-import { MutexSettings } from "./configuration";
-import { GitHubClient } from "./github";
-import { Notifications } from "./notifications";
+import { MutexSettings } from "./configuration.js";
+import { GitHubClient } from "./github.js";
+import { Notifications } from "./notifications.js";
 export type LockResult = {
     acquired: boolean;
     status: string;

@@ -1,6 +1,6 @@
 import { Pool } from "pg";
-import { LockResult, MutexInterface } from "./mutex";
-import { MutexSettings } from "./configuration";
+import { LockResult, MutexInterface } from "./mutex.js";
+import { MutexSettings } from "./configuration.js";
 export declare class DatabaseMutex implements MutexInterface {
     settings: MutexSettings;
     connection_string: string;

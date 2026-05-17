@@ -10,7 +10,7 @@
     "build:watch": "tsc --watch",
     "build": "tsc && npm run package",
     "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
-    "test": "jest",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "prepare": "husky"
   },
   "engines": {
@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@actions/core": "^1.10.1",
-    "@actions/github": "^6.0.0",
+    "@actions/github": "^9.1.1",
     "@slack/web-api": "^7.10.0",
     "@types/pg": "^8.15.5",
     "pg": "^8.16.3",
@@ -36,5 +36,6 @@
     "prettier": "^3.6.2",
     "ts-jest": "^29.1.5",
     "typescript": "^6.0.0"
-  }
+  },
+  "type": "module"
 }

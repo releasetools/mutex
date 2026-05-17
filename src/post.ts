@@ -16,11 +16,11 @@
  */
 
 import * as core from "@actions/core";
-import { GitHubClient, setFailed, setSkipped } from "./github";
-import { MutexSettings } from "./configuration";
-import { DatabaseMutex } from "./database";
-import { shouldRunAction, tryRelease } from "./mutex";
-import { Notifications } from "./notifications";
+import { GitHubClient, setFailed, setSkipped } from "./github.js";
+import { MutexSettings } from "./configuration.js";
+import { DatabaseMutex } from "./database.js";
+import { shouldRunAction, tryRelease } from "./mutex.js";
+import { Notifications } from "./notifications.js";
 
 export async function post(): Promise<void> {
   try {

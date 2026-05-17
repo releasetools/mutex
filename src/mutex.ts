@@ -16,18 +16,17 @@
  */
 
 import * as core from "@actions/core";
-import { MutexSettings } from "./configuration";
+import { MutexSettings } from "./configuration.js";
 import {
   GitHubClient,
   setFailed,
   setLockAcquired,
   setLockReleased,
-} from "./github";
-import { sleep } from "./helpers";
-import { SKIP_LABEL } from "./constants";
-import { WebhookPayload } from "@actions/github/lib/interfaces";
+} from "./github.js";
+import { sleep } from "./helpers.js";
+import { SKIP_LABEL } from "./constants.js";
 import * as github from "@actions/github";
-import { Notifications } from "./notifications";
+import { Notifications } from "./notifications.js";
 
 export type LockResult = {
   acquired: boolean;
@@ -152,7 +151,7 @@ function checkSkipInEnv(): boolean {
 }
 
 function checkSkipInLabel(
-  pr: WebhookPayload["pull_request"] | undefined,
+  pr: typeof github.context.payload.pull_request,
 ): boolean {
   if (!pr) {
     return false;
@@ -172,7 +171,7 @@ async function checkSkipInComment(
   octokit: ReturnType<typeof github.getOctokit>,
   owner: string,
   repo: string,
-  pr: WebhookPayload["pull_request"] | undefined,
+  pr: typeof github.context.payload.pull_request,
 ): Promise<boolean> {
   if (!pr) {
     return false;
@@ -184,15 +183,19 @@ async function checkSkipInComment(
     repo,
     issue_number: pr.number,
   });
-  const skipCommentFound = comments.some((comment) => {
-    if (!comment.body) {
-      // Nothing to do if comment has no body
-      return false;
-    }
+  const skipCommentFound = comments.some(
+    (comment: { body?: string | null }) => {
+      if (!comment.body) {
+        // Nothing to do if comment has no body
+        return false;
+      }
 
-    // Find if any lines contain the skip label
-    return comment.body.split(/\s+/).some((word) => word === SKIP_LABEL);
-  });
+      // Find if any lines contain the skip label
+      return comment.body
+        .split(/\s+/)
+        .some((word: string) => word === SKIP_LABEL);
+    },
+  );
 
   if (skipCommentFound) {
     core.warning(`Skipping execution: '${SKIP_LABEL}' comment found.`);
@@ -202,7 +205,7 @@ async function checkSkipInComment(
 }
 
 function checkSkipInBody(
-  pr: WebhookPayload["pull_request"] | undefined,
+  pr: typeof github.context.payload.pull_request,
 ): boolean {
   if (!pr) {
     return false;

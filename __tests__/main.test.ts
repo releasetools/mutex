@@ -15,17 +15,57 @@
  *
  */
 
-import * as core from "@actions/core";
-import * as github from "@actions/github";
-import { run } from "../src/main";
+import { jest } from "@jest/globals";
 
-jest.mock("@actions/core");
-jest.mock("@actions/github");
+type AnyFn = (...args: unknown[]) => unknown;
+type CoreMock = {
+  getInput: jest.Mock<AnyFn>;
+  saveState: jest.Mock<AnyFn>;
+  setFailed: jest.Mock<AnyFn>;
+  info: jest.Mock<AnyFn>;
+  warning: jest.Mock<AnyFn>;
+  setOutput: jest.Mock<AnyFn>;
+  startGroup: jest.Mock<AnyFn>;
+  endGroup: jest.Mock<AnyFn>;
+};
+type GithubMock = {
+  context: unknown;
+  getOctokit: jest.Mock<AnyFn>;
+};
+
+const core: CoreMock = {
+  getInput: jest.fn(),
+  saveState: jest.fn(),
+  setFailed: jest.fn(),
+  info: jest.fn(),
+  warning: jest.fn(),
+  setOutput: jest.fn(),
+  startGroup: jest.fn(),
+  endGroup: jest.fn(),
+};
+
+const github: GithubMock = {
+  context: {},
+  getOctokit: jest.fn(),
+};
+
+jest.unstable_mockModule("@actions/core", () => core);
+jest.unstable_mockModule("@actions/github", () => github);
+
+const { run } = await import("../src/main.js");
 
 describe("Main Action Logic (Locking)", () => {
-  let mockOctokit: any;
-  let getInputMock: jest.Mock;
-  let searchMock: jest.Mock;
+  let mockOctokit: {
+    rest: {
+      issues: {
+        createComment: jest.Mock<AnyFn>;
+        addLabels: jest.Mock<AnyFn>;
+        listComments: jest.Mock<AnyFn>;
+      };
+      search: { issuesAndPullRequests: jest.Mock<AnyFn> };
+    };
+  };
+  let searchMock: jest.Mock<AnyFn>;
 
   beforeEach(() => {
     jest.resetAllMocks();
@@ -35,9 +75,9 @@ describe("Main Action Logic (Locking)", () => {
     mockOctokit = {
       rest: {
         issues: {
-          createComment: jest.fn().mockResolvedValue({}),
-          addLabels: jest.fn().mockResolvedValue({}),
-          listComments: jest.fn().mockResolvedValue({}),
+          createComment: jest.fn(),
+          addLabels: jest.fn(),
+          listComments: jest.fn(),
         },
         search: {
           issuesAndPullRequests: searchMock,
@@ -45,22 +85,20 @@ describe("Main Action Logic (Locking)", () => {
       },
     };
 
-    Object.defineProperty(github, "context", {
-      get: () => ({
-        payload: {
-          pull_request: {
-            number: 123,
-            labels: [],
-            head: { ref: "feature-branch" },
-          },
+    github.context = {
+      payload: {
+        pull_request: {
+          number: 123,
+          labels: [],
+          head: { ref: "feature-branch" },
         },
-        repo: { owner: "test-owner", repo: "test-repo" },
-      }),
-    });
-    (github.getOctokit as jest.Mock).mockReturnValue(mockOctokit);
+      },
+      repo: { owner: "test-owner", repo: "test-repo" },
+    };
+    github.getOctokit.mockReturnValue(mockOctokit);
 
-    getInputMock = core.getInput as jest.Mock;
-    getInputMock.mockImplementation((name: string) => {
+    core.getInput.mockImplementation((...args: unknown[]) => {
+      const name = args[0] as string;
       switch (name) {
         case "GITHUB_TOKEN":
           return "fake-token";
@@ -97,7 +135,7 @@ describe("Main Action Logic (Locking)", () => {
   });
 
   it("acquires lock immediately if available", async () => {
-    searchMock.mockResolvedValue({ data: { items: [] } });
+    searchMock.mockResolvedValue({ data: { items: [] } } as never);
 
     await run();
 

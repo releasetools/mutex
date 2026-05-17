@@ -1,10 +1,9 @@
 import * as github from "@actions/github";
-import { WebhookPayload } from "@actions/github/lib/interfaces";
 import { GitHub } from "@actions/github/lib/utils";
 export declare class GitHubClient {
     octokit: InstanceType<typeof GitHub>;
     context: typeof github.context;
-    pr: WebhookPayload["pull_request"] | undefined;
+    pr: typeof github.context.payload.pull_request;
     owner: string;
     repo: string;
     constructor();
