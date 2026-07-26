@@ -1,6 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "local>releasetools/.github"
-  ]
+    "github>MihaiBojin/renovate",
+    "github>MihaiBojin/renovate:group-github-actions",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 5am on monday"]
+  }
 }
