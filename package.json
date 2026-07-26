@@ -19,7 +19,7 @@
   "dependencies": {
     "@actions/core": "^3.0.0",
     "@actions/github": "^9.1.1",
-    "@slack/web-api": "^7.10.0",
+    "@slack/web-api": "^8.0.0",
     "@types/pg": "^8.15.5",
     "pg": "^8.16.3",
     "pg-format": "^1.0.4",
