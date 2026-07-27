@@ -8,5 +8,13 @@
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["before 5am on monday"]
-  }
+  },
+  "packageRules": [
+    {
+      "description": "release.yaml must reference the moving releasetools/mutex@v1 tag so it verifies the release that was just published. helpers:pinGitHubActionDigests pinned it in #43 and re-pinned it in #63; because the digest bump only lands after a release, a pin is always one release stale at the moment the release workflow runs.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["releasetools/mutex"],
+      "pinDigests": false
+    }
+  ]
 }
