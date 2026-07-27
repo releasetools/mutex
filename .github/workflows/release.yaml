@@ -32,7 +32,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: 🔒 Acquire Lock (and auto-release on completion)
-        uses: releasetools/mutex@c43feb89589aa9acd7b35652ab0338fe04b17126 # v1
+        uses: releasetools/mutex@6a595e2a356989f10d49bc2d45032fd06a059a8c # v1
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
