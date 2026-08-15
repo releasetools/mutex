@@ -125,6 +125,21 @@ describe("parseCommandLine", () => {
     expect(parseCommandLine(["help", "unlock"]).topic).toBe("unlock");
   });
 
+  it("shows help even alongside a command's own options", () => {
+    // Someone typing `mutex lock id -e 30 --help` wants to know what
+    // --expiration does, not to be told help does not take it.
+    const parsed = parseCommandLine(["lock", "id", "-e", "30", "--help"]);
+    expect(parsed.command).toBe("help");
+    expect(parsed.topic).toBe("lock");
+
+    expect(() =>
+      parseCommandLine(["unlock", "id", "--owner", "x", "--help"]),
+    ).not.toThrow();
+    expect(() =>
+      parseCommandLine(["prune", "--dry-run", "--help"]),
+    ).not.toThrow();
+  });
+
   it("has no --version flag; the version is a command", () => {
     // A flag that only worked without positionals meant `mutex lock id -V`
     // took a lock instead of printing a version. One spelling only.
