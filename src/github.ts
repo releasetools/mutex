@@ -56,6 +56,18 @@ export function setLockReleased(): void {
   core.setOutput("status", "released");
 }
 
+/**
+ * Publishes which build of the action actually ran.
+ *
+ * The release workflow asserts this against the tag being released: `uses:
+ * releasetools/mutex@v1` resolves through GitHub's own caches, so waiting for
+ * the tag to move cannot prove the runner was handed the new code. This can.
+ */
+export function setVersion(version: string): void {
+  core.setOutput("version", version);
+  core.info(`releasetools/mutex ${version}`);
+}
+
 // Mark the action as skipped
 export function setSkipped(): void {
   core.setOutput("status", "skipped");

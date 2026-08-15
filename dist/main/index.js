@@ -49179,6 +49179,17 @@ function setLockReleased() {
     saveState("lockAcquired", null);
     setOutput("status", "released");
 }
+/**
+ * Publishes which build of the action actually ran.
+ *
+ * The release workflow asserts this against the tag being released: `uses:
+ * releasetools/mutex@v1` resolves through GitHub's own caches, so waiting for
+ * the tag to move cannot prove the runner was handed the new code. This can.
+ */
+function setVersion(version) {
+    setOutput("version", version);
+    info(`releasetools/mutex ${version}`);
+}
 // Mark the action as skipped
 function setSkipped() {
     setOutput("status", "skipped");
@@ -50059,6 +50070,72 @@ class Notifications {
     }
 }
 //# sourceMappingURL=notifications.js.map
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(3024);
+// EXTERNAL MODULE: external "node:path"
+var external_node_path_ = __nccwpck_require__(6760);
+// EXTERNAL MODULE: external "node:url"
+var external_node_url_ = __nccwpck_require__(3136);
+;// CONCATENATED MODULE: ./lib/version.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
+
+/**
+ * The version from the nearest package.json above this module.
+ *
+ * Walks up rather than using a fixed depth, because the same code ships from
+ * four places at two different depths: `lib/main.js`, `lib/cli/main.js`,
+ * `dist/main/index.js` and `dist/cli/index.js`. The ncc bundles also drop a
+ * package.json of their own alongside them containing only `{"type":"module"}`,
+ * so having a `version` field is what identifies the real one.
+ *
+ * Returns "unknown" rather than throwing: not knowing the version is never a
+ * reason to fail an operation.
+ */
+function readPackageVersion() {
+    let dir;
+    try {
+        dir = external_node_path_.dirname((0,external_node_url_.fileURLToPath)(import.meta.url));
+    }
+    catch {
+        return "unknown";
+    }
+    for (let depth = 0; depth < 6; depth++) {
+        try {
+            const manifest = external_node_fs_.readFileSync(external_node_path_.join(dir, "package.json"), "utf8");
+            const version = JSON.parse(manifest).version;
+            if (typeof version === "string" && version.length > 0) {
+                return version;
+            }
+        }
+        catch {
+            // No package.json here, or an unreadable one: keep walking up.
+        }
+        const parent = external_node_path_.dirname(dir);
+        if (parent === dir) {
+            break;
+        }
+        dir = parent;
+    }
+    return "unknown";
+}
+//# sourceMappingURL=version.js.map
 ;// CONCATENATED MODULE: ./lib/main.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -50084,10 +50161,14 @@ class Notifications {
 
 
 
+
 async function run() {
     const log = new ActionsLogger();
     let mutex;
     try {
+        // Reported before anything else can fail, so the release workflow can tell
+        // which build ran even when the run does not reach the lock.
+        setVersion(readPackageVersion());
         const gh = new GitHubClient();
         if (!(await shouldRunAction(gh))) {
             setSkipped();

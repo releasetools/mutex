@@ -53,6 +53,8 @@ inputs:
 outputs:
   status:
     description: "The status of the action: 'locked', 'released', 'failed', or 'skipped'."
+  version:
+    description: "The version of this action that ran. The release workflow asserts it against the tag being released, since 'uses: ...@v1' resolves through GitHub's caches and cannot otherwise be proven fresh."
 
 runs:
   using: "node24"

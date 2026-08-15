@@ -23,6 +23,7 @@ import {
   setLockAcquired,
   setLockReleased,
   setSkipped,
+  setVersion,
   shouldRunAction,
 } from "./github.js";
 import { DatabaseMutex } from "./database.js";
@@ -30,12 +31,17 @@ import { tryLock, tryUnlock } from "./mutex.js";
 import { Notifications } from "./notifications.js";
 import { ActionsLogger } from "./actions-logger.js";
 import { describeError } from "./helpers.js";
+import { readPackageVersion } from "./version.js";
 
 export async function run(): Promise<void> {
   const log = new ActionsLogger();
   let mutex: DatabaseMutex | undefined;
 
   try {
+    // Reported before anything else can fail, so the release workflow can tell
+    // which build ran even when the run does not reach the lock.
+    setVersion(readPackageVersion());
+
     const gh = new GitHubClient();
     if (!(await shouldRunAction(gh))) {
       setSkipped();

@@ -16,9 +16,6 @@
  *
  */
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { DatabaseMutex } from "../database.js";
 import { DotsecenvError } from "../dotsecenv/errors.js";
 import { logError } from "../helpers.js";
@@ -43,6 +40,7 @@ import {
   UsageError,
 } from "./exit-codes.js";
 import { Output } from "./output.js";
+import { readPackageVersion } from "../version.js";
 
 export async function main(argv: string[]): Promise<number> {
   let commandLine;
@@ -64,7 +62,7 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   if (commandLine.command === "version") {
-    process.stdout.write(`${readVersion()}\n`);
+    process.stdout.write(`${readPackageVersion()}\n`);
     return EXIT_OK;
   }
 
@@ -139,19 +137,6 @@ export async function main(argv: string[]): Promise<number> {
   } finally {
     // Postgres keeps sockets open; without this the process lingers.
     await mutex?.close();
-  }
-}
-
-function readVersion(): string {
-  try {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const manifest = fs.readFileSync(
-      path.join(here, "..", "..", "package.json"),
-      "utf8",
-    );
-    return String(JSON.parse(manifest).version ?? "unknown");
-  } catch {
-    return "unknown";
   }
 }
 

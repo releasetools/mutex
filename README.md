@@ -116,6 +116,10 @@ Used to signal if a lock should be automatically released when the workflow job 
 By default, a comment will be posted on the Pull Request running the action, when locks are acquired or released.
 Set it to `true` to never post comments on PRs.
 
+#### Outputs
+
+`status` is `locked`, `released`, `failed` or `skipped`. `version` reports which build of the action ran, which the release workflow asserts against the tag being released.
+
 #### `slack-channel`
 
 **Required for Slack notifications.** The Slack channel to post updates to (e.g., `C12345678`).

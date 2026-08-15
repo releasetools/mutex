@@ -6953,12 +6953,6 @@ __nccwpck_require__.d(__webpack_exports__, {
   i: () => (/* binding */ main)
 });
 
-;// CONCATENATED MODULE: external "node:fs"
-const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
-;// CONCATENATED MODULE: external "node:url"
-const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 // EXTERNAL MODULE: ./node_modules/pg/lib/index.js
 var lib = __nccwpck_require__(3273);
 ;// CONCATENATED MODULE: ./node_modules/pg/esm/index.mjs
@@ -7570,6 +7564,8 @@ class DotsecenvError extends Error {
     }
 }
 //# sourceMappingURL=errors.js.map
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: external "node:util"
 const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
 ;// CONCATENATED MODULE: ./lib/cli/exit-codes.js
@@ -8531,6 +8527,8 @@ function renderTable(records) {
         .join("  "));
 }
 //# sourceMappingURL=commands.js.map
+;// CONCATENATED MODULE: external "node:fs"
+const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
 ;// CONCATENATED MODULE: ./lib/dotsecenv/secenv.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -9288,6 +9286,68 @@ async function resolveConnectionString(options, log) {
     return { value: resolved.value, source: origin };
 }
 //# sourceMappingURL=config.js.map
+;// CONCATENATED MODULE: external "node:url"
+const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
+;// CONCATENATED MODULE: ./lib/version.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
+
+/**
+ * The version from the nearest package.json above this module.
+ *
+ * Walks up rather than using a fixed depth, because the same code ships from
+ * four places at two different depths: `lib/main.js`, `lib/cli/main.js`,
+ * `dist/main/index.js` and `dist/cli/index.js`. The ncc bundles also drop a
+ * package.json of their own alongside them containing only `{"type":"module"}`,
+ * so having a `version` field is what identifies the real one.
+ *
+ * Returns "unknown" rather than throwing: not knowing the version is never a
+ * reason to fail an operation.
+ */
+function readPackageVersion() {
+    let dir;
+    try {
+        dir = external_node_path_namespaceObject.dirname((0,external_node_url_namespaceObject.fileURLToPath)(import.meta.url));
+    }
+    catch {
+        return "unknown";
+    }
+    for (let depth = 0; depth < 6; depth++) {
+        try {
+            const manifest = external_node_fs_namespaceObject.readFileSync(external_node_path_namespaceObject.join(dir, "package.json"), "utf8");
+            const version = JSON.parse(manifest).version;
+            if (typeof version === "string" && version.length > 0) {
+                return version;
+            }
+        }
+        catch {
+            // No package.json here, or an unreadable one: keep walking up.
+        }
+        const parent = external_node_path_namespaceObject.dirname(dir);
+        if (parent === dir) {
+            break;
+        }
+        dir = parent;
+    }
+    return "unknown";
+}
+//# sourceMappingURL=version.js.map
 ;// CONCATENATED MODULE: ./lib/cli/main.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -9315,8 +9375,6 @@ async function resolveConnectionString(options, log) {
 
 
 
-
-
 async function main(argv) {
     let commandLine;
     try {
@@ -9334,7 +9392,7 @@ async function main(argv) {
         return EXIT_OK;
     }
     if (commandLine.command === "version") {
-        process.stdout.write(`${readVersion()}\n`);
+        process.stdout.write(`${readPackageVersion()}\n`);
         return EXIT_OK;
     }
     const { options, identifier, program } = commandLine;
@@ -9393,16 +9451,6 @@ async function main(argv) {
     finally {
         // Postgres keeps sockets open; without this the process lingers.
         await mutex?.close();
-    }
-}
-function readVersion() {
-    try {
-        const here = external_node_path_namespaceObject.dirname((0,external_node_url_namespaceObject.fileURLToPath)(import.meta.url));
-        const manifest = external_node_fs_namespaceObject.readFileSync(external_node_path_namespaceObject.join(here, "..", "..", "package.json"), "utf8");
-        return String(JSON.parse(manifest).version ?? "unknown");
-    }
-    catch {
-        return "unknown";
     }
 }
 main(process.argv.slice(2))

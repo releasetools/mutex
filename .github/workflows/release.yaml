@@ -33,30 +33,60 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Waits for v1 to have moved *and settled*. A single matching read is not
+      # enough: these endpoints are served by replicas, and the service that
+      # resolves `uses:` for the next job is a different one again, so one
+      # agreeing read says little about what the runner will be handed.
+      # Requiring several consecutive agreeing reads, from two independent
+      # resolution paths, makes a stale download much less likely.
+      #
+      # It cannot make it impossible - see the version assertion in e2e-test,
+      # which is what actually catches a stale action.
       - name: ⏳ Wait for v1 to point at this release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED: ${{ github.sha }}
+          REPO: ${{ github.repository }}
         run: |
-          for attempt in $(seq 1 30); do
-            object_type="$(gh api "repos/${{ github.repository }}/git/ref/tags/v1" --jq '.object.type')"
-            sha="$(gh api "repos/${{ github.repository }}/git/ref/tags/v1" --jq '.object.sha')"
+          attempts=36
+          required=3
+          confirmations=0
 
-            # v1 is an annotated tag, so the ref points at a tag object; deref it
-            # to the commit it wraps.
+          for attempt in $(seq 1 "$attempts"); do
+            # One read of the ref. v1 is annotated, so it points at a tag
+            # object; deref that to the commit it wraps.
+            ref="$(gh api "repos/$REPO/git/ref/tags/v1" \
+                     --jq '.object.type + " " + .object.sha' 2>/dev/null || true)"
+            object_type="${ref%% *}"
+            sha="${ref##* }"
             if [ "$object_type" = "tag" ]; then
-              sha="$(gh api "repos/${{ github.repository }}/git/tags/$sha" --jq '.object.sha')"
+              sha="$(gh api "repos/$REPO/git/tags/$sha" --jq '.object.sha' 2>/dev/null || true)"
             fi
 
-            if [ "$sha" = "${{ github.sha }}" ]; then
-              echo "v1 -> $sha"
-              exit 0
+            # A second, independent resolution of the same tag. Agreement
+            # between the two is better evidence than either on its own.
+            commit_sha="$(gh api "repos/$REPO/commits/v1" --jq '.sha' 2>/dev/null || true)"
+
+            if [ -n "$sha" ] && [ "$sha" = "$EXPECTED" ] && [ "$commit_sha" = "$EXPECTED" ]; then
+              confirmations=$((confirmations + 1))
+              echo "attempt $attempt/$attempts: v1 -> $sha (agreed $confirmations/$required)"
+              if [ "$confirmations" -ge "$required" ]; then
+                echo "v1 has settled on $sha"
+                exit 0
+              fi
+            else
+              if [ "$confirmations" -gt 0 ]; then
+                echo "::warning::v1 read back as '$sha'/'$commit_sha' after agreeing; restarting"
+              else
+                echo "attempt $attempt/$attempts: v1 -> ${sha:-unknown}, waiting for $EXPECTED"
+              fi
+              confirmations=0
             fi
 
-            echo "attempt $attempt/30: v1 -> $sha, waiting for ${{ github.sha }}"
             sleep 10
           done
 
-          echo "::error::v1 still does not point at ${{ github.sha }} after 5 minutes. Was the release cut without --major?"
+          echo "::error::v1 still does not agree on $EXPECTED after 6 minutes. Was the release cut without --major?"
           exit 1
 
   e2e-test:
@@ -78,6 +108,7 @@ jobs:
       # keys that does not accept contexts. The await-v1 job above guarantees v1
       # has already moved. renovate.json keeps Renovate from re-pinning this.
       - name: 🔒 Acquire Lock (and auto-release on completion)
+        id: lock
         uses: releasetools/mutex@v1
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -86,6 +117,31 @@ jobs:
           command: "lock"
           id: "verify-release-v0"
           reason: "Verify released v1 version"
+
+      # The point of this job. await-v1 waits for the tag to move, but `uses:`
+      # resolves through GitHub's own action cache, which is a different system
+      # again - no amount of waiting can prove the runner was handed the new
+      # code. Asking the action which build it is turns "probably fresh" into
+      # something checked, and a stale resolution into a red build rather than
+      # a green one that verified the previous release.
+      - name: ✅ Verify the release under test is the one that ran
+        env:
+          RAN: ${{ steps.lock.outputs.version }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          expected="${TAG#v}"
+
+          if [ -z "$RAN" ]; then
+            echo "::error::The action reported no version. Either v1 resolved to a build from before the version output existed, or the action failed before reporting."
+            exit 1
+          fi
+
+          if [ "$RAN" != "$expected" ]; then
+            echo "::error::v1 ran mutex $RAN, but this release is $expected. Either the tag had not propagated to the action cache, or the release was cut without bumping package.json."
+            exit 1
+          fi
+
+          echo "v1 ran mutex $RAN, matching $TAG"
 
       - name: ⏳ Mock action - wait 5 seconds and then continue
         run: sleep 5
