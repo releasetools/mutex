@@ -37,7 +37,6 @@ describe("parseCommandLine", () => {
     const parsed = parseCommandLine(["lock", "my-resource"]);
     expect(parsed.command).toBe("lock");
     expect(parsed.identifier).toBe("my-resource");
-    expect(parsed.generatedIdentifier).toBe(false);
     expect(parsed.program).toEqual([]);
   });
 
@@ -100,39 +99,18 @@ describe("parseCommandLine", () => {
     );
   });
 
-  it("mints a UUID when lock is given no id", () => {
-    const parsed = parseCommandLine(["lock"]);
-
-    expect(parsed.generatedIdentifier).toBe(true);
-    expect(parsed.identifier).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-    );
-  });
-
-  it("mints a distinct id each time", () => {
-    expect(parseCommandLine(["lock"]).identifier).not.toBe(
-      parseCommandLine(["lock"]).identifier,
-    );
-  });
-
-  it("mints an id for try-lock too, and for the wrapper form", () => {
-    expect(parseCommandLine(["try-lock"]).generatedIdentifier).toBe(true);
-
-    const wrapped = parseCommandLine(["lock", "--", "make", "build"]);
-    expect(wrapped.generatedIdentifier).toBe(true);
-    expect(wrapped.program).toEqual(["make", "build"]);
-  });
-
-  it("keeps an id that was given", () => {
-    const parsed = parseCommandLine(["lock", "my-resource"]);
-    expect(parsed.generatedIdentifier).toBe(false);
-    expect(parsed.identifier).toBe("my-resource");
-  });
-
-  it("still requires an id for the commands that name an existing lock", () => {
-    for (const command of ["unlock", "renew", "status"]) {
+  it("requires a lock id from every command that takes one", () => {
+    // Including lock: a name nobody else can guess excludes nobody, so an
+    // id that mutex invented for you would not be a mutex at all.
+    for (const command of ["lock", "try-lock", "unlock", "renew", "status"]) {
       expect(() => parseCommandLine([command])).toThrow(/needs a lock id/);
     }
+  });
+
+  it("requires an id even in the wrapper form", () => {
+    expect(() => parseCommandLine(["lock", "--", "make", "build"])).toThrow(
+      /needs a lock id/,
+    );
   });
 
   it("reads commands that take no id", () => {

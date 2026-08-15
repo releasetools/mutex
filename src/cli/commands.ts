@@ -63,12 +63,7 @@ export async function commandLock(
   ctx: CommandContext,
   identifier: string,
   program: string[],
-  generatedIdentifier = false,
 ): Promise<number> {
-  if (generatedIdentifier) {
-    ctx.log.info(`No lock id given; using '${identifier}'.`);
-  }
-
   const result = await tryLock(
     requestFor(ctx, identifier),
     ctx.mutex,
@@ -105,7 +100,6 @@ export async function commandLock(
         command: "lock",
         ok: true,
         id: identifier,
-        generated: generatedIdentifier,
         owner: ctx.options.owner,
         expires: result.expires ?? null,
         lock: result.record ?? null,
@@ -115,7 +109,7 @@ export async function commandLock(
     return EXIT_OK;
   }
 
-  return runProgram(ctx, identifier, program, result, generatedIdentifier);
+  return runProgram(ctx, identifier, program, result);
 }
 
 /** `mutex unlock`. */
@@ -299,14 +293,12 @@ async function runProgram(
   identifier: string,
   program: string[],
   lock: LockResult,
-  generatedIdentifier: boolean,
 ): Promise<number> {
   ctx.out.result(
     {
       command: "lock",
       ok: true,
       id: identifier,
-      generated: generatedIdentifier,
       owner: ctx.options.owner,
       expires: lock.expires ?? null,
       program,

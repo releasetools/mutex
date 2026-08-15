@@ -68,7 +68,7 @@ export async function main(argv: string[]): Promise<number> {
     return EXIT_OK;
   }
 
-  const { options, identifier, program, generatedIdentifier } = commandLine;
+  const { options, identifier, program } = commandLine;
   const log = new ConsoleLogger(options.logLevel);
 
   // Querying commands put their data on stdout; acting commands report to
@@ -102,12 +102,7 @@ export async function main(argv: string[]): Promise<number> {
     switch (commandLine.command) {
       case "lock":
       case "try-lock":
-        return await commandLock(
-          context,
-          identifier,
-          program,
-          generatedIdentifier,
-        );
+        return await commandLock(context, identifier, program);
       case "unlock":
         return await commandUnlock(context, identifier);
       case "renew":

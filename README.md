@@ -16,7 +16,7 @@ Locks live in a PostgreSQL table. When a job needs a lock, it inserts a row - or
 ## Features
 
 - **Advisory Locking**: Create and manage locks within your GitHub Actions workflows.
-- **A CLI**: `mutex lock` / `mutex unlock`, plus a flock-style `mutex lock [id] -- <program>` that holds the lock for exactly as long as the program runs.
+- **A CLI**: `mutex lock` / `mutex unlock`, plus a flock-style `mutex lock <id> -- <program>` that holds the lock for exactly as long as the program runs.
 - **Secrets via dotsecenv**: The CLI reads the connection string from a `.secenv` file, decrypting it through the [dotsecenv](https://dotsecenv.com) CLI, so it never has to be pasted on a command line.
 - **Pull Request Integration**: Lock and release events are posted as PR comments.
 - **Slack Notifications**: Choose if you want to be notified in your Slack channels about locking events.
@@ -141,9 +141,9 @@ Without `npm link`, run it as `node ./bin/mutex.js` or `npm run mutex -- <args>`
 
 | Command                        | What it does                                               |
 | ------------------------------ | ---------------------------------------------------------- |
-| `mutex lock [id]`              | Acquire a lock, waiting up to `--max-wait` for it          |
-| `mutex lock [id] -- <program>` | Acquire it, run the program, release it - whatever happens |
-| `mutex try-lock [id]`          | Acquire it in a single attempt, without waiting            |
+| `mutex lock <id>`              | Acquire a lock, waiting up to `--max-wait` for it          |
+| `mutex lock <id> -- <program>` | Acquire it, run the program, release it - whatever happens |
+| `mutex try-lock <id>`          | Acquire it in a single attempt, without waiting            |
 | `mutex unlock <id>`            | Release it                                                 |
 | `mutex renew <id>`             | Extend a lock you already hold                             |
 | `mutex status <id>`            | Show who holds it                                          |
@@ -169,22 +169,6 @@ It is deliberately strict, because a renewal that silently succeeds when it shou
 Exit codes tell the cases apart: `4` for gone or expired, `5` for held by another owner.
 
 Locks taken by the GitHub Action are unowned, so a CLI caller that does not name an owner can renew them too.
-
-### The lock id
-
-`lock` and `try-lock` take the id as an optional argument. Given one they use it; given none they mint a UUID and report it:
-
-```shell
-$ mutex lock
-Acquired '5f0b8a6e-3d21-4a77-9c4e-1e0d2b7f4a55' until 2026-08-15T08:24:51.272Z.
-
-$ mutex lock --json | jq -r .id
-5f0b8a6e-3d21-4a77-9c4e-1e0d2b7f4a55
-```
-
-That is mostly for the wrapper form, where the lock never needs a name anyone else knows - `mutex lock -- ./migrate.sh` takes an anonymous lock and gives it back when the script exits. Every other command names an existing lock, so there the id stays required.
-
-A generated id is unique per run, so two bare `mutex lock` calls exclude nothing. Name the lock whenever exclusion is the point.
 
 ### Wrapping a program
 

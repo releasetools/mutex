@@ -15,7 +15,6 @@
  *
  */
 
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { LogLevel } from "../logger.js";
@@ -38,14 +37,8 @@ export type CommandName =
   | "help"
   | "version";
 
-/**
- * Whether a command takes a lock id.
- *
- * `optional` belongs to the two acquiring commands: with no id they mint a
- * UUID, which is what makes `mutex lock -- <program>` useful on its own - an
- * anonymous lock nobody else can name, released when the program exits.
- */
-type IdentifierMode = "required" | "optional" | "none";
+/** Whether a command takes a lock id. */
+type IdentifierMode = "required" | "none";
 
 const LOCK_OPTIONS = [
   "reason",
@@ -84,15 +77,15 @@ interface CommandSpec {
 export const COMMANDS: Record<CommandName, CommandSpec> = {
   lock: {
     summary: "Acquire a lock, waiting for it to become free",
-    usage: "mutex lock [id] [options] [-- <program> [args...]]",
-    identifier: "optional",
+    usage: "mutex lock <id> [options] [-- <program> [args...]]",
+    identifier: "required",
     acceptsProgram: true,
     options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
   },
   "try-lock": {
     summary: "Acquire a lock in a single attempt, without waiting",
-    usage: "mutex try-lock [id] [options] [-- <program> [args...]]",
-    identifier: "optional",
+    usage: "mutex try-lock <id> [options] [-- <program> [args...]]",
+    identifier: "required",
     acceptsProgram: true,
     options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
   },
@@ -200,8 +193,6 @@ export interface ResolvedOptions {
 export interface CommandLine {
   command: CommandName;
   identifier: string;
-  /** True when no id was given and one was minted for this run. */
-  generatedIdentifier: boolean;
   /** The program to wrap, taken from everything after `--`. */
   program: string[];
   options: ResolvedOptions;
@@ -256,8 +247,7 @@ export function parseCommandLine(argv: string[]): CommandLine {
   }
 
   const spec = COMMANDS[command];
-  let identifier = command === "help" ? "" : (positionals[1] ?? "");
-  let generatedIdentifier = false;
+  const identifier = command === "help" ? "" : (positionals[1] ?? "");
 
   if (command !== "help") {
     if (spec.identifier === "required" && identifier === "") {
@@ -270,11 +260,6 @@ export function parseCommandLine(argv: string[]): CommandLine {
         `unexpected argument '${positionals[expected]}'\n  ${spec.usage}`,
       );
     }
-
-    if (spec.identifier === "optional" && identifier === "") {
-      identifier = randomUUID();
-      generatedIdentifier = true;
-    }
   }
 
   if (program.length > 0 && !spec.acceptsProgram) {
@@ -286,7 +271,6 @@ export function parseCommandLine(argv: string[]): CommandLine {
   return {
     command,
     identifier,
-    generatedIdentifier,
     program,
     topic,
     options: resolveOptions(command, values),
@@ -451,13 +435,10 @@ export function helpText(topic: CommandName | null): string {
 
   return `mutex - an advisory lock service for CI/CD pipelines, backed by PostgreSQL
 
-Usage: mutex <command> [id] [options] [-- <program> [args...]]
+Usage: mutex <command> <id> [options] [-- <program> [args...]]
 
 Commands:
 ${commands}
-
-lock and try-lock mint a UUID when no id is given, which is all a wrapped
-program needs; every other command names an existing lock.
 
 renew extends a lock you already hold: the id and the owner must both match,
 and it fails - rather than taking a new lock - if the lock expired or is gone.

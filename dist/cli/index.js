@@ -7570,8 +7570,6 @@ class DotsecenvError extends Error {
     }
 }
 //# sourceMappingURL=errors.js.map
-;// CONCATENATED MODULE: external "node:crypto"
-const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
 ;// CONCATENATED MODULE: external "node:util"
 const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
 ;// CONCATENATED MODULE: ./lib/cli/exit-codes.js
@@ -7645,7 +7643,6 @@ class ConfigurationError extends Error {
 
 
 
-
 const LOCK_OPTIONS = [
     "reason",
     "expiration",
@@ -7672,15 +7669,15 @@ const GENERAL_OPTIONS = [
 const COMMANDS = {
     lock: {
         summary: "Acquire a lock, waiting for it to become free",
-        usage: "mutex lock [id] [options] [-- <program> [args...]]",
-        identifier: "optional",
+        usage: "mutex lock <id> [options] [-- <program> [args...]]",
+        identifier: "required",
         acceptsProgram: true,
         options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
     },
     "try-lock": {
         summary: "Acquire a lock in a single attempt, without waiting",
-        usage: "mutex try-lock [id] [options] [-- <program> [args...]]",
-        identifier: "optional",
+        usage: "mutex try-lock <id> [options] [-- <program> [args...]]",
+        identifier: "required",
         acceptsProgram: true,
         options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
     },
@@ -7808,8 +7805,7 @@ function parseCommandLine(argv) {
         }
     }
     const spec = COMMANDS[command];
-    let identifier = command === "help" ? "" : (positionals[1] ?? "");
-    let generatedIdentifier = false;
+    const identifier = command === "help" ? "" : (positionals[1] ?? "");
     if (command !== "help") {
         if (spec.identifier === "required" && identifier === "") {
             throw new UsageError(`'${command}' needs a lock id\n  ${spec.usage}`);
@@ -7817,10 +7813,6 @@ function parseCommandLine(argv) {
         const expected = spec.identifier === "none" ? 1 : 2;
         if (positionals.length > expected) {
             throw new UsageError(`unexpected argument '${positionals[expected]}'\n  ${spec.usage}`);
-        }
-        if (spec.identifier === "optional" && identifier === "") {
-            identifier = (0,external_node_crypto_namespaceObject.randomUUID)();
-            generatedIdentifier = true;
         }
     }
     if (program.length > 0 && !spec.acceptsProgram) {
@@ -7830,7 +7822,6 @@ function parseCommandLine(argv) {
     return {
         command,
         identifier,
-        generatedIdentifier,
         program,
         topic,
         options: resolveOptions(command, values),
@@ -7948,13 +7939,10 @@ function helpText(topic) {
         .join("\n");
     return `mutex - an advisory lock service for CI/CD pipelines, backed by PostgreSQL
 
-Usage: mutex <command> [id] [options] [-- <program> [args...]]
+Usage: mutex <command> <id> [options] [-- <program> [args...]]
 
 Commands:
 ${commands}
-
-lock and try-lock mint a UUID when no id is given, which is all a wrapped
-program needs; every other command names an existing lock.
 
 renew extends a lock you already hold: the id and the owner must both match,
 and it fails - rather than taking a new lock - if the lock expired or is gone.
@@ -8263,10 +8251,7 @@ const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
  * With a program after `--`, the lock is held for exactly as long as that
  * program runs and is released on every exit path.
  */
-async function commandLock(ctx, identifier, program, generatedIdentifier = false) {
-    if (generatedIdentifier) {
-        ctx.log.info(`No lock id given; using '${identifier}'.`);
-    }
+async function commandLock(ctx, identifier, program) {
     const result = await tryLock(requestFor(ctx, identifier), ctx.mutex, ctx.log, {
         onContended: (contended) => {
             if (contended.record) {
@@ -8292,14 +8277,13 @@ async function commandLock(ctx, identifier, program, generatedIdentifier = false
             command: "lock",
             ok: true,
             id: identifier,
-            generated: generatedIdentifier,
             owner: ctx.options.owner,
             expires: result.expires ?? null,
             lock: result.record ?? null,
         }, describeLockAction("Acquired", result.record, identifier));
         return EXIT_OK;
     }
-    return runProgram(ctx, identifier, program, result, generatedIdentifier);
+    return runProgram(ctx, identifier, program, result);
 }
 /** `mutex unlock`. */
 async function commandUnlock(ctx, identifier) {
@@ -8409,12 +8393,11 @@ function requestFor(ctx, identifier) {
         owner: ctx.options.owner,
     };
 }
-async function runProgram(ctx, identifier, program, lock, generatedIdentifier) {
+async function runProgram(ctx, identifier, program, lock) {
     ctx.out.result({
         command: "lock",
         ok: true,
         id: identifier,
-        generated: generatedIdentifier,
         owner: ctx.options.owner,
         expires: lock.expires ?? null,
         program,
@@ -9354,7 +9337,7 @@ async function main(argv) {
         process.stdout.write(`${readVersion()}\n`);
         return EXIT_OK;
     }
-    const { options, identifier, program, generatedIdentifier } = commandLine;
+    const { options, identifier, program } = commandLine;
     const log = new ConsoleLogger(options.logLevel);
     // Querying commands put their data on stdout; acting commands report to
     // stderr, so `mutex lock` looks the same with or without a wrapped program
@@ -9376,7 +9359,7 @@ async function main(argv) {
         switch (commandLine.command) {
             case "lock":
             case "try-lock":
-                return await commandLock(context, identifier, program, generatedIdentifier);
+                return await commandLock(context, identifier, program);
             case "unlock":
                 return await commandUnlock(context, identifier);
             case "renew":

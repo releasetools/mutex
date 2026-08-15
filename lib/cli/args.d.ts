@@ -6,14 +6,8 @@ import { LogLevel } from "../logger.js";
  *   unlock          -> tryUnlock
  */
 export type CommandName = "lock" | "try-lock" | "unlock" | "renew" | "status" | "list" | "prune" | "help" | "version";
-/**
- * Whether a command takes a lock id.
- *
- * `optional` belongs to the two acquiring commands: with no id they mint a
- * UUID, which is what makes `mutex lock -- <program>` useful on its own - an
- * anonymous lock nobody else can name, released when the program exits.
- */
-type IdentifierMode = "required" | "optional" | "none";
+/** Whether a command takes a lock id. */
+type IdentifierMode = "required" | "none";
 interface CommandSpec {
     summary: string;
     usage: string;
@@ -46,8 +40,6 @@ export interface ResolvedOptions {
 export interface CommandLine {
     command: CommandName;
     identifier: string;
-    /** True when no id was given and one was minted for this run. */
-    generatedIdentifier: boolean;
     /** The program to wrap, taken from everything after `--`. */
     program: string[];
     options: ResolvedOptions;

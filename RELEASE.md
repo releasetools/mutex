@@ -10,7 +10,6 @@ Newest first. One line per change.
 - Locks can now record an owner: name one with `--owner`, and only that owner can unlock or renew it. Unnamed stays unowned and open to anyone, as the Action writes today.
 - Breaking somebody else's lock means naming its owner, which the refusal message spells out. There is no force flag.
 - Added `mutex renew` to extend a lock you already hold; the id and owner must match, and it will not take a lock you do not hold.
-- `mutex lock` mints a UUID when no id is given, which is all a wrapped program needs.
 - Added `mutex status`, `mutex list` and `mutex prune` for seeing and tidying up what is held.
 - Fixed lock expiry on databases whose session time zone is not UTC, where every lock read as already expired and nothing was ever excluded.
 - Fixed the schema check running on every operation instead of once.

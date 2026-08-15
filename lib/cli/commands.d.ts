@@ -15,7 +15,7 @@ export interface CommandContext {
  * With a program after `--`, the lock is held for exactly as long as that
  * program runs and is released on every exit path.
  */
-export declare function commandLock(ctx: CommandContext, identifier: string, program: string[], generatedIdentifier?: boolean): Promise<number>;
+export declare function commandLock(ctx: CommandContext, identifier: string, program: string[]): Promise<number>;
 /** `mutex unlock`. */
 export declare function commandUnlock(ctx: CommandContext, identifier: string): Promise<number>;
 /**
