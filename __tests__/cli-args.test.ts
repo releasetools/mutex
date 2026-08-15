@@ -118,12 +118,20 @@ describe("parseCommandLine", () => {
     expect(parseCommandLine(["prune", "--dry-run"]).options.dryRun).toBe(true);
   });
 
-  it("routes --help and --version to their commands", () => {
+  it("routes --help to the help command", () => {
     expect(parseCommandLine(["--help"]).command).toBe("help");
     expect(parseCommandLine(["lock", "--help"]).command).toBe("help");
     expect(parseCommandLine(["--help", "lock"]).topic).toBe("lock");
     expect(parseCommandLine(["help", "unlock"]).topic).toBe("unlock");
-    expect(parseCommandLine(["--version"]).command).toBe("version");
+  });
+
+  it("has no --version flag; the version is a command", () => {
+    // A flag that only worked without positionals meant `mutex lock id -V`
+    // took a lock instead of printing a version. One spelling only.
+    expect(parseCommandLine(["version"]).command).toBe("version");
+    for (const argv of [["--version"], ["-V"], ["lock", "id", "-V"]]) {
+      expect(() => parseCommandLine(argv)).toThrow(UsageError);
+    }
   });
 
   it("rejects an unknown command", () => {

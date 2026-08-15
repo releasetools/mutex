@@ -49172,10 +49172,6 @@ class GitHubClient {
         this.repo = github_context.repo.repo;
     }
 }
-// Retrieve lock state from GITHUB_STATE
-function isLockAcquired() {
-    return core.getState("lockAcquired") === "true";
-}
 // Set lock state in GITHUB_STATE
 function setLockAcquired() {
     saveState("lockAcquired", "true");

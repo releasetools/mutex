@@ -39,11 +39,6 @@ export class GitHubClient {
   }
 }
 
-// Retrieve lock state from GITHUB_STATE
-export function isLockAcquired(): boolean {
-  return core.getState("lockAcquired") === "true";
-}
-
 // Set lock state in GITHUB_STATE
 export function setLockAcquired(): void {
   core.saveState("lockAcquired", "true");

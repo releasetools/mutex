@@ -7670,13 +7670,7 @@ const CONNECTION_OPTIONS = [
     "dotsecenv-bin",
     "dotsecenv-config",
 ];
-const GENERAL_OPTIONS = [
-    "json",
-    "quiet",
-    "verbose",
-    "help",
-    "version",
-];
+const GENERAL_OPTIONS = ["json", "quiet", "verbose", "help"];
 const COMMANDS = {
     lock: {
         summary: "Acquire a lock, waiting for it to become free",
@@ -7766,7 +7760,6 @@ const OPTION_CONFIG = {
     quiet: { type: "boolean", short: "q" },
     verbose: { type: "boolean" },
     help: { type: "boolean", short: "h" },
-    version: { type: "boolean", short: "V" },
 };
 const DEFAULT_EXPIRATION_SECONDS = 60;
 /**
@@ -7806,9 +7799,6 @@ function parseCommandLine(argv) {
     if (values.help) {
         command = "help";
         topic = asCommandName(positionals[0]) ?? null;
-    }
-    else if (values.version && positionals.length === 0) {
-        command = "version";
     }
     else if (positionals.length === 0) {
         throw new UsageError("no command given");
@@ -7993,7 +7983,6 @@ General:
   -q, --quiet                    Errors only
       --verbose                  Include debug output
   -h, --help                     Show help
-  -V, --version                  Show the version
 
 The connection string is taken from --database-url, then $DATABASE_URL, then
 the .secenv chain above --secenv-dir, resolved through the dotsecenv CLI.
@@ -8169,24 +8158,32 @@ class Output {
     humanStream;
     jsonStream;
     json;
-    constructor(humanStream, jsonStream, json) {
+    quiet;
+    constructor(humanStream, jsonStream, json, 
+    /**
+     * Suppresses the human rendering, leaving the exit code to speak. What
+     * `if mutex status deploy --quiet; then` relies on. `--json` is unaffected:
+     * asking for machine-readable output and then silencing it is not a
+     * combination worth honouring.
+     */
+    quiet = false) {
         this.humanStream = humanStream;
         this.jsonStream = jsonStream;
         this.json = json;
+        this.quiet = quiet;
     }
     result(payload, human) {
         if (this.json) {
             this.jsonStream.write(`${JSON.stringify(payload, null, 2)}\n`);
             return;
         }
+        if (this.quiet) {
+            return;
+        }
         for (const line of Array.isArray(human) ? human : [human]) {
             this.humanStream.write(`${line}\n`);
         }
     }
-}
-/** Renders an owner for a message, including the unowned case. */
-function describeOwner(owner) {
-    return owner ? `'${owner}'` : "nobody";
 }
 /**
  * Explains an operation refused because the two owners are not the same, and
@@ -8286,13 +8283,23 @@ function formatDuration(ms) {
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 /**
+ * How long the post-program release keeps trying.
+ *
+ * A `contended` release right after a wrapped program is almost always this
+ * job's own background renewal still inside its transaction, which clears in
+ * milliseconds - so a brief retry is worth far more than a report. Short,
+ * because this runs between the program exiting and mutex exiting.
+ */
+const CLEANUP_TIMEOUT_MS = 5_000;
+const CLEANUP_INTERVAL_MS = 250;
+/**
  * `mutex lock` and `mutex try-lock`, which differ only in how long they wait -
  * `parseCommandLine` has already zeroed the timeout for `try-lock`.
  *
  * With a program after `--`, the lock is held for exactly as long as that
  * program runs and is released on every exit path.
  */
-async function commandLock(ctx, identifier, program) {
+async function commandLock(ctx, identifier, program, command = "lock") {
     const result = await tryLock(requestFor(ctx, identifier), ctx.mutex, ctx.log, {
         onContended: (contended) => {
             if (contended.record) {
@@ -8302,7 +8309,7 @@ async function commandLock(ctx, identifier, program) {
     });
     if (!result.acquired) {
         ctx.out.result({
-            command: "lock",
+            command,
             ok: false,
             id: identifier,
             status: result.status,
@@ -8315,7 +8322,7 @@ async function commandLock(ctx, identifier, program) {
     }
     if (program.length === 0) {
         ctx.out.result({
-            command: "lock",
+            command,
             ok: true,
             id: identifier,
             owner: ctx.options.owner,
@@ -8324,7 +8331,7 @@ async function commandLock(ctx, identifier, program) {
         }, describeLockAction("Acquired", result.record, identifier));
         return EXIT_OK;
     }
-    return runProgram(ctx, identifier, program, result);
+    return runProgram(ctx, identifier, program, result, command);
 }
 /** `mutex unlock`. */
 async function commandUnlock(ctx, identifier) {
@@ -8435,9 +8442,9 @@ function requestFor(ctx, identifier) {
         owner: ctx.options.owner,
     };
 }
-async function runProgram(ctx, identifier, program, lock) {
+async function runProgram(ctx, identifier, program, lock, command) {
     ctx.out.result({
-        command: "lock",
+        command,
         ok: true,
         id: identifier,
         owner: ctx.options.owner,
@@ -8498,18 +8505,35 @@ function startRenewal(ctx, identifier) {
     }, intervalMs);
     return { stop: () => clearInterval(timer) };
 }
+/**
+ * Releases the lock once a wrapped program has finished.
+ *
+ * Never throws - the program's exit status is what the caller asked for, and a
+ * cleanup problem must not replace it. But it is reported at error level, not
+ * warning: `--quiet` lowers the threshold to errors, and "the lock is still
+ * held" is precisely what someone running quietly still needs to be told.
+ */
 async function unlockQuietly(ctx, identifier) {
+    const stranded = (detail) => {
+        const owner = ctx.options.owner ? ` --owner '${ctx.options.owner}'` : "";
+        ctx.log.error(`${detail}\n` +
+            `  '${identifier}' stays held until it expires. Release it with:\n` +
+            `    mutex unlock ${identifier}${owner}`);
+    };
     try {
-        const result = await ctx.mutex.releaseLock(identifier, ctx.options.owner);
+        const result = await tryUnlock({
+            ...requestFor(ctx, identifier),
+            pollTimeoutMs: CLEANUP_TIMEOUT_MS,
+            pollIntervalMs: CLEANUP_INTERVAL_MS,
+        }, ctx.mutex, ctx.log);
         if (result.unlocked) {
             ctx.log.info(`Unlocked '${identifier}'.`);
+            return;
         }
-        else {
-            ctx.log.warning(`Could not unlock '${identifier}' (${result.outcome}).`);
-        }
+        stranded(`Could not unlock '${identifier}' (${result.outcome}).`);
     }
     catch (error) {
-        logWarning(ctx.log, error, `Could not unlock '${identifier}'`);
+        stranded(`Could not unlock '${identifier}': ${describeError(error)}`);
     }
 }
 /**
@@ -9454,7 +9478,7 @@ async function main(argv) {
     const queries = ["status", "list", "prune"];
     const out = new Output(!wrapping && queries.includes(commandLine.command)
         ? process.stdout
-        : process.stderr, wrapping ? process.stderr : process.stdout, options.json);
+        : process.stderr, wrapping ? process.stderr : process.stdout, options.json, options.logLevel === "error");
     let mutex;
     try {
         const connection = await resolveConnectionString(options, log);
@@ -9467,7 +9491,7 @@ async function main(argv) {
         switch (commandLine.command) {
             case "lock":
             case "try-lock":
-                return await commandLock(context, identifier, program);
+                return await commandLock(context, identifier, program, commandLine.command);
             case "unlock":
                 return await commandUnlock(context, identifier);
             case "renew":

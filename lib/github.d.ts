@@ -8,7 +8,6 @@ export declare class GitHubClient {
     repo: string;
     constructor();
 }
-export declare function isLockAcquired(): boolean;
 export declare function setLockAcquired(): void;
 export declare function setLockReleased(): void;
 /**

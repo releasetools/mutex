@@ -58,13 +58,7 @@ const CONNECTION_OPTIONS = [
   "dotsecenv-config",
 ] as const;
 
-const GENERAL_OPTIONS = [
-  "json",
-  "quiet",
-  "verbose",
-  "help",
-  "version",
-] as const;
+const GENERAL_OPTIONS = ["json", "quiet", "verbose", "help"] as const;
 
 interface CommandSpec {
   summary: string;
@@ -164,7 +158,6 @@ const OPTION_CONFIG = {
   quiet: { type: "boolean", short: "q" },
   verbose: { type: "boolean" },
   help: { type: "boolean", short: "h" },
-  version: { type: "boolean", short: "V" },
 } as const;
 
 export const DEFAULT_EXPIRATION_SECONDS = 60;
@@ -239,8 +232,6 @@ export function parseCommandLine(argv: string[]): CommandLine {
   if (values.help) {
     command = "help";
     topic = asCommandName(positionals[0]) ?? null;
-  } else if (values.version && positionals.length === 0) {
-    command = "version";
   } else if (positionals.length === 0) {
     throw new UsageError("no command given");
   } else {
@@ -478,7 +469,6 @@ General:
   -q, --quiet                    Errors only
       --verbose                  Include debug output
   -h, --help                     Show help
-  -V, --version                  Show the version
 
 The connection string is taken from --database-url, then $DATABASE_URL, then
 the .secenv chain above --secenv-dir, resolved through the dotsecenv CLI.

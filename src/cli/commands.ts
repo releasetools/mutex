@@ -18,7 +18,7 @@
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { DatabaseMutex } from "../database.js";
-import { logWarning } from "../helpers.js";
+import { describeError, logWarning } from "../helpers.js";
 import { Logger } from "../logger.js";
 import {
   LockRecord,
@@ -53,6 +53,17 @@ export interface CommandContext {
 const SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 /**
+ * How long the post-program release keeps trying.
+ *
+ * A `contended` release right after a wrapped program is almost always this
+ * job's own background renewal still inside its transaction, which clears in
+ * milliseconds - so a brief retry is worth far more than a report. Short,
+ * because this runs between the program exiting and mutex exiting.
+ */
+const CLEANUP_TIMEOUT_MS = 5_000;
+const CLEANUP_INTERVAL_MS = 250;
+
+/**
  * `mutex lock` and `mutex try-lock`, which differ only in how long they wait -
  * `parseCommandLine` has already zeroed the timeout for `try-lock`.
  *
@@ -63,6 +74,7 @@ export async function commandLock(
   ctx: CommandContext,
   identifier: string,
   program: string[],
+  command: "lock" | "try-lock" = "lock",
 ): Promise<number> {
   const result = await tryLock(
     requestFor(ctx, identifier),
@@ -80,7 +92,7 @@ export async function commandLock(
   if (!result.acquired) {
     ctx.out.result(
       {
-        command: "lock",
+        command,
         ok: false,
         id: identifier,
         status: result.status,
@@ -97,7 +109,7 @@ export async function commandLock(
   if (program.length === 0) {
     ctx.out.result(
       {
-        command: "lock",
+        command,
         ok: true,
         id: identifier,
         owner: ctx.options.owner,
@@ -109,7 +121,7 @@ export async function commandLock(
     return EXIT_OK;
   }
 
-  return runProgram(ctx, identifier, program, result);
+  return runProgram(ctx, identifier, program, result, command);
 }
 
 /** `mutex unlock`. */
@@ -298,10 +310,11 @@ async function runProgram(
   identifier: string,
   program: string[],
   lock: LockResult,
+  command: "lock" | "try-lock",
 ): Promise<number> {
   ctx.out.result(
     {
-      command: "lock",
+      command,
       ok: true,
       id: identifier,
       owner: ctx.options.owner,
@@ -378,20 +391,46 @@ function startRenewal(
   return { stop: () => clearInterval(timer) };
 }
 
+/**
+ * Releases the lock once a wrapped program has finished.
+ *
+ * Never throws - the program's exit status is what the caller asked for, and a
+ * cleanup problem must not replace it. But it is reported at error level, not
+ * warning: `--quiet` lowers the threshold to errors, and "the lock is still
+ * held" is precisely what someone running quietly still needs to be told.
+ */
 async function unlockQuietly(
   ctx: CommandContext,
   identifier: string,
 ): Promise<void> {
+  const stranded = (detail: string) => {
+    const owner = ctx.options.owner ? ` --owner '${ctx.options.owner}'` : "";
+    ctx.log.error(
+      `${detail}\n` +
+        `  '${identifier}' stays held until it expires. Release it with:\n` +
+        `    mutex unlock ${identifier}${owner}`,
+    );
+  };
+
   try {
-    const result = await ctx.mutex.releaseLock(identifier, ctx.options.owner);
+    const result = await tryUnlock(
+      {
+        ...requestFor(ctx, identifier),
+        pollTimeoutMs: CLEANUP_TIMEOUT_MS,
+        pollIntervalMs: CLEANUP_INTERVAL_MS,
+      },
+      ctx.mutex,
+      ctx.log,
+    );
 
     if (result.unlocked) {
       ctx.log.info(`Unlocked '${identifier}'.`);
-    } else {
-      ctx.log.warning(`Could not unlock '${identifier}' (${result.outcome}).`);
+      return;
     }
+
+    stranded(`Could not unlock '${identifier}' (${result.outcome}).`);
   } catch (error) {
-    logWarning(ctx.log, error, `Could not unlock '${identifier}'`);
+    stranded(`Could not unlock '${identifier}': ${describeError(error)}`);
   }
 }
 

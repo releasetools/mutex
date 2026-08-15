@@ -24,7 +24,7 @@ export function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function errorStack(error: unknown): string {
+function errorStack(error: unknown): string {
   return error instanceof Error && error.stack ? error.stack : "N/A";
 }
 

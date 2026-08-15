@@ -16,11 +16,23 @@ export declare class Output {
     private readonly humanStream;
     private readonly jsonStream;
     private readonly json;
-    constructor(humanStream: NodeJS.WritableStream, jsonStream: NodeJS.WritableStream, json: boolean);
+    /**
+     * Suppresses the human rendering, leaving the exit code to speak. What
+     * `if mutex status deploy --quiet; then` relies on. `--json` is unaffected:
+     * asking for machine-readable output and then silencing it is not a
+     * combination worth honouring.
+     */
+    private readonly quiet;
+    constructor(humanStream: NodeJS.WritableStream, jsonStream: NodeJS.WritableStream, json: boolean, 
+    /**
+     * Suppresses the human rendering, leaving the exit code to speak. What
+     * `if mutex status deploy --quiet; then` relies on. `--json` is unaffected:
+     * asking for machine-readable output and then silencing it is not a
+     * combination worth honouring.
+     */
+    quiet?: boolean);
     result(payload: unknown, human: string | string[]): void;
 }
-/** Renders an owner for a message, including the unowned case. */
-export declare function describeOwner(owner: string | null | undefined): string;
 /**
  * Explains an operation refused because the two owners are not the same, and
  * says exactly what to pass to go ahead anyway.
@@ -36,7 +48,5 @@ export declare function describeOwnerMismatch(identifier: string, held: string |
  */
 export declare function describeLockAction(verb: string, record: LockRecord | undefined, fallbackId: string): string[];
 export declare function describeRecord(record: LockRecord): string[];
-export declare function describeExpiry(record: LockRecord): string;
 /** A one-line summary, used by `mutex list` and by contention messages. */
 export declare function summarizeRecord(record: LockRecord): string;
-export declare function formatDuration(ms: number): string;

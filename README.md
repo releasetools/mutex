@@ -293,6 +293,8 @@ if mutex status deploy-staging --quiet; then
 fi
 ```
 
+`--quiet` silences the report and leaves the exit code to answer. `--json` is unaffected by it.
+
 ### The dotsecenv client
 
 The CLI does not reimplement dotsecenv's cryptography. [`src/dotsecenv/`](./src/dotsecenv) is a small Node client that:

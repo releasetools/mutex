@@ -35,6 +35,13 @@ export class Output {
     private readonly humanStream: NodeJS.WritableStream,
     private readonly jsonStream: NodeJS.WritableStream,
     private readonly json: boolean,
+    /**
+     * Suppresses the human rendering, leaving the exit code to speak. What
+     * `if mutex status deploy --quiet; then` relies on. `--json` is unaffected:
+     * asking for machine-readable output and then silencing it is not a
+     * combination worth honouring.
+     */
+    private readonly quiet = false,
   ) {}
 
   result(payload: unknown, human: string | string[]): void {
@@ -43,15 +50,14 @@ export class Output {
       return;
     }
 
+    if (this.quiet) {
+      return;
+    }
+
     for (const line of Array.isArray(human) ? human : [human]) {
       this.humanStream.write(`${line}\n`);
     }
   }
-}
-
-/** Renders an owner for a message, including the unowned case. */
-export function describeOwner(owner: string | null | undefined): string {
-  return owner ? `'${owner}'` : "nobody";
 }
 
 /**
@@ -109,7 +115,7 @@ export function describeRecord(record: LockRecord): string[] {
   ];
 }
 
-export function describeExpiry(record: LockRecord): string {
+function describeExpiry(record: LockRecord): string {
   if (!record.expiresAt) {
     return "(never)";
   }
@@ -132,7 +138,7 @@ export function summarizeRecord(record: LockRecord): string {
   return `${record.id}\t${state}\t${owner}\t${record.expiresAt ?? "-"}${reason}`;
 }
 
-export function formatDuration(ms: number): string {
+function formatDuration(ms: number): string {
   const seconds = Math.round(ms / 1000);
   if (seconds < 60) {
     return `${seconds}s`;

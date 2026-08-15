@@ -80,6 +80,7 @@ export async function main(argv: string[]): Promise<number> {
       : process.stderr,
     wrapping ? process.stderr : process.stdout,
     options.json,
+    options.logLevel === "error",
   );
 
   let mutex: DatabaseMutex | undefined;
@@ -100,7 +101,12 @@ export async function main(argv: string[]): Promise<number> {
     switch (commandLine.command) {
       case "lock":
       case "try-lock":
-        return await commandLock(context, identifier, program);
+        return await commandLock(
+          context,
+          identifier,
+          program,
+          commandLine.command,
+        );
       case "unlock":
         return await commandUnlock(context, identifier);
       case "renew":
