@@ -49,6 +49,22 @@ export class Output {
   }
 }
 
+/** Renders an owner for a message, including the unowned case. */
+export function describeOwner(owner: string | null | undefined): string {
+  return owner ? `'${owner}'` : "nobody";
+}
+
+/** Explains a renew refused because the two owners are not the same. */
+export function describeOwnerMismatch(
+  identifier: string,
+  held: string | null | undefined,
+  caller: string | null,
+): string {
+  const lock = held ? `is held by '${held}'` : "is unowned";
+  const call = caller ? `this call is '${caller}'` : "this call is unowned";
+  return `'${identifier}' ${lock}; ${call}. Renewing needs both to match.`;
+}
+
 /**
  * The headline plus stats printed when a lock is taken or extended: the id
  * matters most when it was generated, and the expiry is what the caller has to

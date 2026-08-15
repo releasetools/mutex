@@ -7565,8 +7565,6 @@ class DotsecenvError extends Error {
 //# sourceMappingURL=errors.js.map
 ;// CONCATENATED MODULE: external "node:crypto"
 const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
-;// CONCATENATED MODULE: external "node:os"
-const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:util"
 const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
 ;// CONCATENATED MODULE: ./lib/cli/exit-codes.js
@@ -7637,7 +7635,6 @@ class ConfigurationError extends Error {
  * limitations under the License.
  *
  */
-
 
 
 
@@ -7882,19 +7879,15 @@ function resolveOptions(command, values) {
                 : "info",
     };
 }
-/** Identifies the caller, so `unlock` can tell whose lock it is breaking. */
+/**
+ * Who is taking the lock, or null when nobody says.
+ *
+ * Unowned is the default on purpose: it matches what the GitHub Action writes,
+ * so an unowned caller can unlock and renew an unowned lock, whichever of the
+ * two took it. Naming an owner is what opts into the stricter guards.
+ */
 function defaultOwner() {
-    if (process.env.MUTEX_OWNER) {
-        return process.env.MUTEX_OWNER;
-    }
-    try {
-        return `${external_node_os_namespaceObject.userInfo().username}@${external_node_os_namespaceObject.hostname()}`;
-    }
-    catch {
-        // userInfo() throws when the uid has no passwd entry, which happens in
-        // some containers.
-        return `mutex@${external_node_os_namespaceObject.hostname()}`;
-    }
+    return process.env.MUTEX_OWNER || null;
 }
 function rejectInapplicableOptions(command, spec, values) {
     const allowed = new Set(spec.options);
@@ -7956,7 +7949,7 @@ Lock options:
   -w, --max-wait <seconds>       How long to wait for it (default: -1, i.e. --expiration)
   -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
       --no-renew                 Do not renew the lock while a wrapped program runs
-  -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER or user@host)
+  -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
   -f, --force                    Release a lock owned by someone else
 
 Connection:
@@ -7982,6 +7975,8 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 `;
 }
 //# sourceMappingURL=args.js.map
+;// CONCATENATED MODULE: external "node:os"
+const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:child_process"
 const external_node_child_process_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
 ;// CONCATENATED MODULE: ./lib/mutex.js
@@ -8092,7 +8087,7 @@ async function tryUnlock(request, mutex, log, events = {}) {
         await events.onUnlocked?.(result);
     }
     else if (result.outcome === "owned-by-another") {
-        log.warning(`Refusing to unlock '${request.identifier}': it is held by '${result.record?.owner}'.`);
+        log.warning(`Refusing to unlock '${request.identifier}': it is held by another owner.`);
     }
     else {
         await events.onTimeout?.(`⌛ Timed out waiting to unlock '${request.identifier}' after ${timeoutMs / 1000} seconds.`);
@@ -8148,6 +8143,16 @@ class Output {
             this.humanStream.write(`${line}\n`);
         }
     }
+}
+/** Renders an owner for a message, including the unowned case. */
+function describeOwner(owner) {
+    return owner ? `'${owner}'` : "nobody";
+}
+/** Explains a renew refused because the two owners are not the same. */
+function describeOwnerMismatch(identifier, held, caller) {
+    const lock = held ? `is held by '${held}'` : "is unowned";
+    const call = caller ? `this call is '${caller}'` : "this call is unowned";
+    return `'${identifier}' ${lock}; ${call}. Renewing needs both to match.`;
 }
 /**
  * The headline plus stats printed when a lock is taken or extended: the id
@@ -8287,7 +8292,7 @@ async function commandUnlock(ctx, identifier) {
             outcome: result.outcome,
             holder: result.record ?? null,
         }, [
-            `Refused to unlock '${identifier}': it is held by '${result.record?.owner}'.`,
+            `Refused to unlock '${identifier}': it is held by ${describeOwner(result.record?.owner)}.`,
             "Pass --force to break it.",
         ]);
         return EXIT_REFUSED;
@@ -8329,7 +8334,7 @@ async function commandRenew(ctx, identifier) {
     }
     const explanation = {
         "not-found": `'${identifier}' is not held, so there is nothing to renew.`,
-        "owned-by-another": `'${identifier}' is held by ${describeOwner(result.record?.owner)}, not by '${ctx.options.owner}'.`,
+        "owned-by-another": describeOwnerMismatch(identifier, result.record?.owner, ctx.options.owner),
         expired: `'${identifier}' expired at ${result.record?.expiresAt}; it may already have been taken over.`,
         contended: `'${identifier}' is being changed by another process; try again.`,
     };
@@ -8345,9 +8350,6 @@ async function commandRenew(ctx, identifier) {
         return EXIT_REFUSED;
     }
     return result.outcome === "contended" ? EXIT_ERROR : EXIT_UNAVAILABLE;
-}
-function describeOwner(owner) {
-    return owner ? `'${owner}'` : "nobody (it has no owner)";
 }
 /** `mutex status`: exit 0 while the lock is held, 4 once it is free. */
 async function commandStatus(ctx, identifier) {

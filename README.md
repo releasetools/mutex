@@ -168,7 +168,7 @@ It is deliberately strict, because a renewal that silently succeeds when it shou
 
 Exit codes tell the cases apart: `4` for gone or expired, `5` for held by another owner.
 
-Locks taken by the GitHub Action have no owner, so the CLI cannot renew them.
+Locks taken by the GitHub Action are unowned, so a CLI caller that does not name an owner can renew them too.
 
 ### The lock id
 
@@ -211,7 +211,13 @@ Refused to unlock 'deploy-staging': it is held by 'ci@runner-3'.
 Pass --force to break it.
 ```
 
-The owner defaults to `$MUTEX_OWNER`, or `user@host`. Locks taken by the **GitHub Action have no owner** and stay releasable by anyone, so existing workflows are unaffected.
+`--owner` is optional and there is no default: without it, and without `$MUTEX_OWNER`, the lock is **unowned** - exactly what the GitHub Action writes today. An unowned lock can be unlocked and renewed by any unowned caller, so the CLI and the Action work on each other's locks without ceremony.
+
+Naming an owner is what opts into the guards. Once a lock has one, only that owner can renew it, and only `--force` can unlock it from elsewhere:
+
+```shell
+mutex lock deploy --owner "$CI_RUN"
+```
 
 ### Where the connection string comes from
 

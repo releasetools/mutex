@@ -32,7 +32,7 @@ export interface ResolvedOptions {
     pollTimeoutMs: number;
     pollIntervalMs: number;
     autoRenew: boolean;
-    owner: string;
+    owner: string | null;
     force: boolean;
     dryRun: boolean;
     databaseUrl: string | null;
@@ -56,7 +56,13 @@ export interface CommandLine {
     topic: CommandName | null;
 }
 export declare function parseCommandLine(argv: string[]): CommandLine;
-/** Identifies the caller, so `unlock` can tell whose lock it is breaking. */
-export declare function defaultOwner(): string;
+/**
+ * Who is taking the lock, or null when nobody says.
+ *
+ * Unowned is the default on purpose: it matches what the GitHub Action writes,
+ * so an unowned caller can unlock and renew an unowned lock, whichever of the
+ * two took it. Naming an owner is what opts into the stricter guards.
+ */
+export declare function defaultOwner(): string | null;
 export declare function helpText(topic: CommandName | null): string;
 export {};

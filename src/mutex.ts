@@ -225,7 +225,7 @@ export async function tryUnlock(
     await events.onUnlocked?.(result);
   } else if (result.outcome === "owned-by-another") {
     log.warning(
-      `Refusing to unlock '${request.identifier}': it is held by '${result.record?.owner}'.`,
+      `Refusing to unlock '${request.identifier}': it is held by another owner.`,
     );
   } else {
     await events.onTimeout?.(

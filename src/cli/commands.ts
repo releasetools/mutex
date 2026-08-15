@@ -37,6 +37,8 @@ import {
 } from "./exit-codes.js";
 import {
   describeLockAction,
+  describeOwner,
+  describeOwnerMismatch,
   describeRecord,
   Output,
   summarizeRecord,
@@ -138,7 +140,7 @@ export async function commandUnlock(
         holder: result.record ?? null,
       },
       [
-        `Refused to unlock '${identifier}': it is held by '${result.record?.owner}'.`,
+        `Refused to unlock '${identifier}': it is held by ${describeOwner(result.record?.owner)}.`,
         "Pass --force to break it.",
       ],
     );
@@ -202,7 +204,11 @@ export async function commandRenew(
 
   const explanation: Record<string, string> = {
     "not-found": `'${identifier}' is not held, so there is nothing to renew.`,
-    "owned-by-another": `'${identifier}' is held by ${describeOwner(result.record?.owner)}, not by '${ctx.options.owner}'.`,
+    "owned-by-another": describeOwnerMismatch(
+      identifier,
+      result.record?.owner,
+      ctx.options.owner,
+    ),
     expired: `'${identifier}' expired at ${result.record?.expiresAt}; it may already have been taken over.`,
     contended: `'${identifier}' is being changed by another process; try again.`,
   };
@@ -223,10 +229,6 @@ export async function commandRenew(
     return EXIT_REFUSED;
   }
   return result.outcome === "contended" ? EXIT_ERROR : EXIT_UNAVAILABLE;
-}
-
-function describeOwner(owner: string | null | undefined): string {
-  return owner ? `'${owner}'` : "nobody (it has no owner)";
 }
 
 /** `mutex status`: exit 0 while the lock is held, 4 once it is free. */

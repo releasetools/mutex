@@ -16,7 +16,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { LogLevel } from "../logger.js";
@@ -188,7 +187,7 @@ export interface ResolvedOptions {
   pollTimeoutMs: number;
   pollIntervalMs: number;
   autoRenew: boolean;
-  owner: string;
+  owner: string | null;
   force: boolean;
   dryRun: boolean;
   databaseUrl: string | null;
@@ -373,19 +372,15 @@ function resolveOptions(
   };
 }
 
-/** Identifies the caller, so `unlock` can tell whose lock it is breaking. */
-export function defaultOwner(): string {
-  if (process.env.MUTEX_OWNER) {
-    return process.env.MUTEX_OWNER;
-  }
-
-  try {
-    return `${os.userInfo().username}@${os.hostname()}`;
-  } catch {
-    // userInfo() throws when the uid has no passwd entry, which happens in
-    // some containers.
-    return `mutex@${os.hostname()}`;
-  }
+/**
+ * Who is taking the lock, or null when nobody says.
+ *
+ * Unowned is the default on purpose: it matches what the GitHub Action writes,
+ * so an unowned caller can unlock and renew an unowned lock, whichever of the
+ * two took it. Naming an owner is what opts into the stricter guards.
+ */
+export function defaultOwner(): string | null {
+  return process.env.MUTEX_OWNER || null;
 }
 
 function rejectInapplicableOptions(
@@ -464,7 +459,7 @@ Lock options:
   -w, --max-wait <seconds>       How long to wait for it (default: -1, i.e. --expiration)
   -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
       --no-renew                 Do not renew the lock while a wrapped program runs
-  -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER or user@host)
+  -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
   -f, --force                    Release a lock owned by someone else
 
 Connection:

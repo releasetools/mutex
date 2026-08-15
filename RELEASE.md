@@ -7,8 +7,8 @@ Newest first. One line per change.
 - Added a `mutex` CLI, so locks can be taken outside GitHub Actions - from a laptop, a cron job, or another CI system.
 - `mutex lock <id> -- <program>` holds the lock for exactly as long as the program runs, and gives it back on every exit path.
 - The CLI reads its connection string from a `.secenv` file, decrypting it through the dotsecenv CLI, so it never has to be typed out.
-- Locks now record an owner, and `unlock` refuses to break somebody else's without `--force`.
-- Added `mutex renew` to extend a lock you already hold; it will not take one you do not.
+- Locks can now record an owner: name one with `--owner` and only that owner can renew it, or break it with `--force`. Unnamed stays unowned, as the Action writes today.
+- Added `mutex renew` to extend a lock you already hold; the id and owner must match, and it will not take a lock you do not hold.
 - `mutex lock` mints a UUID when no id is given, which is all a wrapped program needs.
 - Added `mutex status`, `mutex list` and `mutex prune` for seeing and tidying up what is held.
 - Fixed lock expiry on databases whose session time zone is not UTC, where every lock read as already expired and nothing was ever excluded.

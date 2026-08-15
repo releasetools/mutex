@@ -216,8 +216,12 @@ describe("parseCommandLine", () => {
     expect(parsed.options.owner).toBe("ci");
   });
 
-  it("gives renew a default owner when none is passed", () => {
-    expect(parseCommandLine(["renew", "deploy"]).options.owner).toBe("tester");
+  it("leaves the owner unset when none is passed", () => {
+    // Unowned by default, matching what the Action writes, so an unowned
+    // caller can unlock and renew an unowned lock.
+    delete process.env.MUTEX_OWNER;
+    expect(parseCommandLine(["renew", "deploy"]).options.owner).toBeNull();
+    expect(parseCommandLine(["lock", "deploy"]).options.owner).toBeNull();
   });
 
   it("does not let renew break somebody else's lock", () => {
@@ -254,30 +258,29 @@ describe("parseCommandLine", () => {
 });
 
 describe("defaultOwner", () => {
-  it("prefers MUTEX_OWNER", () => {
-    const original = process.env.MUTEX_OWNER;
-    process.env.MUTEX_OWNER = "ci@runner-7";
-    try {
-      expect(defaultOwner()).toBe("ci@runner-7");
-    } finally {
-      if (original === undefined) {
-        delete process.env.MUTEX_OWNER;
-      } else {
-        process.env.MUTEX_OWNER = original;
-      }
+  const original = process.env.MUTEX_OWNER;
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env.MUTEX_OWNER;
+    } else {
+      process.env.MUTEX_OWNER = original;
     }
   });
 
-  it("falls back to user@host", () => {
-    const original = process.env.MUTEX_OWNER;
+  it("reads MUTEX_OWNER", () => {
+    process.env.MUTEX_OWNER = "ci@runner-7";
+    expect(defaultOwner()).toBe("ci@runner-7");
+  });
+
+  it("is null when nothing says otherwise", () => {
     delete process.env.MUTEX_OWNER;
-    try {
-      expect(defaultOwner()).toMatch(/^.+@.+$/);
-    } finally {
-      if (original !== undefined) {
-        process.env.MUTEX_OWNER = original;
-      }
-    }
+    expect(defaultOwner()).toBeNull();
+  });
+
+  it("treats an empty MUTEX_OWNER as unset", () => {
+    process.env.MUTEX_OWNER = "";
+    expect(defaultOwner()).toBeNull();
   });
 });
 
