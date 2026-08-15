@@ -17,7 +17,7 @@
 
 import { Logger } from "../logger.js";
 import { DotsecenvError } from "../dotsecenv/errors.js";
-import { findSecenvFiles } from "../dotsecenv/secenv.js";
+import { findSecenvFile } from "../dotsecenv/secenv.js";
 import { resolveEnvValue } from "../dotsecenv/index.js";
 import { ResolvedOptions } from "./args.js";
 import { ConfigurationError } from "./exit-codes.js";
@@ -61,15 +61,15 @@ export async function resolveConnectionString(
     );
   }
 
-  const files = findSecenvFiles({ cwd: options.secenvDir });
-  if (files.length === 0) {
+  const file = findSecenvFile(options.secenvDir);
+  if (!file) {
     throw new ConfigurationError(
-      `no connection string: ${options.envVar} is unset and no .secenv file was found`,
-      `Looked from ${options.secenvDir} up to the repository root. Pass --database-url, or point --secenv-dir at the project.`,
+      `no connection string: ${options.envVar} is unset and ${options.secenvDir} has no .secenv`,
+      "Pass --database-url, or point --secenv-dir at the directory whose .secenv defines it.",
     );
   }
 
-  log.debug(`Reading .secenv files: ${files.join(", ")}`);
+  log.debug(`Reading ${file}`);
 
   let resolved;
   try {
@@ -90,8 +90,8 @@ export async function resolveConnectionString(
 
   if (!resolved) {
     throw new ConfigurationError(
-      `no connection string: none of the .secenv files define ${options.envVar}`,
-      `Searched ${files.join(", ")}.`,
+      `no connection string: ${file} does not define ${options.envVar}`,
+      "Add it there, pass --database-url, or point --secenv-dir elsewhere.",
     );
   }
 

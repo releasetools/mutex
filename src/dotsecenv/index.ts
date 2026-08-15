@@ -20,7 +20,7 @@ import { Logger, SilentLogger } from "../logger.js";
 import { DotsecenvError } from "./errors.js";
 import { getSecret, SecretValue } from "./cli.js";
 import {
-  findSecenvFiles,
+  findSecenvFile,
   readSecenv,
   SecenvEntry,
   SecenvIssue,
@@ -50,10 +50,8 @@ export type {
  */
 
 export interface LoadSecenvOptions {
-  /** Where to start looking for `.secenv` files. Defaults to the cwd. */
+  /** The directory whose `.secenv` to read. Defaults to the cwd. */
   cwd?: string;
-  /** Stop the upward walk here. Defaults to the git repository root. */
-  boundary?: string;
   binary?: string;
   config?: string;
   timeoutMs?: number;
@@ -80,7 +78,7 @@ export interface ResolvedValue {
 }
 
 export interface LoadedSecenv {
-  /** The `.secenv` files that were read, root-first. */
+  /** The `.secenv` files that were read: at most the one in `cwd`. */
   files: string[];
   values: Record<string, string>;
   resolved: Map<string, ResolvedValue>;
@@ -92,10 +90,8 @@ export async function loadSecenv(
   options: LoadSecenvOptions = {},
 ): Promise<LoadedSecenv> {
   const log = options.log ?? new SilentLogger();
-  const files = findSecenvFiles({
-    cwd: options.cwd,
-    boundary: options.boundary,
-  });
+  const found = findSecenvFile(options.cwd);
+  const files = found ? [found] : [];
 
   const issues: SecenvIssue[] = [];
   const winners = new Map<string, SecenvEntry>();

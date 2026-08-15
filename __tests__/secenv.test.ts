@@ -18,11 +18,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  findRepositoryRoot,
-  findSecenvFiles,
-  parseSecenv,
-} from "../src/dotsecenv/secenv.js";
+import { findSecenvFile, parseSecenv } from "../src/dotsecenv/secenv.js";
 
 const FILE = "/project/.secenv";
 
@@ -149,86 +145,55 @@ describe("parseSecenv", () => {
   });
 });
 
-describe("findSecenvFiles", () => {
+describe("findSecenvFile", () => {
   let parent: string;
-  let root: string;
+  let dir: string;
 
   beforeEach(() => {
     parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "secenv-")));
-    root = path.join(parent, "repo");
-    fs.mkdirSync(root);
-    // A `.git` entry marks the boundary the upward walk stops at.
-    fs.mkdirSync(path.join(root, ".git"));
+    dir = path.join(parent, "project");
+    fs.mkdirSync(dir);
   });
 
   afterEach(() => {
     fs.rmSync(parent, { recursive: true, force: true });
   });
 
-  it("returns ancestors root-first", () => {
-    const nested = path.join(root, "services", "api");
-    fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(path.join(root, ".secenv"), "A=1");
-    fs.writeFileSync(path.join(nested, ".secenv"), "B=2");
-
-    expect(findSecenvFiles({ cwd: nested })).toEqual([
-      path.join(root, ".secenv"),
-      path.join(nested, ".secenv"),
-    ]);
+  it("finds the .secenv in the given directory", () => {
+    fs.writeFileSync(path.join(dir, ".secenv"), "A=1");
+    expect(findSecenvFile(dir)).toBe(path.join(dir, ".secenv"));
   });
 
-  it("skips directories without a .secenv", () => {
-    const nested = path.join(root, "a", "b");
-    fs.mkdirSync(nested, { recursive: true });
-    fs.writeFileSync(path.join(root, ".secenv"), "A=1");
-
-    expect(findSecenvFiles({ cwd: nested })).toEqual([
-      path.join(root, ".secenv"),
-    ]);
+  it("returns null when there is none", () => {
+    expect(findSecenvFile(dir)).toBeNull();
   });
 
-  it("stops at the repository root", () => {
-    const nested = path.join(root, "a");
-    fs.mkdirSync(nested);
+  /**
+   * No upward search. An upward search has to stop somewhere, and outside a
+   * repository there is no sensible somewhere - from /tmp/build-1234 it would
+   * reach world-writable /tmp, where anyone could plant the file that decides
+   * which database mutex locks against.
+   */
+  it("does not look in the parent directory", () => {
     fs.writeFileSync(path.join(parent, ".secenv"), "OUTSIDE=1");
-    fs.writeFileSync(path.join(root, ".secenv"), "A=1");
-
-    // The file above the repository root is not picked up.
-    expect(findSecenvFiles({ cwd: nested })).toEqual([
-      path.join(root, ".secenv"),
-    ]);
+    expect(findSecenvFile(dir)).toBeNull();
   });
 
-  it("honours an explicit boundary", () => {
-    const nested = path.join(root, "a");
-    fs.mkdirSync(nested);
-    fs.writeFileSync(path.join(root, ".secenv"), "A=1");
-    fs.writeFileSync(path.join(nested, ".secenv"), "B=2");
-
-    expect(findSecenvFiles({ cwd: nested, boundary: nested })).toEqual([
-      path.join(nested, ".secenv"),
-    ]);
+  it("does not look in a child directory", () => {
+    const child = path.join(dir, "services");
+    fs.mkdirSync(child);
+    fs.writeFileSync(path.join(child, ".secenv"), "B=2");
+    expect(findSecenvFile(dir)).toBeNull();
   });
 
-  it("returns nothing when no .secenv exists", () => {
-    expect(findSecenvFiles({ cwd: root })).toEqual([]);
+  it("ignores a .secenv that is a directory", () => {
+    fs.mkdirSync(path.join(dir, ".secenv"));
+    expect(findSecenvFile(dir)).toBeNull();
   });
-});
 
-describe("findRepositoryRoot", () => {
-  it("finds the directory holding .git", () => {
-    const root = fs.realpathSync(
-      fs.mkdtempSync(path.join(os.tmpdir(), "gitroot-")),
-    );
-    try {
-      // A worktree stores `.git` as a file rather than a directory.
-      fs.writeFileSync(path.join(root, ".git"), "gitdir: /elsewhere");
-      const nested = path.join(root, "deep", "deeper");
-      fs.mkdirSync(nested, { recursive: true });
-
-      expect(findRepositoryRoot(nested)).toBe(root);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+  it("resolves a relative directory", () => {
+    fs.writeFileSync(path.join(dir, ".secenv"), "A=1");
+    const found = findSecenvFile(dir);
+    expect(found).toBe(path.resolve(dir, ".secenv"));
   });
 });

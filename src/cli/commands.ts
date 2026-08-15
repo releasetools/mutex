@@ -16,7 +16,7 @@
  */
 
 import os from "node:os";
-import { spawn } from "node:child_process";
+import { ChildProcess, spawn } from "node:child_process";
 import { DatabaseMutex } from "../database.js";
 import { describeError, logWarning } from "../helpers.js";
 import { Logger } from "../logger.js";
@@ -62,6 +62,9 @@ const SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
  */
 const CLEANUP_TIMEOUT_MS = 5_000;
 const CLEANUP_INTERVAL_MS = 250;
+
+/** Interrupts during the release before mutex stops waiting and gives up. */
+const IMPATIENT_SIGNALS = 3;
 
 /**
  * `mutex lock` and `mutex try-lock`, which differ only in how long they wait -
@@ -328,9 +331,10 @@ async function runProgram(
   );
 
   const renewal = ctx.options.autoRenew ? startRenewal(ctx, identifier) : null;
+  const signals = relaySignals(ctx.log, identifier);
 
   try {
-    return await spawnProgram(program);
+    return await spawnProgram(program, signals);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       ctx.log.error(`${program[0]}: command not found`);
@@ -339,9 +343,16 @@ async function runProgram(
     throw error;
   } finally {
     renewal?.stop();
-    // The lock must go back even when the program crashed, so a failure here
-    // is reported rather than thrown - it must not mask the program's status.
-    await unlockQuietly(ctx, identifier);
+    // Signals stay handled across the release, so an impatient second Ctrl-C
+    // cannot kill mutex between the program exiting and the lock going back.
+    signals.enterRelease();
+    try {
+      // The lock must go back even when the program crashed, so a failure here
+      // is reported rather than thrown - it must not mask the program's status.
+      await unlockQuietly(ctx, identifier);
+    } finally {
+      signals.dispose();
+    }
   }
 }
 
@@ -444,7 +455,73 @@ async function unlockQuietly(
  * never a shell, and arguments passed as an array, so nothing in them can be
  * reinterpreted as syntax.
  */
-function spawnProgram(program: string[]): Promise<number> {
+/**
+ * Keeps SIGINT/SIGTERM/SIGHUP handled for the whole of the wrapper's life, not
+ * just while the program runs.
+ *
+ * While there is a child, signals go to it. Once it has gone and the lock is
+ * being handed back, they are absorbed instead - because removing the last
+ * SIGINT listener restores Node's kill-immediately default, and a release is a
+ * database round-trip, so a second impatient Ctrl-C in that window would kill
+ * mutex with the lock still held. Three of them and it gives up anyway; a tool
+ * that cannot be interrupted is its own kind of broken.
+ */
+function relaySignals(log: Logger, identifier: string) {
+  let child: ChildProcess | null = null;
+  let releasing = false;
+  let nudges = 0;
+
+  const handler = (signal: NodeJS.Signals) => {
+    if (child) {
+      child.kill(signal);
+      return;
+    }
+
+    if (!releasing) {
+      return;
+    }
+
+    nudges++;
+    if (nudges >= IMPATIENT_SIGNALS) {
+      log.error(
+        `Abandoning the release: '${identifier}' stays held until it expires.`,
+      );
+      dispose();
+      process.exit(128 + (os.constants.signals[signal] ?? 0));
+    }
+
+    log.warning(
+      `Releasing '${identifier}' - one moment. Interrupt ${IMPATIENT_SIGNALS - nudges} more time(s) to abandon it.`,
+    );
+  };
+
+  const dispose = () => {
+    for (const signal of SIGNALS) {
+      process.removeListener(signal, handler);
+    }
+  };
+
+  for (const signal of SIGNALS) {
+    process.on(signal, handler);
+  }
+
+  return {
+    attach: (started: ChildProcess) => {
+      child = started;
+    },
+    /** The child has gone; from here signals mean "wait, I am cleaning up". */
+    enterRelease: () => {
+      child = null;
+      releasing = true;
+    },
+    dispose,
+  };
+}
+
+function spawnProgram(
+  program: string[],
+  signals: ReturnType<typeof relaySignals>,
+): Promise<number> {
   return new Promise((resolve, reject) => {
     if (!program[0]) {
       reject(Object.assign(new Error("no program to run"), { code: "ENOENT" }));
@@ -455,24 +532,11 @@ function spawnProgram(program: string[]): Promise<number> {
       stdio: "inherit",
       shell: false,
     });
+    signals.attach(child);
 
-    const forward = (signal: NodeJS.Signals) => child.kill(signal);
-    for (const signal of SIGNALS) {
-      process.on(signal, forward);
-    }
-    const stopForwarding = () => {
-      for (const signal of SIGNALS) {
-        process.removeListener(signal, forward);
-      }
-    };
-
-    child.on("error", (error) => {
-      stopForwarding();
-      reject(error);
-    });
+    child.on("error", (error) => reject(error));
 
     child.on("close", (code, signal) => {
-      stopForwarding();
       if (signal) {
         // The shell convention for "killed by a signal".
         resolve(128 + (os.constants.signals[signal] ?? 0));

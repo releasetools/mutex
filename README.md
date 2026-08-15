@@ -197,7 +197,7 @@ Details worth knowing:
 
 - The program's exit status becomes `mutex`'s, exactly like `flock`. A program killed by a signal yields `128 + signal`.
 - The program owns stdout; `mutex` reports on stderr, so pipelines stay clean.
-- `SIGINT`, `SIGTERM` and `SIGHUP` are forwarded to the program, and the lock is released once it exits.
+- `SIGINT`, `SIGTERM` and `SIGHUP` are forwarded to the program, and the lock is released once it exits. Signals stay handled _through_ that release, so an impatient second `Ctrl-C` waits rather than killing mutex with the lock still held. Three of them and it gives up anyway, saying so.
 - The lock is renewed in the background every `--expiration / 3` seconds, so a program that outlives its lease does not carry on holding a lock somebody else has taken. Disable with `--no-renew`.
 
 ### Ownership
@@ -254,22 +254,23 @@ The third is the interesting one. Given a project like this:
 ```
 my-project/
 ├── .secenv                  DATABASE_URL={dotsecenv/myapp::DATABASE_URL}
-├── .dotsecenv/vault         the encrypted vault, safe to commit
-└── services/api/            run mutex from anywhere below the root
+└── .dotsecenv/vault         the encrypted vault, safe to commit
 ```
 
-running `mutex lock deploy` anywhere inside `my-project` resolves `DATABASE_URL` on its own:
+running `mutex lock deploy` in `my-project` resolves `DATABASE_URL` on its own:
 
 ```shell
 $ mutex lock deploy --verbose
-debug: Reading .secenv files: /my-project/.secenv
+debug: Reading /my-project/.secenv
 debug: Resolved DATABASE_URL from secret 'myapp::DATABASE_URL' (.dotsecenv/vault).
-Acquired 'deploy' until 2026-08-15T08:24:51.272Z.
+Acquired lock 'deploy'
 ```
 
 Nothing is stored in shell history, and no plaintext connection string is written anywhere.
 
-Use `--secenv-dir <dir>` to start the search somewhere other than the current directory, and `--no-secenv` to switch this off entirely.
+Only the named directory's `.secenv` is read - there is no upward search. An upward search has to stop somewhere, and outside a repository there is no sensible somewhere: from `/tmp/build-1234` it would reach `/tmp`, where anyone could plant the file that decides which database mutex locks against. Run mutex from the directory holding the `.secenv`, or point `--secenv-dir` at it.
+
+Use `--secenv-dir <dir>` to read a `.secenv` somewhere other than the current directory, and `--no-secenv` to switch this off entirely.
 
 ### Exit codes
 
@@ -299,7 +300,7 @@ fi
 
 The CLI does not reimplement dotsecenv's cryptography. [`src/dotsecenv/`](./src/dotsecenv) is a small Node client that:
 
-- **reads `.secenv` files** ([`secenv.ts`](./src/dotsecenv/secenv.ts)) using the same rules as the dotsecenv shell plugin - `{dotsecenv}`, `{dotsecenv/SECRET}`, `{dotsecenv/ns::SECRET}`, quote stripping, and two-phase loading. Ancestor files are walked root-first up to the repository root, so a nested directory inherits the project's settings and can shadow them.
+- **reads a `.secenv`** ([`secenv.ts`](./src/dotsecenv/secenv.ts)) using the same rules as the dotsecenv shell plugin - `{dotsecenv}`, `{dotsecenv/SECRET}`, `{dotsecenv/ns::SECRET}`, quote stripping, and two-phase loading, plain values before secrets.
 - **reads the vault index** ([`vault.ts`](./src/dotsecenv/vault.ts)) from `.dotsecenv/vault`, parsing the v2 header without touching GPG. Older vaults are rejected outright, pointing at `dotsecenv vault doctor` to upgrade them. This is what turns an exit code into a usable message - it knows which secrets a vault holds, which GPG fingerprints each is readable by, and which have been forgotten:
 
   ```shell

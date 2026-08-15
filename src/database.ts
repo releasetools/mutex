@@ -460,7 +460,19 @@ export class DatabaseMutex implements MutexInterface {
 
       try {
         await this.initializeTable();
-      } catch {
+      } catch (schemaError) {
+        // The original error is the more useful one, so it is what gets
+        // thrown - but if the schema really was the problem and we could not
+        // fix it, say so plainly and give the statement to run by hand.
+        // Otherwise the only symptom is a missing column, and the actual
+        // cause - no rights to add it - is invisible.
+        if (isMissingSchema(error)) {
+          this.log.error(
+            `The ${TABLE_NAME} table is missing a column this version needs, and it could not be added: ${describeError(schemaError)}\n` +
+              `  Ask someone with DDL rights to run:\n` +
+              `    ALTER TABLE ${TABLE_NAME} ADD COLUMN IF NOT EXISTS owner TEXT;`,
+          );
+        }
         throw error;
       }
 
@@ -523,6 +535,15 @@ export class DatabaseMutex implements MutexInterface {
       this.log.debug("Database connection released.");
     }
   }
+}
+
+/**
+ * True when Postgres is telling us the table or a column is not there:
+ * undefined_column (42703) or undefined_table (42P01).
+ */
+function isMissingSchema(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "42703" || code === "42P01";
 }
 
 /**

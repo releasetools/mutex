@@ -11,10 +11,8 @@ export type { DotsecenvCliOptions, SecretReference, SecretValue, } from "./cli.j
  * are actually needed.
  */
 export interface LoadSecenvOptions {
-    /** Where to start looking for `.secenv` files. Defaults to the cwd. */
+    /** The directory whose `.secenv` to read. Defaults to the cwd. */
     cwd?: string;
-    /** Stop the upward walk here. Defaults to the git repository root. */
-    boundary?: string;
     binary?: string;
     config?: string;
     timeoutMs?: number;
@@ -39,7 +37,7 @@ export interface ResolvedValue {
     vault?: string | null;
 }
 export interface LoadedSecenv {
-    /** The `.secenv` files that were read, root-first. */
+    /** The `.secenv` files that were read: at most the one in `cwd`. */
     files: string[];
     values: Record<string, string>;
     resolved: Map<string, ResolvedValue>;

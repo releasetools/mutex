@@ -7420,7 +7420,17 @@ class DatabaseMutex {
             try {
                 await this.initializeTable();
             }
-            catch {
+            catch (schemaError) {
+                // The original error is the more useful one, so it is what gets
+                // thrown - but if the schema really was the problem and we could not
+                // fix it, say so plainly and give the statement to run by hand.
+                // Otherwise the only symptom is a missing column, and the actual
+                // cause - no rights to add it - is invisible.
+                if (isMissingSchema(error)) {
+                    this.log.error(`The ${TABLE_NAME} table is missing a column this version needs, and it could not be added: ${describeError(schemaError)}\n` +
+                        `  Ask someone with DDL rights to run:\n` +
+                        `    ALTER TABLE ${TABLE_NAME} ADD COLUMN IF NOT EXISTS owner TEXT;`);
+                }
                 throw error;
             }
             return run();
@@ -7467,6 +7477,14 @@ class DatabaseMutex {
             this.log.debug("Database connection released.");
         }
     }
+}
+/**
+ * True when Postgres is telling us the table or a column is not there:
+ * undefined_column (42703) or undefined_table (42P01).
+ */
+function isMissingSchema(error) {
+    const code = error?.code;
+    return code === "42703" || code === "42P01";
 }
 /**
  * Who may unlock or renew a lock: its owner, or anyone at all when it has none.
@@ -8292,6 +8310,8 @@ const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
  */
 const CLEANUP_TIMEOUT_MS = 5_000;
 const CLEANUP_INTERVAL_MS = 250;
+/** Interrupts during the release before mutex stops waiting and gives up. */
+const IMPATIENT_SIGNALS = 3;
 /**
  * `mutex lock` and `mutex try-lock`, which differ only in how long they wait -
  * `parseCommandLine` has already zeroed the timeout for `try-lock`.
@@ -8455,8 +8475,9 @@ async function runProgram(ctx, identifier, program, lock, command) {
         `  running: ${program.join(" ")}`,
     ]);
     const renewal = ctx.options.autoRenew ? startRenewal(ctx, identifier) : null;
+    const signals = relaySignals(ctx.log, identifier);
     try {
-        return await spawnProgram(program);
+        return await spawnProgram(program, signals);
     }
     catch (error) {
         if (error.code === "ENOENT") {
@@ -8467,9 +8488,17 @@ async function runProgram(ctx, identifier, program, lock, command) {
     }
     finally {
         renewal?.stop();
-        // The lock must go back even when the program crashed, so a failure here
-        // is reported rather than thrown - it must not mask the program's status.
-        await unlockQuietly(ctx, identifier);
+        // Signals stay handled across the release, so an impatient second Ctrl-C
+        // cannot kill mutex between the program exiting and the lock going back.
+        signals.enterRelease();
+        try {
+            // The lock must go back even when the program crashed, so a failure here
+            // is reported rather than thrown - it must not mask the program's status.
+            await unlockQuietly(ctx, identifier);
+        }
+        finally {
+            signals.dispose();
+        }
     }
 }
 /**
@@ -8546,7 +8575,58 @@ async function unlockQuietly(ctx, identifier) {
  * never a shell, and arguments passed as an array, so nothing in them can be
  * reinterpreted as syntax.
  */
-function spawnProgram(program) {
+/**
+ * Keeps SIGINT/SIGTERM/SIGHUP handled for the whole of the wrapper's life, not
+ * just while the program runs.
+ *
+ * While there is a child, signals go to it. Once it has gone and the lock is
+ * being handed back, they are absorbed instead - because removing the last
+ * SIGINT listener restores Node's kill-immediately default, and a release is a
+ * database round-trip, so a second impatient Ctrl-C in that window would kill
+ * mutex with the lock still held. Three of them and it gives up anyway; a tool
+ * that cannot be interrupted is its own kind of broken.
+ */
+function relaySignals(log, identifier) {
+    let child = null;
+    let releasing = false;
+    let nudges = 0;
+    const handler = (signal) => {
+        if (child) {
+            child.kill(signal);
+            return;
+        }
+        if (!releasing) {
+            return;
+        }
+        nudges++;
+        if (nudges >= IMPATIENT_SIGNALS) {
+            log.error(`Abandoning the release: '${identifier}' stays held until it expires.`);
+            dispose();
+            process.exit(128 + (external_node_os_namespaceObject.constants.signals[signal] ?? 0));
+        }
+        log.warning(`Releasing '${identifier}' - one moment. Interrupt ${IMPATIENT_SIGNALS - nudges} more time(s) to abandon it.`);
+    };
+    const dispose = () => {
+        for (const signal of SIGNALS) {
+            process.removeListener(signal, handler);
+        }
+    };
+    for (const signal of SIGNALS) {
+        process.on(signal, handler);
+    }
+    return {
+        attach: (started) => {
+            child = started;
+        },
+        /** The child has gone; from here signals mean "wait, I am cleaning up". */
+        enterRelease: () => {
+            child = null;
+            releasing = true;
+        },
+        dispose,
+    };
+}
+function spawnProgram(program, signals) {
     return new Promise((resolve, reject) => {
         if (!program[0]) {
             reject(Object.assign(new Error("no program to run"), { code: "ENOENT" }));
@@ -8556,21 +8636,9 @@ function spawnProgram(program) {
             stdio: "inherit",
             shell: false,
         });
-        const forward = (signal) => child.kill(signal);
-        for (const signal of SIGNALS) {
-            process.on(signal, forward);
-        }
-        const stopForwarding = () => {
-            for (const signal of SIGNALS) {
-                process.removeListener(signal, forward);
-            }
-        };
-        child.on("error", (error) => {
-            stopForwarding();
-            reject(error);
-        });
+        signals.attach(child);
+        child.on("error", (error) => reject(error));
         child.on("close", (code, signal) => {
-            stopForwarding();
             if (signal) {
                 // The shell convention for "killed by a signal".
                 resolve(128 + (external_node_os_namespaceObject.constants.signals[signal] ?? 0));
@@ -8698,50 +8766,19 @@ async function readSecenv(file) {
     return parseSecenv(content, file);
 }
 /**
- * Collects `.secenv` files from `cwd` up to the boundary, returned root-first.
+ * The `.secenv` in `cwd`, or null when there is none.
  *
- * Order matters: ancestors load before their descendants so a nested file can
- * shadow a value inherited from the project root.
+ * Deliberately does not walk upwards. An upward search has to stop somewhere,
+ * and outside a git repository there is no sensible somewhere: from
+ * /tmp/build-1234 it reaches /tmp, which anybody can write to, and a planted
+ * `.secenv` there would decide which database mutex locks against. Reading one
+ * directory is predictable and cannot be steered from outside it.
+ *
+ * Point `--secenv-dir` at the project root to use a file that lives higher up.
  */
-function findSecenvFiles(options = {}) {
-    const start = external_node_path_namespaceObject.resolve(options.cwd ?? process.cwd());
-    const boundary = options.boundary
-        ? external_node_path_namespaceObject.resolve(options.boundary)
-        : findRepositoryRoot(start);
-    const found = [];
-    let dir = start;
-    for (;;) {
-        const candidate = external_node_path_namespaceObject.join(dir, SECENV_FILENAME);
-        if (isFile(candidate)) {
-            found.push(candidate);
-        }
-        if (boundary && dir === boundary) {
-            break;
-        }
-        const parent = external_node_path_namespaceObject.dirname(dir);
-        if (parent === dir) {
-            break;
-        }
-        dir = parent;
-    }
-    return found.reverse();
-}
-/**
- * Finds the enclosing git repository root by looking for `.git`, which is a
- * directory in a normal clone and a file inside a worktree.
- */
-function findRepositoryRoot(from) {
-    let dir = external_node_path_namespaceObject.resolve(from);
-    for (;;) {
-        if (external_node_fs_namespaceObject.existsSync(external_node_path_namespaceObject.join(dir, ".git"))) {
-            return dir;
-        }
-        const parent = external_node_path_namespaceObject.dirname(dir);
-        if (parent === dir) {
-            return null;
-        }
-        dir = parent;
-    }
+function findSecenvFile(cwd = process.cwd()) {
+    const candidate = external_node_path_namespaceObject.join(external_node_path_namespaceObject.resolve(cwd), SECENV_FILENAME);
+    return isFile(candidate) ? candidate : null;
 }
 function stripQuotes(value) {
     if (value.length >= 2) {
@@ -9135,10 +9172,8 @@ function readRecord(lines, lineNumber) {
 
 async function loadSecenv(options = {}) {
     const log = options.log ?? new SilentLogger();
-    const files = findSecenvFiles({
-        cwd: options.cwd,
-        boundary: options.boundary,
-    });
+    const found = findSecenvFile(options.cwd);
+    const files = found ? [found] : [];
     const issues = [];
     const winners = new Map();
     for (const file of files) {
@@ -9331,11 +9366,11 @@ async function resolveConnectionString(options, log) {
     if (!options.useSecenv) {
         throw new ConfigurationError(`no connection string: ${options.envVar} is unset and --no-secenv was given`, `Pass --database-url, or export ${options.envVar}.`);
     }
-    const files = findSecenvFiles({ cwd: options.secenvDir });
-    if (files.length === 0) {
-        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and no .secenv file was found`, `Looked from ${options.secenvDir} up to the repository root. Pass --database-url, or point --secenv-dir at the project.`);
+    const file = findSecenvFile(options.secenvDir);
+    if (!file) {
+        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and ${options.secenvDir} has no .secenv`, "Pass --database-url, or point --secenv-dir at the directory whose .secenv defines it.");
     }
-    log.debug(`Reading .secenv files: ${files.join(", ")}`);
+    log.debug(`Reading ${file}`);
     let resolved;
     try {
         resolved = await resolveEnvValue(options.envVar, {
@@ -9352,7 +9387,7 @@ async function resolveConnectionString(options, log) {
         throw error;
     }
     if (!resolved) {
-        throw new ConfigurationError(`no connection string: none of the .secenv files define ${options.envVar}`, `Searched ${files.join(", ")}.`);
+        throw new ConfigurationError(`no connection string: ${file} does not define ${options.envVar}`, "Add it there, pass --database-url, or point --secenv-dir elsewhere.");
     }
     const origin = resolved.kind === "secret"
         ? `${resolved.file} (secret '${resolved.secret}' in ${resolved.vault ?? "a configured vault"})`

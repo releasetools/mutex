@@ -37,24 +37,15 @@ export interface ParsedSecenv {
 }
 export declare function parseSecenv(content: string, file: string): ParsedSecenv;
 export declare function readSecenv(file: string): Promise<ParsedSecenv>;
-export interface DiscoveryOptions {
-    /** Where to start looking. Defaults to the current working directory. */
-    cwd?: string;
-    /**
-     * Stop walking up once this directory has been visited. Defaults to the
-     * enclosing git repository root, matching the shell plugin's behaviour.
-     */
-    boundary?: string;
-}
 /**
- * Collects `.secenv` files from `cwd` up to the boundary, returned root-first.
+ * The `.secenv` in `cwd`, or null when there is none.
  *
- * Order matters: ancestors load before their descendants so a nested file can
- * shadow a value inherited from the project root.
+ * Deliberately does not walk upwards. An upward search has to stop somewhere,
+ * and outside a git repository there is no sensible somewhere: from
+ * /tmp/build-1234 it reaches /tmp, which anybody can write to, and a planted
+ * `.secenv` there would decide which database mutex locks against. Reading one
+ * directory is predictable and cannot be steered from outside it.
+ *
+ * Point `--secenv-dir` at the project root to use a file that lives higher up.
  */
-export declare function findSecenvFiles(options?: DiscoveryOptions): string[];
-/**
- * Finds the enclosing git repository root by looking for `.git`, which is a
- * directory in a normal clone and a file inside a worktree.
- */
-export declare function findRepositoryRoot(from: string): string | null;
+export declare function findSecenvFile(cwd?: string): string | null;
