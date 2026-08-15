@@ -31,7 +31,8 @@ function lockOwnedBy(owner: string | null): LockRecord {
 
 /**
  * Unlocking and renewing share one rule: the owner may act, and so may anyone
- * at all when the lock has no owner. `--force` is unlock's extra escape hatch.
+ * at all when the lock has no owner. There is no override: breaking a lock
+ * means naming its holder.
  */
 describe("mayModify", () => {
   const cases: Array<{
@@ -67,6 +68,14 @@ describe("mayModify", () => {
       expect(mayModify(lockOwnedBy(held), caller)).toBe(allowed);
     });
   }
+
+  it("has no override", () => {
+    // Dropping --force means this predicate is the whole authorisation story:
+    // whatever it refuses, the caller can only get past by naming the holder.
+    expect(mayModify(lockOwnedBy("alice"), null)).toBe(false);
+    expect(mayModify(lockOwnedBy("alice"), "bob")).toBe(false);
+    expect(mayModify(lockOwnedBy("alice"), "alice")).toBe(true);
+  });
 
   it("protects a lock only once it is owned", () => {
     // The whole model in one line: naming an owner is what buys protection.

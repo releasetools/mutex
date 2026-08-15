@@ -103,7 +103,6 @@ export const COMMANDS: Record<CommandName, CommandSpec> = {
     acceptsProgram: false,
     options: [
       "owner",
-      "force",
       "max-wait",
       "poll-interval",
       ...CONNECTION_OPTIONS,
@@ -161,7 +160,6 @@ const OPTION_CONFIG = {
   "poll-interval": { type: "string", short: "i" },
   "no-renew": { type: "boolean" },
   owner: { type: "string", short: "o" },
-  force: { type: "boolean", short: "f" },
   "dry-run": { type: "boolean" },
   "database-url": { type: "string" },
   "env-var": { type: "string" },
@@ -188,7 +186,6 @@ export interface ResolvedOptions {
   pollIntervalMs: number;
   autoRenew: boolean;
   owner: string | null;
-  force: boolean;
   dryRun: boolean;
   databaseUrl: string | null;
   envVar: string;
@@ -337,8 +334,7 @@ function resolveOptions(
     pollTimeoutMs,
     pollIntervalMs: pollInterval * 1000,
     autoRenew: values["no-renew"] !== true,
-    owner: typeof values.owner === "string" ? values.owner : defaultOwner(),
-    force: values.force === true,
+    owner: readOwner(values.owner),
     dryRun: values["dry-run"] === true,
     databaseUrl:
       typeof values["database-url"] === "string"
@@ -380,7 +376,20 @@ function resolveOptions(
  * two took it. Naming an owner is what opts into the stricter guards.
  */
 export function defaultOwner(): string | null {
-  return process.env.MUTEX_OWNER || null;
+  return process.env.MUTEX_OWNER?.trim() || null;
+}
+
+/**
+ * An owner given on the command line, or the default.
+ *
+ * Blank counts as unowned, so `--owner "$CI_RUN"` degrades to unowned rather
+ * than to an owner literally named "" when the variable is unset.
+ */
+function readOwner(value: string | boolean | undefined): string | null {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+  return defaultOwner();
 }
 
 function rejectInapplicableOptions(
@@ -460,7 +469,6 @@ Lock options:
   -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
       --no-renew                 Do not renew the lock while a wrapped program runs
   -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
-  -f, --force                    Release a lock owned by someone else
 
 Connection:
       --database-url <url>       PostgreSQL connection string

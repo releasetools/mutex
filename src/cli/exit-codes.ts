@@ -28,7 +28,7 @@ export const EXIT_USAGE = 2;
 export const EXIT_CONFIGURATION = 3;
 /** Could not acquire the lock, or it is not held (status/renew). */
 export const EXIT_UNAVAILABLE = 4;
-/** Refused: another owner holds the lock and --force was not given. */
+/** Refused: another owner holds the lock, and the caller did not name them. */
 export const EXIT_REFUSED = 5;
 /** The wrapped program could not be started. */
 export const EXIT_NO_PROGRAM = 127;

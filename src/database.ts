@@ -21,7 +21,6 @@ import {
   LockResult,
   MutexConfig,
   MutexInterface,
-  UnlockGuard,
   UnlockResult,
 } from "./mutex.js";
 import { TABLE_NAME } from "./constants.js";
@@ -83,9 +82,12 @@ export class DatabaseMutex implements MutexInterface {
     );
   }
 
-  async releaseLock(name: string, guard?: UnlockGuard): Promise<UnlockResult> {
+  async releaseLock(
+    name: string,
+    owner: string | null = null,
+  ): Promise<UnlockResult> {
     return this.withSchemaRetry(`Releasing lock '${name}'`, () =>
-      this.releaseLockInternal(name, guard),
+      this.releaseLockInternal(name, owner),
     );
   }
 
@@ -246,7 +248,7 @@ export class DatabaseMutex implements MutexInterface {
 
   private async releaseLockInternal(
     name: string,
-    guard?: UnlockGuard,
+    owner: string | null,
   ): Promise<UnlockResult> {
     let client: PoolClient | undefined;
     try {
@@ -272,7 +274,7 @@ export class DatabaseMutex implements MutexInterface {
       }
 
       const record = toLockRecord(existing.rows[0]);
-      if (!guard?.force && !mayModify(record, guard?.owner ?? null)) {
+      if (!mayModify(record, owner)) {
         await client.query("COMMIT");
         return { unlocked: false, outcome: "owned-by-another", record };
       }
@@ -324,9 +326,8 @@ export class DatabaseMutex implements MutexInterface {
 
       const record = toLockRecord(existing.rows[0]);
 
-      // No `--force` escape: renewing a lock somebody else holds is never the
-      // right thing to do. An unowned lock has nobody to wrong, so it stays
-      // open, which is what keeps Action-written locks manageable.
+      // An unowned lock has nobody to wrong, so it stays open - which is what
+      // keeps Action-written locks manageable from the CLI.
       if (!mayModify(record, owner)) {
         await client.query("COMMIT");
         return { renewed: false, outcome: "owned-by-another", record };
@@ -510,6 +511,9 @@ export class DatabaseMutex implements MutexInterface {
  * Ownership is what confers protection, so a lock nobody claimed is nobody's to
  * defend - which is also what lets the CLI manage the unowned locks the Action
  * writes today. Naming an owner is the act that makes a lock yours.
+ *
+ * There is no override. Breaking somebody else's lock means naming them, which
+ * makes it a deliberate act rather than a flag appended to a failing command.
  *
  * Exported for tests: the matrix is small, security-relevant, and worth pinning.
  */

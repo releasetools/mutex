@@ -8,6 +8,7 @@ Newest first. One line per change.
 - `mutex lock <id> -- <program>` holds the lock for exactly as long as the program runs, and gives it back on every exit path.
 - The CLI reads its connection string from a `.secenv` file, decrypting it through the dotsecenv CLI, so it never has to be typed out.
 - Locks can now record an owner: name one with `--owner`, and only that owner can unlock or renew it. Unnamed stays unowned and open to anyone, as the Action writes today.
+- Breaking somebody else's lock means naming its owner, which the refusal message spells out. There is no force flag.
 - Added `mutex renew` to extend a lock you already hold; the id and owner must match, and it will not take a lock you do not hold.
 - `mutex lock` mints a UUID when no id is given, which is all a wrapped program needs.
 - Added `mutex status`, `mutex list` and `mutex prune` for seeing and tidying up what is held.

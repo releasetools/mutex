@@ -142,7 +142,7 @@ export async function commandUnlock(
         identifier,
         result.record?.owner,
         ctx.options.owner,
-        "Unlocking needs both to match; pass --force to break it.",
+        "unlock",
       ),
     );
     return EXIT_REFUSED;
@@ -209,7 +209,7 @@ export async function commandRenew(
       identifier,
       result.record?.owner,
       ctx.options.owner,
-      "Renewing needs both to match.",
+      "renew",
     ),
     expired: `'${identifier}' expired at ${result.record?.expiresAt}; it may already have been taken over.`,
     contended: `'${identifier}' is being changed by another process; try again.`,
@@ -291,7 +291,6 @@ function requestFor(ctx: CommandContext, identifier: string): LockRequest {
     pollTimeoutMs: ctx.options.pollTimeoutMs,
     pollIntervalMs: ctx.options.pollIntervalMs,
     owner: ctx.options.owner,
-    force: ctx.options.force,
   };
 }
 
@@ -387,10 +386,7 @@ async function unlockQuietly(
   identifier: string,
 ): Promise<void> {
   try {
-    const result = await ctx.mutex.releaseLock(identifier, {
-      owner: ctx.options.owner,
-      force: ctx.options.force,
-    });
+    const result = await ctx.mutex.releaseLock(identifier, ctx.options.owner);
 
     if (result.unlocked) {
       ctx.log.info(`Unlocked '${identifier}'.`);

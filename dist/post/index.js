@@ -49237,15 +49237,11 @@ class MutexSettings {
     pollIntervalMs;
     autoReleaseLock;
     /**
-     * The Action does not record an owner, so every lock it takes stays
-     * releasable by anyone - including by the CLI without `--force`.
+     * The Action does not record an owner yet (see issue #67), so every lock it
+     * takes is unowned - releasable by itself, and by any caller that likewise
+     * names no owner.
      */
     owner = null;
-    /**
-     * ...and for the same reason the Action releases unconditionally, exactly as
-     * it did before ownership existed.
-     */
-    force = true;
     constructor() {
         this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");
         this.command = getInput("command", { required: true });
@@ -49447,8 +49443,8 @@ class DatabaseMutex {
     async acquireLock(name, reason, owner = null) {
         return this.withSchemaRetry(`Acquiring lock '${name}'`, () => this.acquireLockInternal(name, reason, owner));
     }
-    async releaseLock(name, guard) {
-        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, guard));
+    async releaseLock(name, owner = null) {
+        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, owner));
     }
     /**
      * Extends a lock that `owner` currently holds.
@@ -49563,7 +49559,7 @@ class DatabaseMutex {
             this.disconnect(client);
         }
     }
-    async releaseLockInternal(name, guard) {
+    async releaseLockInternal(name, owner) {
         let client;
         try {
             client = await this.connect();
@@ -49579,7 +49575,7 @@ class DatabaseMutex {
                 return { unlocked: true, outcome: "not-found" };
             }
             const record = toLockRecord(existing.rows[0]);
-            if (!guard?.force && !mayModify(record, guard?.owner ?? null)) {
+            if (!mayModify(record, owner)) {
                 await client.query("COMMIT");
                 return { unlocked: false, outcome: "owned-by-another", record };
             }
@@ -49616,9 +49612,8 @@ class DatabaseMutex {
                 return { renewed: false, outcome: "not-found" };
             }
             const record = toLockRecord(existing.rows[0]);
-            // No `--force` escape: renewing a lock somebody else holds is never the
-            // right thing to do. An unowned lock has nobody to wrong, so it stays
-            // open, which is what keeps Action-written locks manageable.
+            // An unowned lock has nobody to wrong, so it stays open - which is what
+            // keeps Action-written locks manageable from the CLI.
             if (!mayModify(record, owner)) {
                 await client.query("COMMIT");
                 return { renewed: false, outcome: "owned-by-another", record };
@@ -49756,6 +49751,9 @@ class DatabaseMutex {
  * defend - which is also what lets the CLI manage the unowned locks the Action
  * writes today. Naming an owner is the act that makes a lock yours.
  *
+ * There is no override. Breaking somebody else's lock means naming them, which
+ * makes it a deliberate act rather than a flag appended to a failing command.
+ *
  * Exported for tests: the matrix is small, security-relevant, and worth pinning.
  */
 function mayModify(record, owner) {
@@ -49881,14 +49879,10 @@ async function tryUnlock(request, mutex, log, events = {}) {
     const timeoutMs = Math.max(request.pollTimeoutMs, 0);
     const intervalMs = pollIntervalFor(request);
     const deadline = Date.now() + timeoutMs;
-    const guard = {
-        owner: request.owner ?? null,
-        force: request.force ?? false,
-    };
     log.info(`Attempting to unlock '${request.identifier}'.`);
     let result = { unlocked: false, outcome: "contended" };
     for (;;) {
-        result = await mutex.releaseLock(request.identifier, guard);
+        result = await mutex.releaseLock(request.identifier, request.owner ?? null);
         if (result.unlocked || result.outcome === "owned-by-another") {
             break;
         }

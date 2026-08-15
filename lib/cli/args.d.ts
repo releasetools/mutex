@@ -33,7 +33,6 @@ export interface ResolvedOptions {
     pollIntervalMs: number;
     autoRenew: boolean;
     owner: string | null;
-    force: boolean;
     dryRun: boolean;
     databaseUrl: string | null;
     envVar: string;

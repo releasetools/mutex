@@ -67,16 +67,6 @@ export type UnlockResult = {
 };
 
 /**
- * Who is asking to unlock, and whether they may break someone else's lock.
- *
- * A row with a NULL owner (every lock the Action takes) is always unlockable.
- */
-export interface UnlockGuard {
-  owner: string | null;
-  force: boolean;
-}
-
-/**
  * Everything `tryLock`/`tryUnlock` need about a request. Both `MutexSettings`
  * (the Action) and the CLI's resolved options satisfy this structurally.
  */
@@ -86,8 +76,6 @@ export interface LockRequest {
   pollTimeoutMs: number;
   pollIntervalMs: number;
   owner?: string | null;
-  /** Unlock even when another owner holds the lock. */
-  force?: boolean;
 }
 
 /** Connection details needed to talk to the lock store. */
@@ -102,7 +90,7 @@ export interface MutexInterface {
     reason: string,
     owner?: string | null,
   ): Promise<LockResult>;
-  releaseLock(name: string, guard?: UnlockGuard): Promise<UnlockResult>;
+  releaseLock(name: string, owner?: string | null): Promise<UnlockResult>;
 }
 
 /**
@@ -194,17 +182,12 @@ export async function tryUnlock(
   const timeoutMs = Math.max(request.pollTimeoutMs, 0);
   const intervalMs = pollIntervalFor(request);
   const deadline = Date.now() + timeoutMs;
-  const guard: UnlockGuard = {
-    owner: request.owner ?? null,
-    force: request.force ?? false,
-  };
-
   log.info(`Attempting to unlock '${request.identifier}'.`);
 
   let result: UnlockResult = { unlocked: false, outcome: "contended" };
 
   for (;;) {
-    result = await mutex.releaseLock(request.identifier, guard);
+    result = await mutex.releaseLock(request.identifier, request.owner ?? null);
 
     if (result.unlocked || result.outcome === "owned-by-another") {
       break;

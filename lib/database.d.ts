@@ -1,4 +1,4 @@
-import { LockRecord, LockResult, MutexConfig, MutexInterface, UnlockGuard, UnlockResult } from "./mutex.js";
+import { LockRecord, LockResult, MutexConfig, MutexInterface, UnlockResult } from "./mutex.js";
 import { Logger } from "./logger.js";
 export type RenewOutcome = "renewed" | "not-found" | "owned-by-another" | "expired" | "contended";
 export type RenewResult = {
@@ -15,7 +15,7 @@ export declare class DatabaseMutex implements MutexInterface {
     private schemaAttempted;
     constructor(config: MutexConfig, log?: Logger);
     acquireLock(name: string, reason: string, owner?: string | null): Promise<LockResult>;
-    releaseLock(name: string, guard?: UnlockGuard): Promise<UnlockResult>;
+    releaseLock(name: string, owner?: string | null): Promise<UnlockResult>;
     /**
      * Extends a lock that `owner` currently holds.
      *
@@ -66,6 +66,9 @@ export declare class DatabaseMutex implements MutexInterface {
  * Ownership is what confers protection, so a lock nobody claimed is nobody's to
  * defend - which is also what lets the CLI manage the unowned locks the Action
  * writes today. Naming an owner is the act that makes a lock yours.
+ *
+ * There is no override. Breaking somebody else's lock means naming them, which
+ * makes it a deliberate act rather than a flag appended to a failing command.
  *
  * Exported for tests: the matrix is small, security-relevant, and worth pinning.
  */

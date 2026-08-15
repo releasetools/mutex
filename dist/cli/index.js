@@ -7158,8 +7158,8 @@ class DatabaseMutex {
     async acquireLock(name, reason, owner = null) {
         return this.withSchemaRetry(`Acquiring lock '${name}'`, () => this.acquireLockInternal(name, reason, owner));
     }
-    async releaseLock(name, guard) {
-        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, guard));
+    async releaseLock(name, owner = null) {
+        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, owner));
     }
     /**
      * Extends a lock that `owner` currently holds.
@@ -7274,7 +7274,7 @@ class DatabaseMutex {
             this.disconnect(client);
         }
     }
-    async releaseLockInternal(name, guard) {
+    async releaseLockInternal(name, owner) {
         let client;
         try {
             client = await this.connect();
@@ -7290,7 +7290,7 @@ class DatabaseMutex {
                 return { unlocked: true, outcome: "not-found" };
             }
             const record = toLockRecord(existing.rows[0]);
-            if (!guard?.force && !mayModify(record, guard?.owner ?? null)) {
+            if (!mayModify(record, owner)) {
                 await client.query("COMMIT");
                 return { unlocked: false, outcome: "owned-by-another", record };
             }
@@ -7327,9 +7327,8 @@ class DatabaseMutex {
                 return { renewed: false, outcome: "not-found" };
             }
             const record = toLockRecord(existing.rows[0]);
-            // No `--force` escape: renewing a lock somebody else holds is never the
-            // right thing to do. An unowned lock has nobody to wrong, so it stays
-            // open, which is what keeps Action-written locks manageable.
+            // An unowned lock has nobody to wrong, so it stays open - which is what
+            // keeps Action-written locks manageable from the CLI.
             if (!mayModify(record, owner)) {
                 await client.query("COMMIT");
                 return { renewed: false, outcome: "owned-by-another", record };
@@ -7467,6 +7466,9 @@ class DatabaseMutex {
  * defend - which is also what lets the CLI manage the unowned locks the Action
  * writes today. Naming an owner is the act that makes a lock yours.
  *
+ * There is no override. Breaking somebody else's lock means naming them, which
+ * makes it a deliberate act rather than a flag appended to a failing command.
+ *
  * Exported for tests: the matrix is small, security-relevant, and worth pinning.
  */
 function mayModify(record, owner) {
@@ -7602,7 +7604,7 @@ const EXIT_USAGE = 2;
 const EXIT_CONFIGURATION = 3;
 /** Could not acquire the lock, or it is not held (status/renew). */
 const EXIT_UNAVAILABLE = 4;
-/** Refused: another owner holds the lock and --force was not given. */
+/** Refused: another owner holds the lock, and the caller did not name them. */
 const EXIT_REFUSED = 5;
 /** The wrapped program could not be started. */
 const EXIT_NO_PROGRAM = 127;
@@ -7689,7 +7691,6 @@ const COMMANDS = {
         acceptsProgram: false,
         options: [
             "owner",
-            "force",
             "max-wait",
             "poll-interval",
             ...CONNECTION_OPTIONS,
@@ -7746,7 +7747,6 @@ const OPTION_CONFIG = {
     "poll-interval": { type: "string", short: "i" },
     "no-renew": { type: "boolean" },
     owner: { type: "string", short: "o" },
-    force: { type: "boolean", short: "f" },
     "dry-run": { type: "boolean" },
     "database-url": { type: "string" },
     "env-var": { type: "string" },
@@ -7857,8 +7857,7 @@ function resolveOptions(command, values) {
         pollTimeoutMs,
         pollIntervalMs: pollInterval * 1000,
         autoRenew: values["no-renew"] !== true,
-        owner: typeof values.owner === "string" ? values.owner : defaultOwner(),
-        force: values.force === true,
+        owner: readOwner(values.owner),
         dryRun: values["dry-run"] === true,
         databaseUrl: typeof values["database-url"] === "string"
             ? values["database-url"]
@@ -7892,7 +7891,19 @@ function resolveOptions(command, values) {
  * two took it. Naming an owner is what opts into the stricter guards.
  */
 function defaultOwner() {
-    return process.env.MUTEX_OWNER || null;
+    return process.env.MUTEX_OWNER?.trim() || null;
+}
+/**
+ * An owner given on the command line, or the default.
+ *
+ * Blank counts as unowned, so `--owner "$CI_RUN"` degrades to unowned rather
+ * than to an owner literally named "" when the variable is unset.
+ */
+function readOwner(value) {
+    if (typeof value === "string") {
+        return value.trim() || null;
+    }
+    return defaultOwner();
 }
 function rejectInapplicableOptions(command, spec, values) {
     const allowed = new Set(spec.options);
@@ -7955,7 +7966,6 @@ Lock options:
   -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
       --no-renew                 Do not renew the lock while a wrapped program runs
   -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
-  -f, --force                    Release a lock owned by someone else
 
 Connection:
       --database-url <url>       PostgreSQL connection string
@@ -8070,14 +8080,10 @@ async function tryUnlock(request, mutex, log, events = {}) {
     const timeoutMs = Math.max(request.pollTimeoutMs, 0);
     const intervalMs = pollIntervalFor(request);
     const deadline = Date.now() + timeoutMs;
-    const guard = {
-        owner: request.owner ?? null,
-        force: request.force ?? false,
-    };
     log.info(`Attempting to unlock '${request.identifier}'.`);
     let result = { unlocked: false, outcome: "contended" };
     for (;;) {
-        result = await mutex.releaseLock(request.identifier, guard);
+        result = await mutex.releaseLock(request.identifier, request.owner ?? null);
         if (result.unlocked || result.outcome === "owned-by-another") {
             break;
         }
@@ -8153,10 +8159,19 @@ class Output {
 function describeOwner(owner) {
     return owner ? `'${owner}'` : "nobody";
 }
-/** Explains an operation refused because the two owners are not the same. */
-function describeOwnerMismatch(identifier, held, caller, remedy) {
+/**
+ * Explains an operation refused because the two owners are not the same, and
+ * says exactly what to pass to go ahead anyway.
+ *
+ * Naming the holder is the confirmation: there is no flag that means "do it
+ * regardless", so breaking a lock is always a deliberate statement of whose.
+ */
+function describeOwnerMismatch(identifier, held, caller, verb) {
     const lock = held ? `is held by '${held}'` : "is unowned";
     const call = caller ? `this call is '${caller}'` : "this call is unowned";
+    const remedy = held
+        ? `Pass --owner '${held}' to ${verb} it.`
+        : `Retry without --owner to ${verb} it.`;
     return `'${identifier}' ${lock}; ${call}. ${remedy}`;
 }
 /**
@@ -8296,7 +8311,7 @@ async function commandUnlock(ctx, identifier) {
             id: identifier,
             outcome: result.outcome,
             holder: result.record ?? null,
-        }, describeOwnerMismatch(identifier, result.record?.owner, ctx.options.owner, "Unlocking needs both to match; pass --force to break it."));
+        }, describeOwnerMismatch(identifier, result.record?.owner, ctx.options.owner, "unlock"));
         return EXIT_REFUSED;
     }
     if (!result.unlocked) {
@@ -8336,7 +8351,7 @@ async function commandRenew(ctx, identifier) {
     }
     const explanation = {
         "not-found": `'${identifier}' is not held, so there is nothing to renew.`,
-        "owned-by-another": describeOwnerMismatch(identifier, result.record?.owner, ctx.options.owner, "Renewing needs both to match."),
+        "owned-by-another": describeOwnerMismatch(identifier, result.record?.owner, ctx.options.owner, "renew"),
         expired: `'${identifier}' expired at ${result.record?.expiresAt}; it may already have been taken over.`,
         contended: `'${identifier}' is being changed by another process; try again.`,
     };
@@ -8392,7 +8407,6 @@ function requestFor(ctx, identifier) {
         pollTimeoutMs: ctx.options.pollTimeoutMs,
         pollIntervalMs: ctx.options.pollIntervalMs,
         owner: ctx.options.owner,
-        force: ctx.options.force,
     };
 }
 async function runProgram(ctx, identifier, program, lock, generatedIdentifier) {
@@ -8461,10 +8475,7 @@ function startRenewal(ctx, identifier) {
 }
 async function unlockQuietly(ctx, identifier) {
     try {
-        const result = await ctx.mutex.releaseLock(identifier, {
-            owner: ctx.options.owner,
-            force: ctx.options.force,
-        });
+        const result = await ctx.mutex.releaseLock(identifier, ctx.options.owner);
         if (result.unlocked) {
             ctx.log.info(`Unlocked '${identifier}'.`);
         }

@@ -162,7 +162,7 @@ mutex renew deploy --owner "$CI_RUN" --expiration 300
 
 It is deliberately strict, because a renewal that silently succeeds when it should not is worse than one that fails:
 
-- **The id and the owner must both match.** There is no `--force`: renewing somebody else's lock is never the right thing to do.
+- **The id and the owner must both match.** Renewing a lock you do not hold is never right, so name its owner or do not renew it.
 - **It never takes a lock.** Renewing something that is not held fails rather than quietly acquiring it.
 - **An expired lock cannot be renewed.** By then somebody else may already have taken it over, so it reports the expiry and stops.
 
@@ -215,17 +215,29 @@ bob   unlock LOCK1   ok
 
 `--owner` is optional and there is no default. Without it, and without `$MUTEX_OWNER`, the lock is **unowned** - which is what the GitHub Action writes today.
 
-| Lock      | Caller      | `unlock`  | `renew` |
-| --------- | ----------- | --------- | ------- |
-| unowned   | anyone      | yes       | yes     |
-| same name | same name   | yes       | yes     |
-| named     | anyone else | `--force` | no      |
+| Lock      | Caller      | `unlock` | `renew` |
+| --------- | ----------- | -------- | ------- |
+| unowned   | anyone      | yes      | yes     |
+| same name | same name   | yes      | yes     |
+| named     | anyone else | refused  | refused |
 
 Naming an owner is the act that buys protection. An unowned lock has nobody to wrong, so anyone may unlock or renew it - which is also what keeps the Action's locks manageable from the CLI while [#67](https://github.com/releasetools/mutex/issues/67) is outstanding.
 
 ```shell
 mutex lock deploy --owner "$CI_RUN"
 ```
+
+There is no `--force`. To break somebody else's lock you name them, which the refusal tells you how to do:
+
+```shell
+$ mutex unlock deploy
+'deploy' is held by 'alice'; this call is unowned. Pass --owner 'alice' to unlock it.
+
+$ mutex unlock deploy --owner alice
+Unlocked 'deploy'.
+```
+
+That is a confirmation, not a permission check - anyone can read the owner from `mutex status`. The point is that breaking a lock has to be a deliberate statement of whose lock it is, rather than a flag appended to a command that just failed.
 
 > [!TIP]
 > Pass `--owner` for anything that matters. On an unowned lock, `mutex lock ... -- <program>` will release whatever holds the id when its program exits, even if that is somebody else's lock by then.
@@ -262,15 +274,15 @@ Use `--secenv-dir <dir>` to start the search somewhere other than the current di
 
 ### Exit codes
 
-| Code  | Meaning                                                  |
-| ----- | -------------------------------------------------------- |
-| `0`   | Success (`status`: the lock is held)                     |
-| `1`   | Error                                                    |
-| `2`   | Usage error                                              |
-| `3`   | Configuration error - no usable connection string        |
-| `4`   | Not acquired, or not held                                |
-| `5`   | Refused - another owner holds the lock, and no `--force` |
-| `127` | The wrapped program could not be started                 |
+| Code  | Meaning                                                   |
+| ----- | --------------------------------------------------------- |
+| `0`   | Success (`status`: the lock is held)                      |
+| `1`   | Error                                                     |
+| `2`   | Usage error                                               |
+| `3`   | Configuration error - no usable connection string         |
+| `4`   | Not acquired, or not held                                 |
+| `5`   | Refused - another owner holds the lock, and was not named |
+| `127` | The wrapped program could not be started                  |
 
 While wrapping a program, its exit status is returned instead.
 

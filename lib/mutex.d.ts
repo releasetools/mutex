@@ -22,15 +22,6 @@ export type UnlockResult = {
     record?: LockRecord;
 };
 /**
- * Who is asking to unlock, and whether they may break someone else's lock.
- *
- * A row with a NULL owner (every lock the Action takes) is always unlockable.
- */
-export interface UnlockGuard {
-    owner: string | null;
-    force: boolean;
-}
-/**
  * Everything `tryLock`/`tryUnlock` need about a request. Both `MutexSettings`
  * (the Action) and the CLI's resolved options satisfy this structurally.
  */
@@ -40,8 +31,6 @@ export interface LockRequest {
     pollTimeoutMs: number;
     pollIntervalMs: number;
     owner?: string | null;
-    /** Unlock even when another owner holds the lock. */
-    force?: boolean;
 }
 /** Connection details needed to talk to the lock store. */
 export interface MutexConfig {
@@ -50,7 +39,7 @@ export interface MutexConfig {
 }
 export interface MutexInterface {
     acquireLock(name: string, reason: string, owner?: string | null): Promise<LockResult>;
-    releaseLock(name: string, guard?: UnlockGuard): Promise<UnlockResult>;
+    releaseLock(name: string, owner?: string | null): Promise<UnlockResult>;
 }
 /**
  * Side effects a caller wants attached to an outcome: the Action posts PR and

@@ -21,8 +21,14 @@ export declare class Output {
 }
 /** Renders an owner for a message, including the unowned case. */
 export declare function describeOwner(owner: string | null | undefined): string;
-/** Explains an operation refused because the two owners are not the same. */
-export declare function describeOwnerMismatch(identifier: string, held: string | null | undefined, caller: string | null, remedy: string): string;
+/**
+ * Explains an operation refused because the two owners are not the same, and
+ * says exactly what to pass to go ahead anyway.
+ *
+ * Naming the holder is the confirmation: there is no flag that means "do it
+ * regardless", so breaking a lock is always a deliberate statement of whose.
+ */
+export declare function describeOwnerMismatch(identifier: string, held: string | null | undefined, caller: string | null, verb: string): string;
 /**
  * The headline plus stats printed when a lock is taken or extended: the id
  * matters most when it was generated, and the expiry is what the caller has to

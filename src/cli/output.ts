@@ -54,15 +54,24 @@ export function describeOwner(owner: string | null | undefined): string {
   return owner ? `'${owner}'` : "nobody";
 }
 
-/** Explains an operation refused because the two owners are not the same. */
+/**
+ * Explains an operation refused because the two owners are not the same, and
+ * says exactly what to pass to go ahead anyway.
+ *
+ * Naming the holder is the confirmation: there is no flag that means "do it
+ * regardless", so breaking a lock is always a deliberate statement of whose.
+ */
 export function describeOwnerMismatch(
   identifier: string,
   held: string | null | undefined,
   caller: string | null,
-  remedy: string,
+  verb: string,
 ): string {
   const lock = held ? `is held by '${held}'` : "is unowned";
   const call = caller ? `this call is '${caller}'` : "this call is unowned";
+  const remedy = held
+    ? `Pass --owner '${held}' to ${verb} it.`
+    : `Retry without --owner to ${verb} it.`;
   return `'${identifier}' ${lock}; ${call}. ${remedy}`;
 }
 

@@ -30,16 +30,11 @@ export class MutexSettings implements MutexConfig, LockRequest {
   autoReleaseLock: boolean;
 
   /**
-   * The Action does not record an owner, so every lock it takes stays
-   * releasable by anyone - including by the CLI without `--force`.
+   * The Action does not record an owner yet (see issue #67), so every lock it
+   * takes is unowned - releasable by itself, and by any caller that likewise
+   * names no owner.
    */
   readonly owner = null;
-
-  /**
-   * ...and for the same reason the Action releases unconditionally, exactly as
-   * it did before ownership existed.
-   */
-  readonly force = true;
 
   constructor() {
     this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");

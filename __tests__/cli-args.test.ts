@@ -169,8 +169,8 @@ describe("parseCommandLine", () => {
     expect(() => parseCommandLine(["list", "--reason", "x"])).toThrow(
       /does not take --reason/,
     );
-    expect(() => parseCommandLine(["status", "id", "--force"])).toThrow(
-      /does not take --force/,
+    expect(() => parseCommandLine(["list", "--owner", "x"])).toThrow(
+      /does not take --owner/,
     );
   });
 
@@ -224,11 +224,23 @@ describe("parseCommandLine", () => {
     expect(parseCommandLine(["lock", "deploy"]).options.owner).toBeNull();
   });
 
-  it("does not let renew break somebody else's lock", () => {
-    // No --force escape: renewing a lock you do not hold is never right.
-    expect(() => parseCommandLine(["renew", "deploy", "--force"])).toThrow(
-      /does not take --force/,
-    );
+  it("has no --force anywhere", () => {
+    // Confirming an unlock means naming the owner, not appending a flag.
+    for (const command of ["lock", "unlock", "renew"]) {
+      expect(() => parseCommandLine([command, "deploy", "--force"])).toThrow(
+        UsageError,
+      );
+    }
+  });
+
+  it("treats a blank owner as unowned", () => {
+    // So `--owner "$CI_RUN"` degrades to unowned when the variable is unset.
+    expect(
+      parseCommandLine(["unlock", "id", "--owner", ""]).options.owner,
+    ).toBeNull();
+    expect(
+      parseCommandLine(["unlock", "id", "--owner", "  "]).options.owner,
+    ).toBeNull();
   });
 
   it("has no --reentrant flag", () => {
