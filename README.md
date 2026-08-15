@@ -164,6 +164,8 @@ A lock lasts `--expiration` seconds. `renew` pushes that further out for a job s
 mutex renew deploy --owner "$CI_RUN" --expiration 300
 ```
 
+Without `--expiration` it reuses the lease the lock already had, so renewing cannot shrink a deliberately long lock down to the default.
+
 It is deliberately strict, because a renewal that silently succeeds when it should not is worse than one that fails:
 
 - **The id and the owner must both match.** Renewing a lock you do not hold is never right, so name its owner or do not renew it.

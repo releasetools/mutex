@@ -130,6 +130,33 @@ describe("parseCommandLine", () => {
     expect(() => parseCommandLine(["frobnicate"])).toThrow(UsageError);
   });
 
+  it("does not accept inherited Object members as commands", () => {
+    // `"toString" in COMMANDS` is true, so a plain `in` check would hand back
+    // a command whose spec is undefined - crashing help, and reaching the
+    // database before anything noticed.
+    for (const name of [
+      "toString",
+      "constructor",
+      "hasOwnProperty",
+      "valueOf",
+      "__proto__",
+    ]) {
+      expect(() => parseCommandLine([name])).toThrow(/unknown command/);
+      expect(() => parseCommandLine(["help", name])).not.toThrow();
+    }
+  });
+
+  it("records whether --expiration was actually given", () => {
+    // renew reuses the lock's own lease when it was not, so that renewing
+    // cannot silently shorten a deliberately long lock to the default.
+    expect(parseCommandLine(["renew", "id"]).options.expirationGiven).toBe(
+      false,
+    );
+    expect(
+      parseCommandLine(["renew", "id", "-e", "300"]).options.expirationGiven,
+    ).toBe(true);
+  });
+
   it("rejects a missing lock id", () => {
     expect(() => parseCommandLine(["status"])).toThrow(/needs a lock id/);
   });

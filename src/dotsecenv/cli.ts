@@ -254,10 +254,14 @@ function parseJson(
 ): any {
   try {
     return JSON.parse(result.stdout);
-  } catch (cause) {
+  } catch {
+    // The SyntaxError is deliberately not attached as `cause`: Node quotes the
+    // offending input in its message, and the input here is the decrypted
+    // secret. Node prints `[cause]` for any uncaught rejection or console
+    // dump, which would put the value straight into a log.
     throw new DotsecenvError(
       `could not parse the JSON dotsecenv returned for ${subject}`,
-      { kind: "parse", stderr: result.stderr, cause },
+      { kind: "parse", stderr: result.stderr },
     );
   }
 }

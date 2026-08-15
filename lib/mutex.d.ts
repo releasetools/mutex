@@ -48,6 +48,13 @@ export interface MutexInterface {
 export interface LockEvents {
     onLocked?(result: LockResult): void | Promise<void>;
     onUnlocked?(result: UnlockResult): void | Promise<void>;
+    /**
+     * The lock is held by another owner. A separate event from onTimeout because
+     * it is a decision rather than a deadline - but it still has to be reported,
+     * or a caller that only handles success and timeout finishes green having
+     * done nothing.
+     */
+    onRefused?(result: UnlockResult): void | Promise<void>;
     onContended?(result: LockResult, attempt: number): void | Promise<void>;
     onTimeout?(message: string): void | Promise<void>;
 }

@@ -100,6 +100,13 @@ export interface MutexInterface {
 export interface LockEvents {
   onLocked?(result: LockResult): void | Promise<void>;
   onUnlocked?(result: UnlockResult): void | Promise<void>;
+  /**
+   * The lock is held by another owner. A separate event from onTimeout because
+   * it is a decision rather than a deadline - but it still has to be reported,
+   * or a caller that only handles success and timeout finishes green having
+   * done nothing.
+   */
+  onRefused?(result: UnlockResult): void | Promise<void>;
   onContended?(result: LockResult, attempt: number): void | Promise<void>;
   onTimeout?(message: string): void | Promise<void>;
 }
@@ -108,6 +115,19 @@ function pollIntervalFor(request: LockRequest): number {
   return request.pollIntervalMs > 0
     ? request.pollIntervalMs
     : MIN_POLL_INTERVAL_MS;
+}
+
+/**
+ * The wait, in milliseconds, treating anything not a real number as zero.
+ *
+ * NaN arrives easily - `parseInt("")` on an unset workflow input - and every
+ * comparison against it is false, which in a loop that breaks on a comparison
+ * means it never breaks. Zero is the safe reading: try once, then give up.
+ */
+function pollTimeoutFor(request: LockRequest): number {
+  return Number.isFinite(request.pollTimeoutMs)
+    ? Math.max(request.pollTimeoutMs, 0)
+    : 0;
 }
 
 /**
@@ -122,7 +142,7 @@ export async function tryLock(
   log: Logger,
   events: LockEvents = {},
 ): Promise<LockResult> {
-  const timeoutMs = Math.max(request.pollTimeoutMs, 0);
+  const timeoutMs = pollTimeoutFor(request);
   const intervalMs = pollIntervalFor(request);
   const deadline = Date.now() + timeoutMs;
 
@@ -179,7 +199,7 @@ export async function tryUnlock(
   log: Logger,
   events: LockEvents = {},
 ): Promise<UnlockResult> {
-  const timeoutMs = Math.max(request.pollTimeoutMs, 0);
+  const timeoutMs = pollTimeoutFor(request);
   const intervalMs = pollIntervalFor(request);
   const deadline = Date.now() + timeoutMs;
   log.info(`Attempting to unlock '${request.identifier}'.`);
@@ -207,9 +227,11 @@ export async function tryUnlock(
     log.info(`Lock '${request.identifier}' released.`);
     await events.onUnlocked?.(result);
   } else if (result.outcome === "owned-by-another") {
-    log.warning(
-      `Refusing to unlock '${request.identifier}': it is held by another owner.`,
-    );
+    const message = `Refusing to unlock '${request.identifier}': it is held by another owner.`;
+    log.warning(message);
+    await (events.onRefused
+      ? events.onRefused(result)
+      : events.onTimeout?.(message));
   } else {
     await events.onTimeout?.(
       `⌛ Timed out waiting to unlock '${request.identifier}' after ${timeoutMs / 1000} seconds.`,

@@ -69,6 +69,10 @@ export async function post(): Promise<void> {
           `🔓 Lock \`${settings.identifier}\` released.`,
         );
       },
+      onRefused: () =>
+        setFailed(
+          `🔒 Lock '${settings.identifier}' is held by another owner and was not released.`,
+        ),
       onTimeout: (message) => setFailed(message),
     });
   } catch (error) {

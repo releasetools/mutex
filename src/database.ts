@@ -98,10 +98,13 @@ export class DatabaseMutex implements MutexInterface {
    * held fails rather than quietly taking a new lock. Both the id and the
    * owner have to match, and an expired lock is refused - by then somebody
    * else may already have taken it over.
+   *
+   * A null `expiration` reuses the lock's own lease length, so renewing
+   * without saying how long cannot shorten a lease somebody chose deliberately.
    */
   async renewLock(
     name: string,
-    expiration: number,
+    expiration: number | null,
     owner: string | null = null,
   ): Promise<RenewResult> {
     return this.withSchemaRetry(`Renewing lock '${name}'`, () =>
@@ -301,7 +304,7 @@ export class DatabaseMutex implements MutexInterface {
 
   private async renewLockInternal(
     name: string,
-    expiration: number,
+    expiration: number | null,
     owner: string | null,
   ): Promise<RenewResult> {
     let client: PoolClient | undefined;
@@ -342,15 +345,21 @@ export class DatabaseMutex implements MutexInterface {
 
       // UPDATE, never an upsert: a lock that vanished between the read and
       // here stays gone rather than being recreated.
+      // With no explicit duration, reuse the lease this lock already had, so
+      // `renew` cannot silently cut a deliberately long lock down to a default.
       const renewed = await client.query(
         format(
           `UPDATE %I
-          SET expires_at = (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL
+          SET expires_at = (NOW() AT TIME ZONE 'UTC') + COALESCE(
+              ($2 || ' seconds')::INTERVAL,
+              expires_at - created_at,
+              ($3 || ' seconds')::INTERVAL
+          )
           WHERE id = $1
           RETURNING ${LOCK_COLUMNS};`,
           TABLE_NAME,
         ),
-        [name, expiration],
+        [name, expiration, this.config.expiration],
       );
 
       if (renewed.rows.length === 0) {
@@ -359,7 +368,9 @@ export class DatabaseMutex implements MutexInterface {
       }
       await client.query("COMMIT");
 
-      this.log.info(`Lock '${name}' renewed for ${expiration}s.`);
+      this.log.info(
+        `Lock '${name}' renewed${expiration === null ? " for its existing lease" : ` for ${expiration}s`}.`,
+      );
       return {
         renewed: true,
         outcome: "renewed",

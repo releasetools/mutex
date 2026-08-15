@@ -49238,6 +49238,8 @@ function checkSkipInBody(pr) {
  */
 
 
+/** Matches the `expiration` default declared in action.yaml. */
+const DEFAULT_EXPIRATION_SECONDS = 60;
 class MutexSettings {
     dbConnectionString;
     command;
@@ -49257,7 +49259,12 @@ class MutexSettings {
         this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");
         this.command = getInput("command", { required: true });
         this.identifier = getInput("id", { required: true });
+        // Guarded like max-wait and poll-interval below: an unset or non-numeric
+        // input yields NaN, which would otherwise flow into every timeout.
         this.expiration = parseInt(getInput("expiration"));
+        if (isNaN(this.expiration) || this.expiration <= 0) {
+            this.expiration = DEFAULT_EXPIRATION_SECONDS;
+        }
         this.reason = getInput("reason", { trimWhitespace: true });
         this.autoReleaseLock = getInput("auto-release") === "true";
         // Calculate timeout
@@ -49464,6 +49471,9 @@ class DatabaseMutex {
      * held fails rather than quietly taking a new lock. Both the id and the
      * owner have to match, and an expired lock is refused - by then somebody
      * else may already have taken it over.
+     *
+     * A null `expiration` reuses the lock's own lease length, so renewing
+     * without saying how long cannot shorten a lease somebody chose deliberately.
      */
     async renewLock(name, expiration, owner = null) {
         return this.withSchemaRetry(`Renewing lock '${name}'`, () => this.renewLockInternal(name, expiration, owner));
@@ -49637,16 +49647,22 @@ class DatabaseMutex {
             }
             // UPDATE, never an upsert: a lock that vanished between the read and
             // here stays gone rather than being recreated.
+            // With no explicit duration, reuse the lease this lock already had, so
+            // `renew` cannot silently cut a deliberately long lock down to a default.
             const renewed = await client.query(pg_format_lib(`UPDATE %I
-          SET expires_at = (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL
+          SET expires_at = (NOW() AT TIME ZONE 'UTC') + COALESCE(
+              ($2 || ' seconds')::INTERVAL,
+              expires_at - created_at,
+              ($3 || ' seconds')::INTERVAL
+          )
           WHERE id = $1
-          RETURNING ${LOCK_COLUMNS};`, TABLE_NAME), [name, expiration]);
+          RETURNING ${LOCK_COLUMNS};`, TABLE_NAME), [name, expiration, this.config.expiration]);
             if (renewed.rows.length === 0) {
                 await client.query("COMMIT");
                 return { renewed: false, outcome: "not-found" };
             }
             await client.query("COMMIT");
-            this.log.info(`Lock '${name}' renewed for ${expiration}s.`);
+            this.log.info(`Lock '${name}' renewed${expiration === null ? " for its existing lease" : ` for ${expiration}s`}.`);
             return {
                 renewed: true,
                 outcome: "renewed",
@@ -49847,13 +49863,25 @@ function pollIntervalFor(request) {
         : MIN_POLL_INTERVAL_MS;
 }
 /**
+ * The wait, in milliseconds, treating anything not a real number as zero.
+ *
+ * NaN arrives easily - `parseInt("")` on an unset workflow input - and every
+ * comparison against it is false, which in a loop that breaks on a comparison
+ * means it never breaks. Zero is the safe reading: try once, then give up.
+ */
+function pollTimeoutFor(request) {
+    return Number.isFinite(request.pollTimeoutMs)
+        ? Math.max(request.pollTimeoutMs, 0)
+        : 0;
+}
+/**
  * Acquire the lock, retrying until `pollTimeoutMs` elapses.
  *
  * Always makes at least one attempt, so a zero timeout means "try once" rather
  * than "do nothing" - that is what `mutex try-lock` relies on.
  */
 async function tryLock(request, mutex, log, events = {}) {
-    const timeoutMs = Math.max(request.pollTimeoutMs, 0);
+    const timeoutMs = pollTimeoutFor(request);
     const intervalMs = pollIntervalFor(request);
     const deadline = Date.now() + timeoutMs;
     log.info(`Attempting to acquire lock '${request.identifier}'. Timeout: ${timeoutMs / 1000}s`);
@@ -49887,7 +49915,7 @@ async function tryLock(request, mutex, log, events = {}) {
  * so it short-circuits the retry loop.
  */
 async function tryUnlock(request, mutex, log, events = {}) {
-    const timeoutMs = Math.max(request.pollTimeoutMs, 0);
+    const timeoutMs = pollTimeoutFor(request);
     const intervalMs = pollIntervalFor(request);
     const deadline = Date.now() + timeoutMs;
     log.info(`Attempting to unlock '${request.identifier}'.`);
@@ -49908,7 +49936,11 @@ async function tryUnlock(request, mutex, log, events = {}) {
         await events.onUnlocked?.(result);
     }
     else if (result.outcome === "owned-by-another") {
-        log.warning(`Refusing to unlock '${request.identifier}': it is held by another owner.`);
+        const message = `Refusing to unlock '${request.identifier}': it is held by another owner.`;
+        log.warning(message);
+        await (events.onRefused
+            ? events.onRefused(result)
+            : events.onTimeout?.(message));
     }
     else {
         await events.onTimeout?.(`⌛ Timed out waiting to unlock '${request.identifier}' after ${timeoutMs / 1000} seconds.`);
@@ -50122,6 +50154,7 @@ async function post() {
                 setLockReleased();
                 await notifications.send(`🔓 Lock \`${settings.identifier}\` released.`);
             },
+            onRefused: () => github_setFailed(`🔒 Lock '${settings.identifier}' is held by another owner and was not released.`),
             onTimeout: (message) => github_setFailed(message),
         });
     }

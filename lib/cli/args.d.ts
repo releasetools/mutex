@@ -23,6 +23,8 @@ export declare const DEFAULT_MAX_WAIT_SECONDS = -1;
 export interface ResolvedOptions {
     reason: string;
     expiration: number;
+    /** False when `expiration` is merely the default. */
+    expirationGiven: boolean;
     pollTimeoutMs: number;
     pollIntervalMs: number;
     autoRenew: boolean;

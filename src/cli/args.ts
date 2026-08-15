@@ -175,6 +175,8 @@ export const DEFAULT_MAX_WAIT_SECONDS = -1;
 export interface ResolvedOptions {
   reason: string;
   expiration: number;
+  /** False when `expiration` is merely the default. */
+  expirationGiven: boolean;
   pollTimeoutMs: number;
   pollIntervalMs: number;
   autoRenew: boolean;
@@ -315,6 +317,7 @@ function resolveOptions(
   return {
     reason: typeof values.reason === "string" ? values.reason : "",
     expiration,
+    expirationGiven: typeof values.expiration === "string",
     pollTimeoutMs,
     pollIntervalMs: pollInterval * 1000,
     autoRenew: values["no-renew"] !== true,
@@ -409,7 +412,9 @@ function readNumber(
 }
 
 function asCommandName(value: string | undefined): CommandName | null {
-  if (value && value in COMMANDS) {
+  // hasOwn, not `in`: `"toString" in COMMANDS` is true, and would be accepted
+  // as a command whose spec is undefined.
+  if (value && Object.hasOwn(COMMANDS, value)) {
     return value as CommandName;
   }
   return null;
