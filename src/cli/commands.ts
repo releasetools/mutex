@@ -178,8 +178,7 @@ export async function commandRenew(
 ): Promise<number> {
   const result = await ctx.mutex.renewLock(
     identifier,
-    // Without --expiration, keep whatever lease the lock already had.
-    ctx.options.expirationGiven ? ctx.options.expiration : null,
+    ctx.options.expiration,
     ctx.options.owner,
   );
 
@@ -190,10 +189,15 @@ export async function commandRenew(
         ok: true,
         id: identifier,
         owner: ctx.options.owner,
+        extended: result.extended !== false,
         expires: result.record?.expiresAt ?? null,
         lock: result.record ?? null,
       },
-      describeLockAction("Renewed", result.record, identifier),
+      describeLockAction(
+        result.extended === false ? "Kept" : "Renewed",
+        result.record,
+        identifier,
+      ),
     );
     return EXIT_OK;
   }

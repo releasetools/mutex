@@ -4,6 +4,8 @@ export type RenewOutcome = "renewed" | "not-found" | "owned-by-another" | "expir
 export type RenewResult = {
     renewed: boolean;
     outcome: RenewOutcome;
+    /** False when the lock already ran later than the requested expiry. */
+    extended?: boolean;
     record?: LockRecord;
 };
 export declare class DatabaseMutex implements MutexInterface {
@@ -24,10 +26,11 @@ export declare class DatabaseMutex implements MutexInterface {
      * owner have to match, and an expired lock is refused - by then somebody
      * else may already have taken it over.
      *
-     * A null `expiration` reuses the lock's own lease length, so renewing
-     * without saying how long cannot shorten a lease somebody chose deliberately.
+     * The new expiry is whichever is later, now + `expiration` or the expiry the
+     * lock already had, so renewing can only ever buy more time. Asking for less
+     * than the lock already has is a no-op rather than a silent shortening.
      */
-    renewLock(name: string, expiration: number | null, owner?: string | null): Promise<RenewResult>;
+    renewLock(name: string, expiration: number, owner?: string | null): Promise<RenewResult>;
     /** Returns the lock's current row, or null when nothing holds it. */
     inspectLock(name: string): Promise<LockRecord | null>;
     /** Returns every lock in the table, expired ones included. */

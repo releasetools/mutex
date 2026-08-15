@@ -47,6 +47,8 @@ export type RenewOutcome =
 export type RenewResult = {
   renewed: boolean;
   outcome: RenewOutcome;
+  /** False when the lock already ran later than the requested expiry. */
+  extended?: boolean;
   record?: LockRecord;
 };
 
@@ -99,12 +101,13 @@ export class DatabaseMutex implements MutexInterface {
    * owner have to match, and an expired lock is refused - by then somebody
    * else may already have taken it over.
    *
-   * A null `expiration` reuses the lock's own lease length, so renewing
-   * without saying how long cannot shorten a lease somebody chose deliberately.
+   * The new expiry is whichever is later, now + `expiration` or the expiry the
+   * lock already had, so renewing can only ever buy more time. Asking for less
+   * than the lock already has is a no-op rather than a silent shortening.
    */
   async renewLock(
     name: string,
-    expiration: number | null,
+    expiration: number,
     owner: string | null = null,
   ): Promise<RenewResult> {
     return this.withSchemaRetry(`Renewing lock '${name}'`, () =>
@@ -304,7 +307,7 @@ export class DatabaseMutex implements MutexInterface {
 
   private async renewLockInternal(
     name: string,
-    expiration: number | null,
+    expiration: number,
     owner: string | null,
   ): Promise<RenewResult> {
     let client: PoolClient | undefined;
@@ -345,21 +348,21 @@ export class DatabaseMutex implements MutexInterface {
 
       // UPDATE, never an upsert: a lock that vanished between the read and
       // here stays gone rather than being recreated.
-      // With no explicit duration, reuse the lease this lock already had, so
-      // `renew` cannot silently cut a deliberately long lock down to a default.
+      // GREATEST, so a renewal can only push the expiry outwards. Postgres
+      // ignores NULLs here, so a row with no recorded expiry still takes the
+      // computed one rather than staying NULL.
       const renewed = await client.query(
         format(
           `UPDATE %I
-          SET expires_at = (NOW() AT TIME ZONE 'UTC') + COALESCE(
-              ($2 || ' seconds')::INTERVAL,
-              expires_at - created_at,
-              ($3 || ' seconds')::INTERVAL
+          SET expires_at = GREATEST(
+              (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL,
+              expires_at
           )
           WHERE id = $1
           RETURNING ${LOCK_COLUMNS};`,
           TABLE_NAME,
         ),
-        [name, expiration, this.config.expiration],
+        [name, expiration],
       );
 
       if (renewed.rows.length === 0) {
@@ -368,13 +371,19 @@ export class DatabaseMutex implements MutexInterface {
       }
       await client.query("COMMIT");
 
+      const updated = toLockRecord(renewed.rows[0]);
+      const extended = updated.expiresAt !== record.expiresAt;
+
       this.log.info(
-        `Lock '${name}' renewed${expiration === null ? " for its existing lease" : ` for ${expiration}s`}.`,
+        extended
+          ? `Lock '${name}' renewed for ${expiration}s.`
+          : `Lock '${name}' already ran past ${expiration}s; left as it was.`,
       );
       return {
         renewed: true,
         outcome: "renewed",
-        record: toLockRecord(renewed.rows[0]),
+        extended,
+        record: updated,
       };
     } catch (error) {
       // Not reported here: `withSchemaRetry` either succeeds on the retry, in

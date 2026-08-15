@@ -168,6 +168,14 @@ const OPTION_CONFIG = {
 } as const;
 
 export const DEFAULT_EXPIRATION_SECONDS = 60;
+/**
+ * `renew` leases longer than `lock` does, because the two answer different
+ * questions: a lock says how long the work is expected to take, a renewal says
+ * how much longer it needs. Renewing is also the point at which a short
+ * default is most expensive - it is called by things that have already been
+ * running a while.
+ */
+export const DEFAULT_RENEW_EXPIRATION_SECONDS = 3600;
 export const DEFAULT_POLL_INTERVAL_SECONDS = 10;
 /** -1 means "wait as long as the lock would have lasted", as in the Action. */
 export const DEFAULT_MAX_WAIT_SECONDS = -1;
@@ -175,8 +183,6 @@ export const DEFAULT_MAX_WAIT_SECONDS = -1;
 export interface ResolvedOptions {
   reason: string;
   expiration: number;
-  /** False when `expiration` is merely the default. */
-  expirationGiven: boolean;
   pollTimeoutMs: number;
   pollIntervalMs: number;
   autoRenew: boolean;
@@ -286,7 +292,9 @@ function resolveOptions(
   const expiration = readNumber(
     values.expiration,
     "expiration",
-    DEFAULT_EXPIRATION_SECONDS,
+    command === "renew"
+      ? DEFAULT_RENEW_EXPIRATION_SECONDS
+      : DEFAULT_EXPIRATION_SECONDS,
   );
   if (expiration <= 0) {
     throw new UsageError("--expiration must be greater than 0");
@@ -317,7 +325,6 @@ function resolveOptions(
   return {
     reason: typeof values.reason === "string" ? values.reason : "",
     expiration,
-    expirationGiven: typeof values.expiration === "string",
     pollTimeoutMs,
     pollIntervalMs: pollInterval * 1000,
     autoRenew: values["no-renew"] !== true,
@@ -447,10 +454,12 @@ ${commands}
 
 renew extends a lock you already hold: the id and the owner must both match,
 and it fails - rather than taking a new lock - if the lock expired or is gone.
+It only ever moves an expiry further out, never nearer.
 
 Lock options:
   -r, --reason <text>            Why the lock is being taken
-  -e, --expiration <seconds>     How long the lock lasts (default: ${DEFAULT_EXPIRATION_SECONDS})
+  -e, --expiration <seconds>     How long the lock lasts (default: ${DEFAULT_EXPIRATION_SECONDS};
+                                 renew: ${DEFAULT_RENEW_EXPIRATION_SECONDS}, and never shortens a lease)
   -w, --max-wait <seconds>       How long to wait for it (default: -1, i.e. --expiration)
   -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
       --no-renew                 Do not renew the lock while a wrapped program runs

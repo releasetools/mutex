@@ -7163,8 +7163,9 @@ class DatabaseMutex {
      * owner have to match, and an expired lock is refused - by then somebody
      * else may already have taken it over.
      *
-     * A null `expiration` reuses the lock's own lease length, so renewing
-     * without saying how long cannot shorten a lease somebody chose deliberately.
+     * The new expiry is whichever is later, now + `expiration` or the expiry the
+     * lock already had, so renewing can only ever buy more time. Asking for less
+     * than the lock already has is a no-op rather than a silent shortening.
      */
     async renewLock(name, expiration, owner = null) {
         return this.withSchemaRetry(`Renewing lock '${name}'`, () => this.renewLockInternal(name, expiration, owner));
@@ -7338,26 +7339,31 @@ class DatabaseMutex {
             }
             // UPDATE, never an upsert: a lock that vanished between the read and
             // here stays gone rather than being recreated.
-            // With no explicit duration, reuse the lease this lock already had, so
-            // `renew` cannot silently cut a deliberately long lock down to a default.
+            // GREATEST, so a renewal can only push the expiry outwards. Postgres
+            // ignores NULLs here, so a row with no recorded expiry still takes the
+            // computed one rather than staying NULL.
             const renewed = await client.query(pg_format_lib(`UPDATE %I
-          SET expires_at = (NOW() AT TIME ZONE 'UTC') + COALESCE(
-              ($2 || ' seconds')::INTERVAL,
-              expires_at - created_at,
-              ($3 || ' seconds')::INTERVAL
+          SET expires_at = GREATEST(
+              (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL,
+              expires_at
           )
           WHERE id = $1
-          RETURNING ${LOCK_COLUMNS};`, TABLE_NAME), [name, expiration, this.config.expiration]);
+          RETURNING ${LOCK_COLUMNS};`, TABLE_NAME), [name, expiration]);
             if (renewed.rows.length === 0) {
                 await client.query("COMMIT");
                 return { renewed: false, outcome: "not-found" };
             }
             await client.query("COMMIT");
-            this.log.info(`Lock '${name}' renewed${expiration === null ? " for its existing lease" : ` for ${expiration}s`}.`);
+            const updated = toLockRecord(renewed.rows[0]);
+            const extended = updated.expiresAt !== record.expiresAt;
+            this.log.info(extended
+                ? `Lock '${name}' renewed for ${expiration}s.`
+                : `Lock '${name}' already ran past ${expiration}s; left as it was.`);
             return {
                 renewed: true,
                 outcome: "renewed",
-                record: toLockRecord(renewed.rows[0]),
+                extended,
+                record: updated,
             };
         }
         catch (error) {
@@ -7763,6 +7769,14 @@ const OPTION_CONFIG = {
     version: { type: "boolean", short: "V" },
 };
 const DEFAULT_EXPIRATION_SECONDS = 60;
+/**
+ * `renew` leases longer than `lock` does, because the two answer different
+ * questions: a lock says how long the work is expected to take, a renewal says
+ * how much longer it needs. Renewing is also the point at which a short
+ * default is most expensive - it is called by things that have already been
+ * running a while.
+ */
+const DEFAULT_RENEW_EXPIRATION_SECONDS = 3600;
 const DEFAULT_POLL_INTERVAL_SECONDS = 10;
 /** -1 means "wait as long as the lock would have lasted", as in the Action. */
 const DEFAULT_MAX_WAIT_SECONDS = -1;
@@ -7833,7 +7847,9 @@ function parseCommandLine(argv) {
     };
 }
 function resolveOptions(command, values) {
-    const expiration = readNumber(values.expiration, "expiration", DEFAULT_EXPIRATION_SECONDS);
+    const expiration = readNumber(values.expiration, "expiration", command === "renew"
+        ? DEFAULT_RENEW_EXPIRATION_SECONDS
+        : DEFAULT_EXPIRATION_SECONDS);
     if (expiration <= 0) {
         throw new UsageError("--expiration must be greater than 0");
     }
@@ -7850,7 +7866,6 @@ function resolveOptions(command, values) {
     return {
         reason: typeof values.reason === "string" ? values.reason : "",
         expiration,
-        expirationGiven: typeof values.expiration === "string",
         pollTimeoutMs,
         pollIntervalMs: pollInterval * 1000,
         autoRenew: values["no-renew"] !== true,
@@ -7954,10 +7969,12 @@ ${commands}
 
 renew extends a lock you already hold: the id and the owner must both match,
 and it fails - rather than taking a new lock - if the lock expired or is gone.
+It only ever moves an expiry further out, never nearer.
 
 Lock options:
   -r, --reason <text>            Why the lock is being taken
-  -e, --expiration <seconds>     How long the lock lasts (default: ${DEFAULT_EXPIRATION_SECONDS})
+  -e, --expiration <seconds>     How long the lock lasts (default: ${DEFAULT_EXPIRATION_SECONDS};
+                                 renew: ${DEFAULT_RENEW_EXPIRATION_SECONDS}, and never shortens a lease)
   -w, --max-wait <seconds>       How long to wait for it (default: -1, i.e. --expiration)
   -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
       --no-renew                 Do not renew the lock while a wrapped program runs
@@ -8345,18 +8362,17 @@ async function commandUnlock(ctx, identifier) {
  * know, not to silently acquire a new one.
  */
 async function commandRenew(ctx, identifier) {
-    const result = await ctx.mutex.renewLock(identifier, 
-    // Without --expiration, keep whatever lease the lock already had.
-    ctx.options.expirationGiven ? ctx.options.expiration : null, ctx.options.owner);
+    const result = await ctx.mutex.renewLock(identifier, ctx.options.expiration, ctx.options.owner);
     if (result.renewed) {
         ctx.out.result({
             command: "renew",
             ok: true,
             id: identifier,
             owner: ctx.options.owner,
+            extended: result.extended !== false,
             expires: result.record?.expiresAt ?? null,
             lock: result.record ?? null,
-        }, describeLockAction("Renewed", result.record, identifier));
+        }, describeLockAction(result.extended === false ? "Kept" : "Renewed", result.record, identifier));
         return EXIT_OK;
     }
     const explanation = {

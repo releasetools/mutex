@@ -17,14 +17,20 @@ interface CommandSpec {
 }
 export declare const COMMANDS: Record<CommandName, CommandSpec>;
 export declare const DEFAULT_EXPIRATION_SECONDS = 60;
+/**
+ * `renew` leases longer than `lock` does, because the two answer different
+ * questions: a lock says how long the work is expected to take, a renewal says
+ * how much longer it needs. Renewing is also the point at which a short
+ * default is most expensive - it is called by things that have already been
+ * running a while.
+ */
+export declare const DEFAULT_RENEW_EXPIRATION_SECONDS = 3600;
 export declare const DEFAULT_POLL_INTERVAL_SECONDS = 10;
 /** -1 means "wait as long as the lock would have lasted", as in the Action. */
 export declare const DEFAULT_MAX_WAIT_SECONDS = -1;
 export interface ResolvedOptions {
     reason: string;
     expiration: number;
-    /** False when `expiration` is merely the default. */
-    expirationGiven: boolean;
     pollTimeoutMs: number;
     pollIntervalMs: number;
     autoRenew: boolean;

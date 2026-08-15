@@ -146,15 +146,14 @@ describe("parseCommandLine", () => {
     }
   });
 
-  it("records whether --expiration was actually given", () => {
-    // renew reuses the lock's own lease when it was not, so that renewing
-    // cannot silently shorten a deliberately long lock to the default.
-    expect(parseCommandLine(["renew", "id"]).options.expirationGiven).toBe(
-      false,
-    );
+  it("gives renew a longer default lease than lock", () => {
+    // A renewal is asked for by something already running, so the short
+    // default that suits `lock` is the wrong one here.
+    expect(parseCommandLine(["lock", "id"]).options.expiration).toBe(60);
+    expect(parseCommandLine(["renew", "id"]).options.expiration).toBe(3600);
     expect(
-      parseCommandLine(["renew", "id", "-e", "300"]).options.expirationGiven,
-    ).toBe(true);
+      parseCommandLine(["renew", "id", "-e", "300"]).options.expiration,
+    ).toBe(300);
   });
 
   it("rejects a missing lock id", () => {
