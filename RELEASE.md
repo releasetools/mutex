@@ -14,6 +14,7 @@ Newest first. One line per change.
 - Added `mutex status`, `mutex list` and `mutex prune` for seeing and tidying up what is held.
 - Fixed lock expiry on databases whose session time zone is not UTC, where every lock read as already expired and nothing was ever excluded.
 - Fixed the schema check running on every operation instead of once.
+- Fixed a secret key being passable to the dotsecenv CLI as an option: a key shaped like `--config=...` was read as a flag rather than as the secret to fetch.
 - Deprecated `command: release` in the Action; use `command: unlock`.
 
 ## 1.1.0

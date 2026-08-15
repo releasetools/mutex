@@ -8490,10 +8490,23 @@ async function unlockQuietly(ctx, identifier) {
 /**
  * Runs the program with our own stdio, and forwards the signals that would
  * otherwise kill mutex without giving it a chance to release the lock.
+ *
+ * Running what the caller asked for is the whole point of the `--` form, the
+ * same contract flock has, so the program name being caller-controlled is the
+ * feature rather than a flaw. What matters is that it stays a plain execve:
+ * never a shell, and arguments passed as an array, so nothing in them can be
+ * reinterpreted as syntax.
  */
 function spawnProgram(program) {
     return new Promise((resolve, reject) => {
-        const child = (0,external_node_child_process_namespaceObject.spawn)(program[0], program.slice(1), { stdio: "inherit" });
+        if (!program[0]) {
+            reject(Object.assign(new Error("no program to run"), { code: "ENOENT" }));
+            return;
+        }
+        const child = (0,external_node_child_process_namespaceObject.spawn)(program[0], program.slice(1), {
+            stdio: "inherit",
+            shell: false,
+        });
         const forward = (signal) => child.kill(signal);
         for (const signal of SIGNALS) {
             process.on(signal, forward);
@@ -8716,6 +8729,7 @@ function isFile(candidate) {
  */
 
 
+
 /**
  * A thin wrapper around the `dotsecenv` binary.
  *
@@ -8733,9 +8747,21 @@ function dotsecenvBinary(explicit) {
  *
  * `--json` is used rather than the bare value so the result survives a value
  * that ends in a newline, and so the vault it came from is known for reporting.
+ *
+ * The key is checked and passed after `--`, because a flag-shaped key would
+ * otherwise be read as an option by the CLI rather than as the secret to fetch:
+ * `secret get --config=/etc/passwd` really does load that file as config.
+ * `.secenv` parsing already rejects such names, but this is the boundary where
+ * it matters, and `getSecret` is exported for callers who never went through it.
  */
 async function getSecret(key, options) {
-    const result = await run([...globalFlags(options), "secret", "get", key, "--json"], options);
+    if (!SECRET_NAME_PATTERN.test(key)) {
+        throw new DotsecenvError(`'${key}' is not a valid secret key`, {
+            kind: "validation",
+            hint: "Keys are NAME or namespace::NAME, using letters, digits and underscores.",
+        });
+    }
+    const result = await run([...globalFlags(options), "secret", "get", "--json", "--", key], options);
     if (result.code !== 0) {
         throw failure(`could not read secret '${key}'`, result, options);
     }
@@ -8787,7 +8813,9 @@ function run(args, options) {
     const binary = dotsecenvBinary(options.binary);
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
-        // No shell, so nothing in a secret name can be interpreted as syntax.
+        // Never a shell, and arguments are passed as an array, so no part of a
+        // secret name or path can be interpreted as syntax. The binary itself is
+        // whatever the operator chose via --dotsecenv-bin or $DOTSECENV_BIN.
         const child = (0,external_node_child_process_namespaceObject.spawn)(binary, args, {
             cwd: options.cwd,
             env: options.env ?? process.env,

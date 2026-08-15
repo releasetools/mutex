@@ -42,6 +42,12 @@ export declare function dotsecenvBinary(explicit?: string): string;
  *
  * `--json` is used rather than the bare value so the result survives a value
  * that ends in a newline, and so the vault it came from is known for reporting.
+ *
+ * The key is checked and passed after `--`, because a flag-shaped key would
+ * otherwise be read as an option by the CLI rather than as the secret to fetch:
+ * `secret get --config=/etc/passwd` really does load that file as config.
+ * `.secenv` parsing already rejects such names, but this is the boundary where
+ * it matters, and `getSecret` is exported for callers who never went through it.
  */
 export declare function getSecret(key: string, options: DotsecenvCliOptions): Promise<SecretValue>;
 /** Lists the secret keys reachable from `options.cwd`, without decrypting. */
