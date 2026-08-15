@@ -5,6 +5,9 @@ on:
     tags:
       - "v1.*.*"
 
+# Deny by default; each job grants only what it needs.
+permissions: {}
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
