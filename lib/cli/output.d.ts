@@ -21,8 +21,8 @@ export declare class Output {
 }
 /** Renders an owner for a message, including the unowned case. */
 export declare function describeOwner(owner: string | null | undefined): string;
-/** Explains a renew refused because the two owners are not the same. */
-export declare function describeOwnerMismatch(identifier: string, held: string | null | undefined, caller: string | null): string;
+/** Explains an operation refused because the two owners are not the same. */
+export declare function describeOwnerMismatch(identifier: string, held: string | null | undefined, caller: string | null, remedy: string): string;
 /**
  * The headline plus stats printed when a lock is taken or extended: the id
  * matters most when it was generated, and the expiry is what the caller has to

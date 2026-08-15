@@ -37,7 +37,6 @@ import {
 } from "./exit-codes.js";
 import {
   describeLockAction,
-  describeOwner,
   describeOwnerMismatch,
   describeRecord,
   Output,
@@ -139,10 +138,12 @@ export async function commandUnlock(
         outcome: result.outcome,
         holder: result.record ?? null,
       },
-      [
-        `Refused to unlock '${identifier}': it is held by ${describeOwner(result.record?.owner)}.`,
-        "Pass --force to break it.",
-      ],
+      describeOwnerMismatch(
+        identifier,
+        result.record?.owner,
+        ctx.options.owner,
+        "Unlocking needs both to match; pass --force to break it.",
+      ),
     );
     return EXIT_REFUSED;
   }
@@ -208,6 +209,7 @@ export async function commandRenew(
       identifier,
       result.record?.owner,
       ctx.options.owner,
+      "Renewing needs both to match.",
     ),
     expired: `'${identifier}' expired at ${result.record?.expiresAt}; it may already have been taken over.`,
     contended: `'${identifier}' is being changed by another process; try again.`,

@@ -7460,12 +7460,19 @@ class DatabaseMutex {
         }
     }
 }
-/** A NULL owner - every lock the GitHub Action takes - is always releasable. */
+/**
+ * Whether `guard` may unlock `record`, using the same rule as renewal: the two
+ * owners have to be the same, unowned included. `--force` is the way past it.
+ *
+ * Note what "unowned" is and is not. It is the absence of an identity, not an
+ * identity, so any two unowned callers match each other - a lock nobody named
+ * an owner for is still releasable by anyone who also names none. Naming an
+ * owner is what makes a lock yours.
+ *
+ * Exported for tests: the matrix is small, security-relevant, and worth pinning.
+ */
 function mayUnlock(record, guard) {
     if (!guard || guard.force) {
-        return true;
-    }
-    if (record.owner === null) {
         return true;
     }
     return record.owner === guard.owner;
@@ -8148,11 +8155,11 @@ class Output {
 function describeOwner(owner) {
     return owner ? `'${owner}'` : "nobody";
 }
-/** Explains a renew refused because the two owners are not the same. */
-function describeOwnerMismatch(identifier, held, caller) {
+/** Explains an operation refused because the two owners are not the same. */
+function describeOwnerMismatch(identifier, held, caller, remedy) {
     const lock = held ? `is held by '${held}'` : "is unowned";
     const call = caller ? `this call is '${caller}'` : "this call is unowned";
-    return `'${identifier}' ${lock}; ${call}. Renewing needs both to match.`;
+    return `'${identifier}' ${lock}; ${call}. ${remedy}`;
 }
 /**
  * The headline plus stats printed when a lock is taken or extended: the id
@@ -8291,10 +8298,7 @@ async function commandUnlock(ctx, identifier) {
             id: identifier,
             outcome: result.outcome,
             holder: result.record ?? null,
-        }, [
-            `Refused to unlock '${identifier}': it is held by ${describeOwner(result.record?.owner)}.`,
-            "Pass --force to break it.",
-        ]);
+        }, describeOwnerMismatch(identifier, result.record?.owner, ctx.options.owner, "Unlocking needs both to match; pass --force to break it."));
         return EXIT_REFUSED;
     }
     if (!result.unlocked) {
@@ -8334,7 +8338,7 @@ async function commandRenew(ctx, identifier) {
     }
     const explanation = {
         "not-found": `'${identifier}' is not held, so there is nothing to renew.`,
-        "owned-by-another": describeOwnerMismatch(identifier, result.record?.owner, ctx.options.owner),
+        "owned-by-another": describeOwnerMismatch(identifier, result.record?.owner, ctx.options.owner, "Renewing needs both to match."),
         expired: `'${identifier}' expired at ${result.record?.expiresAt}; it may already have been taken over.`,
         contended: `'${identifier}' is being changed by another process; try again.`,
     };
