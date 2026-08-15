@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,11 +18,12 @@
 import { WebClient } from "@slack/web-api";
 import * as core from "@actions/core";
 import { MutexSettings } from "./configuration.js";
+import { logError } from "./helpers.js";
 import {
   loadFromEnvOrGHAInput,
   loadRequiredNonEmptyFromGHAInput,
-  printError,
-} from "./helpers.js";
+} from "./inputs.js";
+import { ActionsLogger } from "./actions-logger.js";
 
 export class SlackClient {
   private settings: MutexSettings;
@@ -64,7 +65,11 @@ export class SlackClient {
       core.info(`Slack message posted to ${this.channel}`);
       return true;
     } catch (error) {
-      printError(error, `Failed posting Slack message to ${this.channel}`);
+      logError(
+        new ActionsLogger(),
+        error,
+        `Failed posting Slack message to ${this.channel}`,
+      );
     }
     return false;
   }

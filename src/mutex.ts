@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,207 +15,223 @@
  *
  */
 
-import * as core from "@actions/core";
-import { MutexSettings } from "./configuration.js";
-import {
-  GitHubClient,
-  setFailed,
-  setLockAcquired,
-  setLockReleased,
-} from "./github.js";
+import { Logger } from "./logger.js";
 import { sleep } from "./helpers.js";
-import { SKIP_LABEL } from "./constants.js";
-import * as github from "@actions/github";
-import { Notifications } from "./notifications.js";
+
+/**
+ * The two mutex operations, shared by the GitHub Action and the CLI.
+ *
+ * The CLI commands map onto them directly:
+ *   mutex lock      -> tryLock (polls until `max-wait` elapses)
+ *   mutex try-lock  -> tryLock with a zero timeout (a single attempt)
+ *   mutex unlock    -> tryUnlock
+ *
+ * `mutex renew` is not here: extending a lock is a single UPDATE with nothing
+ * to poll for, so it goes straight to `DatabaseMutex.renewLock`.
+ *
+ * Nothing here imports the Actions toolkit: callers supply a `Logger` for
+ * output and `LockEvents` for whatever side effects they need.
+ */
+
+/**
+ * Floor for the delay between attempts. A `poll-interval` of 0 would otherwise
+ * turn the wait loop into a hot loop hammering Postgres.
+ */
+const MIN_POLL_INTERVAL_MS = 100;
+
+/** A row of the lock table, with timestamps normalised to ISO-8601 UTC. */
+export interface LockRecord {
+  id: string;
+  reason: string | null;
+  owner: string | null;
+  createdAt: string | null;
+  expiresAt: string | null;
+  expired: boolean;
+}
 
 export type LockResult = {
   acquired: boolean;
   status: string;
   expires?: string;
+  /** The row we wrote, or - when contended - the row standing in the way. */
+  record?: LockRecord;
 };
 
+export type UnlockOutcome =
+  "unlocked" | "not-found" | "owned-by-another" | "contended";
+
+export type UnlockResult = {
+  unlocked: boolean;
+  outcome: UnlockOutcome;
+  record?: LockRecord;
+};
+
+/**
+ * Who is asking to unlock, and whether they may break someone else's lock.
+ *
+ * A row with a NULL owner (every lock the Action takes) is always unlockable.
+ */
+export interface UnlockGuard {
+  owner: string | null;
+  force: boolean;
+}
+
+/**
+ * Everything `tryLock`/`tryUnlock` need about a request. Both `MutexSettings`
+ * (the Action) and the CLI's resolved options satisfy this structurally.
+ */
+export interface LockRequest {
+  identifier: string;
+  reason: string;
+  pollTimeoutMs: number;
+  pollIntervalMs: number;
+  owner?: string | null;
+  /** Unlock even when another owner holds the lock. */
+  force?: boolean;
+}
+
+/** Connection details needed to talk to the lock store. */
+export interface MutexConfig {
+  dbConnectionString: string;
+  expiration: number;
+}
+
 export interface MutexInterface {
-  acquireLock(name: string, reason: string): Promise<LockResult>;
-  releaseLock(name: string): Promise<boolean>;
+  acquireLock(
+    name: string,
+    reason: string,
+    owner?: string | null,
+  ): Promise<LockResult>;
+  releaseLock(name: string, guard?: UnlockGuard): Promise<UnlockResult>;
 }
 
+/**
+ * Side effects a caller wants attached to an outcome: the Action posts PR and
+ * Slack notifications and records job state, the CLI prints a line.
+ */
+export interface LockEvents {
+  onLocked?(result: LockResult): void | Promise<void>;
+  onUnlocked?(result: UnlockResult): void | Promise<void>;
+  onContended?(result: LockResult, attempt: number): void | Promise<void>;
+  onTimeout?(message: string): void | Promise<void>;
+}
+
+function pollIntervalFor(request: LockRequest): number {
+  return request.pollIntervalMs > 0
+    ? request.pollIntervalMs
+    : MIN_POLL_INTERVAL_MS;
+}
+
+/**
+ * Acquire the lock, retrying until `pollTimeoutMs` elapses.
+ *
+ * Always makes at least one attempt, so a zero timeout means "try once" rather
+ * than "do nothing" - that is what `mutex try-lock` relies on.
+ */
 export async function tryLock(
-  settings: MutexSettings,
-  gh: GitHubClient,
+  request: LockRequest,
   mutex: MutexInterface,
-  notifications: Notifications,
-): Promise<void> {
-  core.info(
-    `Attempting to acquire lock. Timeout: ${settings.pollTimeoutMs / 1000}s`,
+  log: Logger,
+  events: LockEvents = {},
+): Promise<LockResult> {
+  const timeoutMs = Math.max(request.pollTimeoutMs, 0);
+  const intervalMs = pollIntervalFor(request);
+  const deadline = Date.now() + timeoutMs;
+
+  log.info(
+    `Attempting to acquire lock '${request.identifier}'. Timeout: ${timeoutMs / 1000}s`,
   );
 
-  const startTime = Date.now();
-  while (Date.now() - startTime < settings.pollTimeoutMs) {
-    core.info(`Acquiring lock '${settings.identifier}'...`);
+  let attempt = 0;
+  let result: LockResult = { acquired: false, status: "No attempt was made" };
 
-    const { acquired, status, expires } = await mutex.acquireLock(
-      settings.identifier,
-      settings.reason,
+  for (;;) {
+    attempt++;
+    result = await mutex.acquireLock(
+      request.identifier,
+      request.reason,
+      request.owner ?? null,
     );
 
-    if (acquired) {
-      setLockAcquired();
-
-      const commentBody = `🔒 Lock \`${settings.identifier}\` acquired.\nReason: \`${settings.reason || "N/A"}\`\nThis lock will expire at \`${expires}\`.`;
-      notifications.send(commentBody);
-
-      return;
+    if (result.acquired) {
+      log.info(`Lock '${request.identifier}' acquired on attempt ${attempt}.`);
+      await events.onLocked?.(result);
+      return result;
     }
 
-    core.info(
-      `Waiting for existing lock _${settings.identifier}_ to expire.\nStatus: ${status || "N/A"})\n\nRetrying in ${settings.pollIntervalMs / 1000}s}...`,
-    );
-
-    await sleep(settings.pollIntervalMs);
-  }
-
-  setFailed(
-    `⌛ Timed out waiting for lock after ${settings.pollTimeoutMs / 1000} seconds.`,
-  );
-}
-
-export async function tryRelease(
-  settings: MutexSettings,
-  gh: GitHubClient,
-  mutex: MutexInterface,
-  notifications: Notifications,
-): Promise<void> {
-  core.info(
-    `Attempting to release lock. Timeout: ${settings.pollTimeoutMs / 1000}s`,
-  );
-
-  const startTime = Date.now();
-  while (Date.now() - startTime < settings.pollTimeoutMs) {
-    core.info(`Releasing lock '${settings.identifier}'...`);
-
-    const released = await mutex.releaseLock(settings.identifier);
-
-    if (released) {
-      setLockReleased();
-
-      const commentBody = `🔓 Lock \`${settings.identifier}\` released.`;
-      notifications.send(commentBody);
-
-      return;
+    // Stop once there is no room left for another attempt before the deadline,
+    // rather than sleeping past it and reporting a stale failure.
+    if (Date.now() + intervalMs >= deadline) {
+      break;
     }
 
-    core.info(
-      `Retrying to release lock '${settings.identifier}' in ${settings.pollIntervalMs / 1000}s}...`,
+    await events.onContended?.(result, attempt);
+    log.info(
+      `Waiting for lock '${request.identifier}' (${result.status}). Retrying in ${intervalMs / 1000}s...`,
     );
-
-    await sleep(settings.pollIntervalMs);
+    await sleep(intervalMs);
   }
 
-  setFailed(
-    `⌛ Timed out waiting to release lock after ${settings.pollTimeoutMs / 1000} seconds.`,
+  await events.onTimeout?.(
+    `⌛ Timed out waiting for lock '${request.identifier}' after ${timeoutMs / 1000} seconds.`,
   );
+  return result;
 }
 
-// Determine if the action is allowed to run
-export async function shouldRunAction(gh: GitHubClient): Promise<boolean> {
-  if (checkSkipInEnv()) {
-    // skip-tag found in env
-    return false;
+/**
+ * Release the lock, retrying while the attempt is merely contended.
+ *
+ * Unlocking something that is not locked succeeds: unlock is idempotent. A
+ * refusal (`owned-by-another`) is a decision rather than a transient failure,
+ * so it short-circuits the retry loop.
+ */
+export async function tryUnlock(
+  request: LockRequest,
+  mutex: MutexInterface,
+  log: Logger,
+  events: LockEvents = {},
+): Promise<UnlockResult> {
+  const timeoutMs = Math.max(request.pollTimeoutMs, 0);
+  const intervalMs = pollIntervalFor(request);
+  const deadline = Date.now() + timeoutMs;
+  const guard: UnlockGuard = {
+    owner: request.owner ?? null,
+    force: request.force ?? false,
+  };
+
+  log.info(`Attempting to unlock '${request.identifier}'.`);
+
+  let result: UnlockResult = { unlocked: false, outcome: "contended" };
+
+  for (;;) {
+    result = await mutex.releaseLock(request.identifier, guard);
+
+    if (result.unlocked || result.outcome === "owned-by-another") {
+      break;
+    }
+
+    if (Date.now() + intervalMs >= deadline) {
+      break;
+    }
+
+    log.info(
+      `Could not unlock '${request.identifier}' yet (${result.outcome}). Retrying in ${intervalMs / 1000}s...`,
+    );
+    await sleep(intervalMs);
   }
 
-  if (checkSkipInLabel(gh.pr)) {
-    // skip-tag found in body
-    return false;
+  if (result.unlocked) {
+    log.info(`Lock '${request.identifier}' released.`);
+    await events.onUnlocked?.(result);
+  } else if (result.outcome === "owned-by-another") {
+    log.warning(
+      `Refusing to unlock '${request.identifier}': it is held by '${result.record?.owner}'.`,
+    );
+  } else {
+    await events.onTimeout?.(
+      `⌛ Timed out waiting to unlock '${request.identifier}' after ${timeoutMs / 1000} seconds.`,
+    );
   }
 
-  if (await checkSkipInComment(gh.octokit, gh.owner, gh.repo, gh.pr)) {
-    // skip-tag found in body
-    return false;
-  }
-
-  if (checkSkipInBody(gh.pr)) {
-    // skip-tag found in body
-    return false;
-  }
-
-  return true;
-}
-
-function checkSkipInEnv(): boolean {
-  if (process.env[SKIP_LABEL] === undefined) {
-    return false;
-  }
-
-  core.warning(`Skipping execution: '${SKIP_LABEL}' found in environment.`);
-  return true;
-}
-
-function checkSkipInLabel(
-  pr: typeof github.context.payload.pull_request,
-): boolean {
-  if (!pr) {
-    return false;
-  }
-
-  // If in a PR context, check for skip label
-  const labels = pr.labels.map((label: { name: string }) => label.name);
-  if (labels && labels.includes(SKIP_LABEL)) {
-    core.warning(`Skipping execution: '${SKIP_LABEL}' label found.`);
-    return true;
-  }
-
-  return false;
-}
-
-async function checkSkipInComment(
-  octokit: ReturnType<typeof github.getOctokit>,
-  owner: string,
-  repo: string,
-  pr: typeof github.context.payload.pull_request,
-): Promise<boolean> {
-  if (!pr) {
-    return false;
-  }
-
-  // Retrieve all comments on PR
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner,
-    repo,
-    issue_number: pr.number,
-  });
-  const skipCommentFound = comments.some(
-    (comment: { body?: string | null }) => {
-      if (!comment.body) {
-        // Nothing to do if comment has no body
-        return false;
-      }
-
-      // Find if any lines contain the skip label
-      return comment.body
-        .split(/\s+/)
-        .some((word: string) => word === SKIP_LABEL);
-    },
-  );
-
-  if (skipCommentFound) {
-    core.warning(`Skipping execution: '${SKIP_LABEL}' comment found.`);
-  }
-
-  return skipCommentFound;
-}
-
-function checkSkipInBody(
-  pr: typeof github.context.payload.pull_request,
-): boolean {
-  if (!pr) {
-    return false;
-  }
-
-  // Check for skip in PR description
-  if (pr.body && pr.body.split(/\s+/).some((word) => word === SKIP_LABEL)) {
-    core.warning(`Skipping execution: '${SKIP_LABEL}' found in description.`);
-    return true;
-  }
-
-  return false;
+  return result;
 }

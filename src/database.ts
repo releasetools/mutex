@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,86 +15,181 @@
  *
  */
 
-import * as core from "@actions/core";
-import { Pool } from "pg";
-import { LockResult, MutexInterface } from "./mutex.js";
+import { Pool, PoolClient } from "pg";
+import {
+  LockRecord,
+  LockResult,
+  MutexConfig,
+  MutexInterface,
+  UnlockGuard,
+  UnlockResult,
+} from "./mutex.js";
 import { TABLE_NAME } from "./constants.js";
-import { MutexSettings } from "./configuration.js";
-import { printWarning, sleep } from "./helpers.js";
+import { Logger, SilentLogger } from "./logger.js";
+import { describeError, logWarning, sleep } from "./helpers.js";
 import format from "pg-format";
 
-export class DatabaseMutex implements MutexInterface {
-  settings: MutexSettings;
-  connection_string: string;
-  pool: Pool;
+/**
+ * The columns every read returns.
+ *
+ * `created_at`/`expires_at` are `TIMESTAMP WITHOUT TIME ZONE` holding UTC wall
+ * time. `AT TIME ZONE 'UTC'` re-labels them as `timestamptz`, so node-postgres
+ * parses them into correct `Date`s no matter what time zone the client or the
+ * database session happens to run in.
+ */
+const LOCK_COLUMNS = `id, reason, owner,
+        created_at AT TIME ZONE 'UTC' AS created_at,
+        expires_at AT TIME ZONE 'UTC' AS expires_at,
+        (expires_at IS NOT NULL AND expires_at < (NOW() AT TIME ZONE 'UTC')) AS expired`;
 
-  constructor(settings: MutexSettings) {
-    this.settings = settings;
-    this.connection_string = settings.dbConnectionString;
+export type RenewOutcome =
+  "renewed" | "not-found" | "owned-by-another" | "expired" | "contended";
+
+export type RenewResult = {
+  renewed: boolean;
+  outcome: RenewOutcome;
+  record?: LockRecord;
+};
+
+export class DatabaseMutex implements MutexInterface {
+  private readonly config: MutexConfig;
+  private readonly log: Logger;
+  private readonly pool: Pool;
+  private closed = false;
+  /** Schema creation is tried at most once per instance. */
+  private schemaAttempted = false;
+
+  constructor(config: MutexConfig, log: Logger = new SilentLogger()) {
+    this.config = config;
+    this.log = log;
 
     // Database configuration using connection string
-    this.pool = new Pool({
-      connectionString: this.connection_string,
+    this.pool = new Pool({ connectionString: config.dbConnectionString });
+
+    // Without a listener, an error on an idle client is an unhandled 'error'
+    // event and takes the whole process down.
+    this.pool.on("error", (error) => {
+      logWarning(this.log, error, "Idle database client error");
     });
   }
 
-  async acquireLock(name: string, reason: string): Promise<LockResult> {
-    try {
-      return await this.acquireLockInternal(name, reason);
-    } catch (error) {
-      // If we encounter an error, it might be due to the table not existing.
-      // Attempt to create the table
-      this.initializeTable();
-
-      // And retry acquiring the lock once.
-      return await this.acquireLockInternal(name, reason);
-    }
+  async acquireLock(
+    name: string,
+    reason: string,
+    owner: string | null = null,
+  ): Promise<LockResult> {
+    return this.withSchemaRetry(`Acquiring lock '${name}'`, () =>
+      this.acquireLockInternal(name, reason, owner),
+    );
   }
 
-  async acquireLockInternal(name: string, reason: string): Promise<LockResult> {
-    let client;
-    try {
-      core.info("Attempting to connect to the database.");
-      client = await this.pool.connect();
-      core.info("Successfully connected to the database.");
+  async releaseLock(name: string, guard?: UnlockGuard): Promise<UnlockResult> {
+    return this.withSchemaRetry(`Releasing lock '${name}'`, () =>
+      this.releaseLockInternal(name, guard),
+    );
+  }
 
+  /**
+   * Extends a lock that `owner` currently holds.
+   *
+   * Strictly an UPDATE: it never inserts, so renewing something that is not
+   * held fails rather than quietly taking a new lock. Both the id and the
+   * owner have to match, and an expired lock is refused - by then somebody
+   * else may already have taken it over.
+   */
+  async renewLock(
+    name: string,
+    expiration: number,
+    owner: string | null = null,
+  ): Promise<RenewResult> {
+    return this.withSchemaRetry(`Renewing lock '${name}'`, () =>
+      this.renewLockInternal(name, expiration, owner),
+    );
+  }
+
+  /** Returns the lock's current row, or null when nothing holds it. */
+  async inspectLock(name: string): Promise<LockRecord | null> {
+    return this.withSchemaRetry(`Inspecting lock '${name}'`, async () => {
+      const result = await this.pool.query(
+        format(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME),
+        [name],
+      );
+      return result.rows.length > 0 ? toLockRecord(result.rows[0]) : null;
+    });
+  }
+
+  /** Returns every lock in the table, expired ones included. */
+  async listLocks(): Promise<LockRecord[]> {
+    return this.withSchemaRetry("Listing locks", async () => {
+      const result = await this.pool.query(
+        format(`SELECT ${LOCK_COLUMNS} FROM %I ORDER BY id;`, TABLE_NAME),
+      );
+      return result.rows.map(toLockRecord);
+    });
+  }
+
+  /**
+   * Deletes every expired lock. Expired rows are already dead - acquiring
+   * overwrites them - so this is only housekeeping and needs no advisory lock.
+   */
+  async pruneExpired(dryRun = false): Promise<LockRecord[]> {
+    return this.withSchemaRetry("Pruning expired locks", async () => {
+      const predicate = `WHERE expires_at IS NOT NULL AND expires_at < (NOW() AT TIME ZONE 'UTC')`;
+      const query = dryRun
+        ? format(`SELECT ${LOCK_COLUMNS} FROM %I ${predicate};`, TABLE_NAME)
+        : format(
+            `DELETE FROM %I ${predicate} RETURNING ${LOCK_COLUMNS};`,
+            TABLE_NAME,
+          );
+
+      const result = await this.pool.query(query);
+      return result.rows.map(toLockRecord);
+    });
+  }
+
+  /** Releases the connection pool. Required for a CLI process to exit. */
+  async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    await this.pool.end();
+  }
+
+  private async acquireLockInternal(
+    name: string,
+    reason: string,
+    owner: string | null,
+  ): Promise<LockResult> {
+    let client: PoolClient | undefined;
+    try {
+      client = await this.connect();
       await client.query("BEGIN");
 
-      // Get an advisory lock to ensure no other process is
-      // trying to acquire or release this same lock concurrently.
-      let lockAcquired = await this.dbAdvisoryLockUnsafe(client, name);
-      if (!lockAcquired) {
-        // Protect against concurrency issues by waiting a short moment
-        await sleep(1);
-
-        // And then retrying to acquire the advisory lock
-        lockAcquired = await this.dbAdvisoryLockUnsafe(client, name);
-      }
-
-      // If we still couldn't get the advisory lock, bail out.
-      if (!lockAcquired) {
+      if (!(await this.holdAdvisoryLock(client, name))) {
         await client.query("ROLLBACK");
-
         return {
           acquired: false,
           status: "Lock held by another transaction",
         };
       }
 
-      // If the advisory lock was acquired, proceed to insert or update the mutex row.
-      // If a lock with the same name exists (ON CONFLICT), it tries to UPDATE it.
-      // The UPDATE only succeeds if the existing lock has expired (expires_at < NOW()).
+      // Insert the lock, or take it over when the existing one has expired.
+      // A row whose expires_at is NULL is never taken over: an unknown
+      // expiry is treated as "still held". Acquiring never extends a lock the
+      // caller already holds - that is `renewLock`'s job.
       const upsertQuery = format(
-        `INSERT INTO %I (id, reason, expires_at)
-        VALUES ($1, $2, NOW() + ($3 || ' seconds')::INTERVAL)
+        `INSERT INTO %I (id, reason, owner, expires_at)
+        VALUES ($1, $2, $3, (NOW() AT TIME ZONE 'UTC') + ($4 || ' seconds')::INTERVAL)
         ON CONFLICT (id) DO UPDATE
         SET
             expires_at = EXCLUDED.expires_at,
             reason = EXCLUDED.reason,
+            owner = EXCLUDED.owner,
             created_at = (NOW() AT TIME ZONE 'UTC')
         WHERE
             %I.expires_at < (NOW() AT TIME ZONE 'UTC')
-        RETURNING id, reason, expires_at;`,
+        RETURNING ${LOCK_COLUMNS};`,
         TABLE_NAME,
         TABLE_NAME,
       );
@@ -102,123 +197,214 @@ export class DatabaseMutex implements MutexInterface {
       const result = await client.query(upsertQuery, [
         name,
         reason,
-        this.settings.expiration,
+        owner,
+        this.config.expiration,
       ]);
 
-      // If rowCount is 0, it means a valid, unexpired lock row already existed.
+      // No row means a valid, unexpired lock already existed.
       if (result.rowCount === 0) {
-        core.info(`Lock for "${name}" exists and has not expired.`);
+        const holder = await client.query(
+          format(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME),
+          [name],
+        );
         await client.query("ROLLBACK");
 
+        this.log.info(`Lock for "${name}" exists and has not expired.`);
         return {
           acquired: false,
           status: "Lock taken by another process (try again later)",
+          record:
+            holder.rows.length > 0 ? toLockRecord(holder.rows[0]) : undefined,
         };
       }
 
-      // The lock was successfully written to the table.
       await client.query("COMMIT");
-      core.info(`Lock '${name}' acquired successfully.`);
-      const approxExpiry = new Date(
-        Date.now() + this.settings.expiration * 1000,
+      this.log.info(`Lock '${name}' acquired successfully.`);
+
+      const record = toLockRecord(result.rows[0]);
+      const approximate = new Date(
+        Date.now() + this.config.expiration * 1000,
       ).toISOString();
-
-      const expires =
-        new Date(result?.rows[0]?.expires_at).toISOString() ||
-        `approximately ${approxExpiry}`;
-      return { acquired: true, status: "Lock acquired", expires: expires };
+      return {
+        acquired: true,
+        status: "Lock acquired",
+        expires: record.expiresAt ?? `approximately ${approximate}`,
+        record,
+      };
     } catch (error) {
-      printWarning(
-        error,
-        `An error occurred while acquiring a lock for '${name}'; rolling back and retrying`,
+      // Not reported here: `withSchemaRetry` either succeeds on the retry, in
+      // which case this was not a problem, or rethrows for the caller to report.
+      this.log.debug(
+        `An error occurred while acquiring a lock for '${name}'; rolling back: ${describeError(error)}`,
       );
-
-      await client?.query("ROLLBACK");
+      await rollback(client, this.log);
       throw error;
     } finally {
-      // Ensure the database connection is returned to the pool, whether an error occurred or not
-      await client?.release();
-      core.info(`Database connection released.`);
+      this.disconnect(client);
     }
   }
 
-  async releaseLock(name: string): Promise<boolean> {
+  private async releaseLockInternal(
+    name: string,
+    guard?: UnlockGuard,
+  ): Promise<UnlockResult> {
+    let client: PoolClient | undefined;
     try {
-      return await this.releaseLockInternal(name);
-    } catch (error) {
-      // If we encounter an error, retry acquiring the lock once.
-      return await this.releaseLockInternal(name);
-    }
-  }
-
-  async releaseLockInternal(name: string): Promise<boolean> {
-    let client;
-    try {
-      core.info("Attempting to connect to the database.");
-      client = await this.pool.connect();
-      core.info("Successfully connected to the database.");
-
+      client = await this.connect();
       await client.query("BEGIN");
 
-      // Get an advisory lock to ensure no other process is
-      // trying to acquire or release this same lock concurrently.
-      let lockAcquired = await this.dbAdvisoryLockUnsafe(client, name);
-      if (!lockAcquired) {
-        // Protect against concurrency issues by waiting a short moment
-        await sleep(1);
-
-        // And then retrying to acquire the advisory lock
-        lockAcquired = await this.dbAdvisoryLockUnsafe(client, name);
-      }
-
-      // If we still couldn't get the advisory lock, bail out.
-      if (!lockAcquired) {
+      if (!(await this.holdAdvisoryLock(client, name))) {
         await client.query("ROLLBACK");
-
-        return false;
+        return { unlocked: false, outcome: "contended" };
       }
 
-      // Once the advisory lock is held, we can safely delete the row.
-      const deleteQuery = `DELETE FROM ${TABLE_NAME} WHERE id = $1;`;
-      const result = await client.query(deleteQuery, [name]);
-
-      await client.query("COMMIT");
-
-      if (result.rowCount && result.rowCount > 0) {
-        core.info(`Lock '${name}' released successfully.`);
-      } else {
-        core.warning(`Lock '${name}' was not found. No release was necessary.`);
-      }
-      return true;
-    } catch (error) {
-      printWarning(
-        error,
-        `An error occurred while releasing a lock for '${name}'; rolling back and retrying`,
+      const existing = await client.query(
+        format(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME),
+        [name],
       );
 
-      await client?.query("ROLLBACK");
+      if (existing.rows.length === 0) {
+        await client.query("COMMIT");
+        this.log.warning(
+          `Lock '${name}' was not found. No release was necessary.`,
+        );
+        return { unlocked: true, outcome: "not-found" };
+      }
 
+      const record = toLockRecord(existing.rows[0]);
+      if (!mayUnlock(record, guard)) {
+        await client.query("COMMIT");
+        return { unlocked: false, outcome: "owned-by-another", record };
+      }
+
+      await client.query(format(`DELETE FROM %I WHERE id = $1;`, TABLE_NAME), [
+        name,
+      ]);
+      await client.query("COMMIT");
+
+      this.log.info(`Lock '${name}' released successfully.`);
+      return { unlocked: true, outcome: "unlocked", record };
+    } catch (error) {
+      // Not reported here: `withSchemaRetry` either succeeds on the retry, in
+      // which case this was not a problem, or rethrows for the caller to report.
+      this.log.debug(
+        `An error occurred while releasing a lock for '${name}'; rolling back: ${describeError(error)}`,
+      );
+      await rollback(client, this.log);
       throw error;
     } finally {
-      // Ensure the database connection is returned to the pool, whether an error occurred or not
-      await client?.release();
-      core.info(`Database connection released.`);
+      this.disconnect(client);
     }
   }
 
-  // Acquire an advisory lock to ensure no other process is
-  // trying to acquire or release this same lock concurrently.
-  // This function leaves all aspects such as client/transaction management
-  // to the caller.
-  async dbAdvisoryLockUnsafe(client: any, name: string): Promise<boolean> {
-    const advisoryLockResult = await client.query(
+  private async renewLockInternal(
+    name: string,
+    expiration: number,
+    owner: string | null,
+  ): Promise<RenewResult> {
+    let client: PoolClient | undefined;
+    try {
+      client = await this.connect();
+      await client.query("BEGIN");
+
+      if (!(await this.holdAdvisoryLock(client, name))) {
+        await client.query("ROLLBACK");
+        return { renewed: false, outcome: "contended" };
+      }
+
+      const existing = await client.query(
+        format(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME),
+        [name],
+      );
+
+      if (existing.rows.length === 0) {
+        await client.query("COMMIT");
+        return { renewed: false, outcome: "not-found" };
+      }
+
+      const record = toLockRecord(existing.rows[0]);
+
+      // Exact match, with no `--force` escape: renewing a lock somebody else
+      // holds is never the right thing to do. A NULL owner - every lock the
+      // Action takes - matches only a caller that has no owner either.
+      if (record.owner !== owner) {
+        await client.query("COMMIT");
+        return { renewed: false, outcome: "owned-by-another", record };
+      }
+
+      // An expired lock may already have been taken over by someone else, so
+      // pushing its expiry forward would re-take it behind their back.
+      if (record.expired) {
+        await client.query("COMMIT");
+        return { renewed: false, outcome: "expired", record };
+      }
+
+      // UPDATE, never an upsert: a lock that vanished between the read and
+      // here stays gone rather than being recreated.
+      const renewed = await client.query(
+        format(
+          `UPDATE %I
+          SET expires_at = (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL
+          WHERE id = $1
+          RETURNING ${LOCK_COLUMNS};`,
+          TABLE_NAME,
+        ),
+        [name, expiration],
+      );
+
+      if (renewed.rows.length === 0) {
+        await client.query("COMMIT");
+        return { renewed: false, outcome: "not-found" };
+      }
+      await client.query("COMMIT");
+
+      this.log.info(`Lock '${name}' renewed for ${expiration}s.`);
+      return {
+        renewed: true,
+        outcome: "renewed",
+        record: toLockRecord(renewed.rows[0]),
+      };
+    } catch (error) {
+      // Not reported here: `withSchemaRetry` either succeeds on the retry, in
+      // which case this was not a problem, or rethrows for the caller to report.
+      this.log.debug(
+        `An error occurred while renewing a lock for '${name}'; rolling back: ${describeError(error)}`,
+      );
+      await rollback(client, this.log);
+      throw error;
+    } finally {
+      this.disconnect(client);
+    }
+  }
+
+  /**
+   * Takes a transaction-scoped advisory lock on the mutex id, so no other
+   * process can acquire or release the same lock concurrently. Retries once,
+   * since contention here is almost always momentary.
+   */
+  private async holdAdvisoryLock(
+    client: PoolClient,
+    name: string,
+  ): Promise<boolean> {
+    if (await this.tryAdvisoryLock(client, name)) {
+      return true;
+    }
+
+    await sleep(1);
+    return this.tryAdvisoryLock(client, name);
+  }
+
+  private async tryAdvisoryLock(
+    client: PoolClient,
+    name: string,
+  ): Promise<boolean> {
+    const result = await client.query(
       "SELECT pg_try_advisory_xact_lock(hashtext($1)) as acquired",
       [name],
     );
-    const lockAcquired = advisoryLockResult.rows[0].acquired;
 
-    if (!lockAcquired) {
-      console.log(`Could not acquire advisory lock '${name}'.`);
+    if (!result.rows[0].acquired) {
+      this.log.debug(`Could not acquire advisory lock '${name}'.`);
       return false;
     }
 
@@ -226,41 +412,140 @@ export class DatabaseMutex implements MutexInterface {
   }
 
   /**
-   * Connects to the PostgreSQL database and creates the table
-   * if it does not already exist.
+   * Runs an operation and, if it fails, makes sure the schema exists before
+   * trying once more - the usual cause is a database that has never seen this
+   * action before.
+   */
+  private async withSchemaRetry<T>(
+    operation: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      // Creating the table is a guess at the cause, worth making once. After
+      // that the schema is not what is wrong, so later failures go straight
+      // back to the caller instead of re-running DDL on every operation.
+      if (this.schemaAttempted) {
+        throw error;
+      }
+      this.schemaAttempted = true;
+
+      // Expected the first time a database is used, so this is not worth a
+      // warning: if the retry fails too, the original error is thrown.
+      this.log.debug(
+        `${operation} failed; ensuring the schema exists and retrying once: ${describeError(error)}`,
+      );
+
+      try {
+        await this.initializeTable();
+      } catch {
+        throw error;
+      }
+
+      return run();
+    }
+  }
+
+  /**
+   * Creates the lock table when missing, and adds the `owner` column to tables
+   * created by earlier versions. Both statements are idempotent.
    */
   private async initializeTable(): Promise<void> {
-    let client;
+    let client: PoolClient | undefined;
     try {
-      core.info("Attempting to connect to the database.");
-      client = await this.pool.connect();
-      core.info("Successfully connected to the database.");
+      client = await this.connect();
 
-      // Define the SQL query for creating the table.
-      const createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
-          id VARCHAR(255) PRIMARY KEY,
-          reason TEXT,
-          created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC') NOT NULL,
-          expires_at TIMESTAMP WITHOUT TIME ZONE
-        );
-      `;
-
-      // Execute the table creation query
-      await client.query(createTableQuery);
-      core.info(
-        `Table ${TABLE_NAME} has been created successfully (or already exists).`,
+      await client.query(
+        format(
+          `CREATE TABLE IF NOT EXISTS %I (
+            id VARCHAR(255) PRIMARY KEY,
+            reason TEXT,
+            owner TEXT,
+            created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC') NOT NULL,
+            expires_at TIMESTAMP WITHOUT TIME ZONE
+          );`,
+          TABLE_NAME,
+        ),
       );
+      await client.query(
+        format(
+          `ALTER TABLE %I ADD COLUMN IF NOT EXISTS owner TEXT;`,
+          TABLE_NAME,
+        ),
+      );
+
+      this.log.debug(`Table ${TABLE_NAME} is present and up to date.`);
     } catch (error) {
-      printWarning(
-        error,
-        `An error occurred while creating the table ${TABLE_NAME}`,
+      // Reported by whoever asked for the schema; `withSchemaRetry` prefers to
+      // surface the original failure instead.
+      this.log.debug(
+        `Could not create the table ${TABLE_NAME}: ${describeError(error)}`,
       );
       throw error;
     } finally {
-      // Ensure the database connection is returned to the pool, whether an error occurred or not
-      await client?.release();
-      core.info(`Database connection released.`);
+      this.disconnect(client);
     }
   }
+
+  private async connect(): Promise<PoolClient> {
+    this.log.debug("Attempting to connect to the database.");
+    const client = await this.pool.connect();
+    this.log.debug("Successfully connected to the database.");
+    return client;
+  }
+
+  private disconnect(client: PoolClient | undefined): void {
+    // Return the connection to the pool, whether an error occurred or not
+    client?.release();
+    if (client) {
+      this.log.debug("Database connection released.");
+    }
+  }
+}
+
+/** A NULL owner - every lock the GitHub Action takes - is always releasable. */
+function mayUnlock(record: LockRecord, guard?: UnlockGuard): boolean {
+  if (!guard || guard.force) {
+    return true;
+  }
+  if (record.owner === null) {
+    return true;
+  }
+  return record.owner === guard.owner;
+}
+
+async function rollback(
+  client: PoolClient | undefined,
+  log: Logger,
+): Promise<void> {
+  if (!client) {
+    return;
+  }
+  try {
+    await client.query("ROLLBACK");
+  } catch (error) {
+    logWarning(log, error, "Failed to roll back the transaction");
+  }
+}
+
+function toLockRecord(row: Record<string, unknown>): LockRecord {
+  return {
+    id: String(row.id),
+    reason: (row.reason as string | null) ?? null,
+    owner: (row.owner as string | null) ?? null,
+    createdAt: toIsoString(row.created_at),
+    expiresAt: toIsoString(row.expires_at),
+    expired: row.expired === true,
+  };
+}
+
+function toIsoString(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return String(value);
 }

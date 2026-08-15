@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@
  */
 
 import * as core from "@actions/core";
-import { loadRequiredFromEnvOrGHAInput } from "./helpers.js";
+import { loadRequiredFromEnvOrGHAInput } from "./inputs.js";
+import { LockRequest, MutexConfig } from "./mutex.js";
 
-export class MutexSettings {
+export class MutexSettings implements MutexConfig, LockRequest {
   dbConnectionString: string;
   command: string;
   identifier: string;
@@ -27,6 +28,18 @@ export class MutexSettings {
   pollTimeoutMs: number;
   pollIntervalMs: number;
   autoReleaseLock: boolean;
+
+  /**
+   * The Action does not record an owner, so every lock it takes stays
+   * releasable by anyone - including by the CLI without `--force`.
+   */
+  readonly owner = null;
+
+  /**
+   * ...and for the same reason the Action releases unconditionally, exactly as
+   * it did before ownership existed.
+   */
+  readonly force = true;
 
   constructor() {
     this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");

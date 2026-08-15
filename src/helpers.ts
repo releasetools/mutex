@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,47 +15,37 @@
  *
  */
 
-import * as core from "@actions/core";
+import { Logger } from "./logger.js";
 
 export const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-export function loadRequiredNonEmptyFromGHAInput(name: string): string {
-  const data = core.getInput(name);
-  if (data && data.trim().length > 0) {
-    return data;
-  }
-
-  throw new Error(`🚨 ${name} not found or empty. Cannot continue...`);
+export function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-export function loadRequiredFromEnvOrGHAInput(name: string): string {
-  const token = process.env[name] || core.getInput(name);
-  if (token) {
-    return token;
-  }
-
-  throw new Error(`🚨 ${name} not found. Cannot continue...`);
+export function errorStack(error: unknown): string {
+  return error instanceof Error && error.stack ? error.stack : "N/A";
 }
 
-export function loadFromEnvOrGHAInput(name: string): string | null {
-  const token = process.env[name] || core.getInput(name);
-  if (token) {
-    return token;
-  }
-
-  core.warning(`⚠️ ${name} not found.`);
-  return null;
+function prefixOf(description: string | null | undefined): string {
+  return description ? `${description}: ` : "";
 }
 
-export function printError(error: any, description: string | null) {
-  const message = error instanceof Error ? error.message : String(error);
-  core.error(`${description + ": " || ""}${message}`);
-  core.debug(`Stack trace: ${error instanceof Error ? error.stack : "N/A"}`);
+export function logError(
+  log: Logger,
+  error: unknown,
+  description?: string | null,
+): void {
+  log.error(`${prefixOf(description)}${describeError(error)}`);
+  log.debug(`Stack trace: ${errorStack(error)}`);
 }
 
-export function printWarning(error: any, description: string | null) {
-  const message = error instanceof Error ? error.message : String(error);
-  core.warning(`${description + ": " || ""}${message}`);
-  core.debug(`Stack trace: ${error instanceof Error ? error.stack : "N/A"}`);
+export function logWarning(
+  log: Logger,
+  error: unknown,
+  description?: string | null,
+): void {
+  log.warning(`${prefixOf(description)}${describeError(error)}`);
+  log.debug(`Stack trace: ${errorStack(error)}`);
 }

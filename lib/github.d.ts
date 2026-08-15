@@ -13,3 +13,4 @@ export declare function setLockAcquired(): void;
 export declare function setLockReleased(): void;
 export declare function setSkipped(): void;
 export declare function setFailed(message: string): void;
+export declare function shouldRunAction(gh: GitHubClient): Promise<boolean>;

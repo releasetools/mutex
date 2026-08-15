@@ -14,7 +14,7 @@ inputs:
     description: "Database credentials for storing the locks."
     required: false
   command:
-    description: "The command to execute: 'lock' or 'release'."
+    description: "The command to execute: 'lock' or 'unlock'. DEPRECATED: 'release' is still accepted as a synonym for 'unlock' and will be removed in a future major version."
     required: true
   id:
     description: "An unique identifier for the lock."

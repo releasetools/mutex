@@ -2,15 +2,22 @@
 
 [![CodeQL](https://github.com/releasetools/mutex/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/releasetools/mutex/security/code-scanning)
 
-An advisory lock service for CI/CD pipelines, implemented as a GitHub Action. It prevents race conditions by ensuring mutual exclusion - only one job can access a shared resource concurrently.
+An advisory lock service for CI/CD pipelines. It prevents race conditions by ensuring mutual exclusion - only one job can access a shared resource concurrently.
+
+It ships in two forms, sharing one lock table:
+
+- a **GitHub Action**, for locking inside a workflow;
+- a **CLI** (`mutex`), for locking from a terminal, a script, or any other CI system.
 
 ## How it works
 
-This action uses a PostgreSQL database to manage locks. When a workflow job needs to acquire a lock, it communicates with the lock service. If the lock is available, it's granted, and the job proceeds. If not, the job can wait or fail, depending on your workflow configuration.
+Locks live in a PostgreSQL table. When a job needs a lock, it inserts a row - or takes over an expired one - inside a transaction guarded by a Postgres advisory lock, so two callers can never win at once. If the lock is taken, the caller waits or fails, depending on configuration.
 
 ## Features
 
 - **Advisory Locking**: Create and manage locks within your GitHub Actions workflows.
+- **A CLI**: `mutex lock` / `mutex unlock`, plus a flock-style `mutex lock [id] -- <program>` that holds the lock for exactly as long as the program runs.
+- **Secrets via dotsecenv**: The CLI reads the connection string from a `.secenv` file, decrypting it through the [dotsecenv](https://dotsecenv.com) CLI, so it never has to be pasted on a command line.
 - **Pull Request Integration**: Lock and release events are posted as PR comments.
 - **Slack Notifications**: Choose if you want to be notified in your Slack channels about locking events.
 - **Easy Disabling**: Skip locking for specific pull requests by:
@@ -52,7 +59,7 @@ The action supports the following environment variables (`env:`).
 
 #### `DATABASE_URL`
 
-Connection string for a PostgreSQL database. The action will create a table named `releasetools_mutex` if it doesn't exist. If the role specified in the connection string cannot create tables, ensure such a table exists. You can find the schema definition in [database.ts](./src/database.ts).
+Connection string for a PostgreSQL database. The action will create a table named `releasetools_mutex` if it doesn't exist, and keep its schema up to date. If the role specified in the connection string cannot create or alter tables, ensure such a table exists. You can find the schema definition in [database.ts](./src/database.ts).
 
 #### `GITHUB_TOKEN`
 
@@ -74,7 +81,10 @@ The action can be configured using inputs (`with:`).
 
 #### `command`
 
-**Required.** The command to execute (e.g., `lock` or `release`).
+**Required.** The command to execute: `lock` or `unlock`.
+
+> [!WARNING]
+> **`release` is deprecated.** It remains accepted as a synonym for `unlock` so that workflows written against earlier versions keep working, and using it logs a deprecation warning. It will be removed in a future major version - switch to `unlock`.
 
 #### `id`
 
@@ -113,6 +123,169 @@ The bot that owns the `SLACK_BOT_TOKEN` should be a member of this channel.
 
 See [Slack API docs](https://docs.slack.dev/reference/methods/chat.postMessage/#channels) for channel ID formats.
 
+## CLI
+
+The same locking core is available as a command-line tool, for locking outside GitHub Actions - from a laptop, a cron job, or another CI system. It talks to the same `releasetools_mutex` table, so a CLI lock and an Action lock exclude each other.
+
+### Installing
+
+```shell
+npm install
+npm run build
+npm link        # puts `mutex` on your PATH
+```
+
+Without `npm link`, run it as `node ./bin/mutex.js` or `npm run mutex -- <args>`.
+
+### Commands
+
+| Command                        | What it does                                               |
+| ------------------------------ | ---------------------------------------------------------- |
+| `mutex lock [id]`              | Acquire a lock, waiting up to `--max-wait` for it          |
+| `mutex lock [id] -- <program>` | Acquire it, run the program, release it - whatever happens |
+| `mutex try-lock [id]`          | Acquire it in a single attempt, without waiting            |
+| `mutex unlock <id>`            | Release it                                                 |
+| `mutex renew <id>`             | Extend a lock you already hold                             |
+| `mutex status <id>`            | Show who holds it                                          |
+| `mutex list`                   | List every lock, expired ones included                     |
+| `mutex prune`                  | Delete locks that have already expired                     |
+
+The command names map onto the operations in [mutex.ts](./src/mutex.ts): `lock` and `try-lock` are `tryLock` (the latter with nothing to wait for), `unlock` is `tryUnlock`.
+
+### Renewing
+
+A lock lasts `--expiration` seconds. `renew` pushes that further out for a job still running:
+
+```shell
+mutex renew deploy --owner "$CI_RUN" --expiration 300
+```
+
+It is deliberately strict, because a renewal that silently succeeds when it should not is worse than one that fails:
+
+- **The id and the owner must both match.** There is no `--force`: renewing somebody else's lock is never the right thing to do.
+- **It never takes a lock.** Renewing something that is not held fails rather than quietly acquiring it.
+- **An expired lock cannot be renewed.** By then somebody else may already have taken it over, so it reports the expiry and stops.
+
+Exit codes tell the cases apart: `4` for gone or expired, `5` for held by another owner.
+
+Locks taken by the GitHub Action have no owner, so the CLI cannot renew them.
+
+### The lock id
+
+`lock` and `try-lock` take the id as an optional argument. Given one they use it; given none they mint a UUID and report it:
+
+```shell
+$ mutex lock
+Acquired '5f0b8a6e-3d21-4a77-9c4e-1e0d2b7f4a55' until 2026-08-15T08:24:51.272Z.
+
+$ mutex lock --json | jq -r .id
+5f0b8a6e-3d21-4a77-9c4e-1e0d2b7f4a55
+```
+
+That is mostly for the wrapper form, where the lock never needs a name anyone else knows - `mutex lock -- ./migrate.sh` takes an anonymous lock and gives it back when the script exits. Every other command names an existing lock, so there the id stays required.
+
+A generated id is unique per run, so two bare `mutex lock` calls exclude nothing. Name the lock whenever exclusion is the point.
+
+### Wrapping a program
+
+This is the form worth reaching for. The lock is held for exactly as long as the program runs and is released on every exit path, including a crash or a `Ctrl-C`:
+
+```shell
+mutex lock deploy-staging --reason "deploying $GIT_SHA" -- ./deploy.sh
+```
+
+Details worth knowing:
+
+- The program's exit status becomes `mutex`'s, exactly like `flock`. A program killed by a signal yields `128 + signal`.
+- The program owns stdout; `mutex` reports on stderr, so pipelines stay clean.
+- `SIGINT`, `SIGTERM` and `SIGHUP` are forwarded to the program, and the lock is released once it exits.
+- The lock is renewed in the background every `--expiration / 3` seconds, so a program that outlives its lease does not carry on holding a lock somebody else has taken. Disable with `--no-renew`.
+
+### Ownership
+
+Locks record who took them, so `unlock` cannot silently break someone else's:
+
+```shell
+$ mutex unlock deploy-staging
+Refused to unlock 'deploy-staging': it is held by 'ci@runner-3'.
+Pass --force to break it.
+```
+
+The owner defaults to `$MUTEX_OWNER`, or `user@host`. Locks taken by the **GitHub Action have no owner** and stay releasable by anyone, so existing workflows are unaffected.
+
+### Where the connection string comes from
+
+In order of precedence:
+
+1. `--database-url <url>`
+2. `$DATABASE_URL` (rename with `--env-var`)
+3. the `.secenv` chain, decrypted through the dotsecenv CLI
+
+The third is the interesting one. Given a project like this:
+
+```
+my-project/
+├── .secenv                  DATABASE_URL={dotsecenv/myapp::DATABASE_URL}
+├── .dotsecenv/vault         the encrypted vault, safe to commit
+└── services/api/            run mutex from anywhere below the root
+```
+
+running `mutex lock deploy` anywhere inside `my-project` resolves `DATABASE_URL` on its own:
+
+```shell
+$ mutex lock deploy --verbose
+debug: Reading .secenv files: /my-project/.secenv
+debug: Resolved DATABASE_URL from secret 'myapp::DATABASE_URL' (.dotsecenv/vault).
+Acquired 'deploy' until 2026-08-15T08:24:51.272Z.
+```
+
+Nothing is stored in shell history, and no plaintext connection string is written anywhere.
+
+Use `--secenv-dir <dir>` to start the search somewhere other than the current directory, and `--no-secenv` to switch this off entirely.
+
+### Exit codes
+
+| Code  | Meaning                                                  |
+| ----- | -------------------------------------------------------- |
+| `0`   | Success (`status`: the lock is held)                     |
+| `1`   | Error                                                    |
+| `2`   | Usage error                                              |
+| `3`   | Configuration error - no usable connection string        |
+| `4`   | Not acquired, or not held                                |
+| `5`   | Refused - another owner holds the lock, and no `--force` |
+| `127` | The wrapped program could not be started                 |
+
+While wrapping a program, its exit status is returned instead.
+
+This makes the read-only commands scriptable:
+
+```shell
+if mutex status deploy-staging --quiet; then
+  echo "someone is deploying"
+fi
+```
+
+### The dotsecenv client
+
+The CLI does not reimplement dotsecenv's cryptography. [`src/dotsecenv/`](./src/dotsecenv) is a small Node client that:
+
+- **reads `.secenv` files** ([`secenv.ts`](./src/dotsecenv/secenv.ts)) using the same rules as the dotsecenv shell plugin - `{dotsecenv}`, `{dotsecenv/SECRET}`, `{dotsecenv/ns::SECRET}`, quote stripping, and two-phase loading. Ancestor files are walked root-first up to the repository root, so a nested directory inherits the project's settings and can shadow them.
+- **reads the vault index** ([`vault.ts`](./src/dotsecenv/vault.ts)) from `.dotsecenv/vault`, parsing the v2 header without touching GPG. Older vaults are rejected outright, pointing at `dotsecenv vault doctor` to upgrade them. This is what turns an exit code into a usable message - it knows which secrets a vault holds, which GPG fingerprints each is readable by, and which have been forgotten:
+
+  ```shell
+  $ mutex status deploy
+  error: could not resolve DATABASE_URL from .secenv:
+  could not read secret 'myapp::NOT_THERE' (/my-project/.secenv:1 maps DATABASE_URL to secret 'myapp::NOT_THERE')
+    secret 'myapp::NOT_THERE' not found in any vault
+    hint: /my-project/.dotsecenv/vault holds: myapp::DATABASE_URL.
+  ```
+
+- **calls the dotsecenv CLI** ([`cli.ts`](./src/dotsecenv/cli.ts)) to decrypt. It runs the binary from the directory holding the `.secenv`, which is what makes a relative vault path such as `.dotsecenv/vault` resolve to the project's own vault. Values are fetched with `--json` so they survive trailing whitespace, stdout is captured so a secret never lands in the tool's own output, and stdin is inherited so a GPG passphrase prompt can still reach the terminal.
+
+It requires the [dotsecenv CLI](https://dotsecenv.com) on `PATH` - override with `--dotsecenv-bin` or `$DOTSECENV_BIN`.
+
+Only the variable actually needed is decrypted; anything else the `.secenv` references stays encrypted.
+
 ## Development
 
 **All contributions are welcome!**
@@ -131,7 +304,17 @@ See [Slack API docs](https://docs.slack.dev/reference/methods/chat.postMessage/#
     npm run prepare
    ```
 
-The main entry point is `main.ts`, which handles 'lock' or 'release' actions. A post-job script in `post.ts` handles automatic lock release if enabled.
+Layout:
+
+| Path              | What lives there                                                          |
+| ----------------- | ------------------------------------------------------------------------- |
+| `src/mutex.ts`    | `tryLock` / `tryUnlock` - the polling logic, with no GitHub dependencies  |
+| `src/database.ts` | The PostgreSQL lock store                                                 |
+| `src/main.ts`     | The Action's entry point; `src/post.ts` auto-releases at the end of a job |
+| `src/cli/`        | The `mutex` CLI                                                           |
+| `src/dotsecenv/`  | The `.secenv` / vault client                                              |
+
+`src/mutex.ts` and `src/database.ts` take a `Logger` and emit events rather than calling into `@actions/core`, which is what lets both front-ends share them.
 
 You can learn about creating GitHub actions in this [tutorial](https://docs.github.com/en/actions/tutorials/create-actions/create-a-javascript-action).
 
@@ -174,7 +357,7 @@ Use the template below to draft new releases. Update the changelog section to in
 
 ## License
 
-Copyright &copy; 2025 Mihai Bojin
+Copyright &copy; 2025-2026 Mihai Bojin
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

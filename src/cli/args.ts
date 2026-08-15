@@ -1,0 +1,491 @@
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+import { randomUUID } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
+import { parseArgs } from "node:util";
+import { LogLevel } from "../logger.js";
+import { UsageError } from "./exit-codes.js";
+
+/**
+ * Command names map onto the operations in `mutex.ts`:
+ *
+ *   lock, try-lock  -> tryLock  (`try-lock` has nothing to wait for)
+ *   unlock          -> tryUnlock
+ */
+export type CommandName =
+  | "lock"
+  | "try-lock"
+  | "unlock"
+  | "renew"
+  | "status"
+  | "list"
+  | "prune"
+  | "help"
+  | "version";
+
+/**
+ * Whether a command takes a lock id.
+ *
+ * `optional` belongs to the two acquiring commands: with no id they mint a
+ * UUID, which is what makes `mutex lock -- <program>` useful on its own - an
+ * anonymous lock nobody else can name, released when the program exits.
+ */
+type IdentifierMode = "required" | "optional" | "none";
+
+const LOCK_OPTIONS = [
+  "reason",
+  "expiration",
+  "max-wait",
+  "poll-interval",
+  "no-renew",
+  "owner",
+] as const;
+
+const CONNECTION_OPTIONS = [
+  "database-url",
+  "env-var",
+  "secenv-dir",
+  "no-secenv",
+  "dotsecenv-bin",
+  "dotsecenv-config",
+] as const;
+
+const GENERAL_OPTIONS = [
+  "json",
+  "quiet",
+  "verbose",
+  "help",
+  "version",
+] as const;
+
+interface CommandSpec {
+  summary: string;
+  usage: string;
+  identifier: IdentifierMode;
+  acceptsProgram: boolean;
+  options: readonly string[];
+}
+
+export const COMMANDS: Record<CommandName, CommandSpec> = {
+  lock: {
+    summary: "Acquire a lock, waiting for it to become free",
+    usage: "mutex lock [id] [options] [-- <program> [args...]]",
+    identifier: "optional",
+    acceptsProgram: true,
+    options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+  },
+  "try-lock": {
+    summary: "Acquire a lock in a single attempt, without waiting",
+    usage: "mutex try-lock [id] [options] [-- <program> [args...]]",
+    identifier: "optional",
+    acceptsProgram: true,
+    options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+  },
+  unlock: {
+    summary: "Release a lock",
+    usage: "mutex unlock <id> [options]",
+    identifier: "required",
+    acceptsProgram: false,
+    options: [
+      "owner",
+      "force",
+      "max-wait",
+      "poll-interval",
+      ...CONNECTION_OPTIONS,
+      ...GENERAL_OPTIONS,
+    ],
+  },
+  renew: {
+    summary: "Extend a lock you already hold",
+    usage: "mutex renew <id> [--owner <name>] [--expiration <seconds>]",
+    identifier: "required",
+    acceptsProgram: false,
+    options: ["expiration", "owner", ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+  },
+  status: {
+    summary: "Show who holds a lock",
+    usage: "mutex status <id> [options]",
+    identifier: "required",
+    acceptsProgram: false,
+    options: [...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+  },
+  list: {
+    summary: "List every lock, expired ones included",
+    usage: "mutex list [options]",
+    identifier: "none",
+    acceptsProgram: false,
+    options: [...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+  },
+  prune: {
+    summary: "Delete locks that have already expired",
+    usage: "mutex prune [--dry-run] [options]",
+    identifier: "none",
+    acceptsProgram: false,
+    options: ["dry-run", ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+  },
+  help: {
+    summary: "Show this help, or help for one command",
+    usage: "mutex help [command]",
+    identifier: "none",
+    acceptsProgram: false,
+    options: [...GENERAL_OPTIONS],
+  },
+  version: {
+    summary: "Print the mutex version",
+    usage: "mutex version",
+    identifier: "none",
+    acceptsProgram: false,
+    options: [...GENERAL_OPTIONS],
+  },
+};
+
+const OPTION_CONFIG = {
+  reason: { type: "string", short: "r" },
+  expiration: { type: "string", short: "e" },
+  "max-wait": { type: "string", short: "w" },
+  "poll-interval": { type: "string", short: "i" },
+  "no-renew": { type: "boolean" },
+  owner: { type: "string", short: "o" },
+  force: { type: "boolean", short: "f" },
+  "dry-run": { type: "boolean" },
+  "database-url": { type: "string" },
+  "env-var": { type: "string" },
+  "secenv-dir": { type: "string" },
+  "no-secenv": { type: "boolean" },
+  "dotsecenv-bin": { type: "string" },
+  "dotsecenv-config": { type: "string" },
+  json: { type: "boolean" },
+  quiet: { type: "boolean", short: "q" },
+  verbose: { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+  version: { type: "boolean", short: "V" },
+} as const;
+
+export const DEFAULT_EXPIRATION_SECONDS = 60;
+export const DEFAULT_POLL_INTERVAL_SECONDS = 10;
+/** -1 means "wait as long as the lock would have lasted", as in the Action. */
+export const DEFAULT_MAX_WAIT_SECONDS = -1;
+
+export interface ResolvedOptions {
+  reason: string;
+  expiration: number;
+  pollTimeoutMs: number;
+  pollIntervalMs: number;
+  autoRenew: boolean;
+  owner: string;
+  force: boolean;
+  dryRun: boolean;
+  databaseUrl: string | null;
+  envVar: string;
+  secenvDir: string;
+  useSecenv: boolean;
+  dotsecenvBin: string | null;
+  dotsecenvConfig: string | null;
+  json: boolean;
+  logLevel: LogLevel;
+}
+
+export interface CommandLine {
+  command: CommandName;
+  identifier: string;
+  /** True when no id was given and one was minted for this run. */
+  generatedIdentifier: boolean;
+  /** The program to wrap, taken from everything after `--`. */
+  program: string[];
+  options: ResolvedOptions;
+  /** `help`'s optional argument. */
+  topic: CommandName | null;
+}
+
+export function parseCommandLine(argv: string[]): CommandLine {
+  // Split on `--` before parsing, so the wrapped program's own flags are never
+  // mistaken for mutex's.
+  const separator = argv.indexOf("--");
+  const own = separator === -1 ? argv : argv.slice(0, separator);
+  const program = separator === -1 ? [] : argv.slice(separator + 1);
+
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: own,
+      options: OPTION_CONFIG,
+      allowPositionals: true,
+      strict: true,
+    });
+  } catch (error) {
+    throw new UsageError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+
+  const values = parsed.values;
+  const positionals = parsed.positionals;
+
+  // `--help`/`--version` win over whatever command was typed.
+  let command: CommandName;
+  let topic: CommandName | null = null;
+
+  if (values.help) {
+    command = "help";
+    topic = asCommandName(positionals[0]) ?? null;
+  } else if (values.version && positionals.length === 0) {
+    command = "version";
+  } else if (positionals.length === 0) {
+    throw new UsageError("no command given");
+  } else {
+    const name = asCommandName(positionals[0]);
+    if (!name) {
+      throw new UsageError(`unknown command '${positionals[0]}'`);
+    }
+    command = name;
+    if (command === "help") {
+      topic = asCommandName(positionals[1]) ?? null;
+    }
+  }
+
+  const spec = COMMANDS[command];
+  let identifier = command === "help" ? "" : (positionals[1] ?? "");
+  let generatedIdentifier = false;
+
+  if (command !== "help") {
+    if (spec.identifier === "required" && identifier === "") {
+      throw new UsageError(`'${command}' needs a lock id\n  ${spec.usage}`);
+    }
+
+    const expected = spec.identifier === "none" ? 1 : 2;
+    if (positionals.length > expected) {
+      throw new UsageError(
+        `unexpected argument '${positionals[expected]}'\n  ${spec.usage}`,
+      );
+    }
+
+    if (spec.identifier === "optional" && identifier === "") {
+      identifier = randomUUID();
+      generatedIdentifier = true;
+    }
+  }
+
+  if (program.length > 0 && !spec.acceptsProgram) {
+    throw new UsageError(`'${command}' cannot wrap a program`);
+  }
+
+  rejectInapplicableOptions(command, spec, values);
+
+  return {
+    command,
+    identifier,
+    generatedIdentifier,
+    program,
+    topic,
+    options: resolveOptions(command, values),
+  };
+}
+
+function resolveOptions(
+  command: CommandName,
+  values: Record<string, string | boolean | undefined>,
+): ResolvedOptions {
+  const expiration = readNumber(
+    values.expiration,
+    "expiration",
+    DEFAULT_EXPIRATION_SECONDS,
+  );
+  if (expiration <= 0) {
+    throw new UsageError("--expiration must be greater than 0");
+  }
+
+  const pollInterval = readNumber(
+    values["poll-interval"],
+    "poll-interval",
+    DEFAULT_POLL_INTERVAL_SECONDS,
+  );
+  if (pollInterval < 0) {
+    throw new UsageError("--poll-interval cannot be negative");
+  }
+
+  let maxWait = readNumber(
+    values["max-wait"],
+    "max-wait",
+    DEFAULT_MAX_WAIT_SECONDS,
+  );
+  if (maxWait < -1) {
+    maxWait = DEFAULT_MAX_WAIT_SECONDS;
+  }
+
+  // try-lock is exactly one attempt: no waiting, whatever --max-wait says.
+  const pollTimeoutMs =
+    command === "try-lock" ? 0 : (maxWait === -1 ? expiration : maxWait) * 1000;
+
+  return {
+    reason: typeof values.reason === "string" ? values.reason : "",
+    expiration,
+    pollTimeoutMs,
+    pollIntervalMs: pollInterval * 1000,
+    autoRenew: values["no-renew"] !== true,
+    owner: typeof values.owner === "string" ? values.owner : defaultOwner(),
+    force: values.force === true,
+    dryRun: values["dry-run"] === true,
+    databaseUrl:
+      typeof values["database-url"] === "string"
+        ? values["database-url"]
+        : null,
+    envVar:
+      typeof values["env-var"] === "string"
+        ? values["env-var"]
+        : "DATABASE_URL",
+    secenvDir: path.resolve(
+      typeof values["secenv-dir"] === "string"
+        ? values["secenv-dir"]
+        : process.cwd(),
+    ),
+    useSecenv: values["no-secenv"] !== true,
+    dotsecenvBin:
+      typeof values["dotsecenv-bin"] === "string"
+        ? values["dotsecenv-bin"]
+        : null,
+    dotsecenvConfig:
+      typeof values["dotsecenv-config"] === "string"
+        ? values["dotsecenv-config"]
+        : null,
+    json: values.json === true,
+    logLevel:
+      values.quiet === true
+        ? "error"
+        : values.verbose === true
+          ? "debug"
+          : "info",
+  };
+}
+
+/** Identifies the caller, so `unlock` can tell whose lock it is breaking. */
+export function defaultOwner(): string {
+  if (process.env.MUTEX_OWNER) {
+    return process.env.MUTEX_OWNER;
+  }
+
+  try {
+    return `${os.userInfo().username}@${os.hostname()}`;
+  } catch {
+    // userInfo() throws when the uid has no passwd entry, which happens in
+    // some containers.
+    return `mutex@${os.hostname()}`;
+  }
+}
+
+function rejectInapplicableOptions(
+  command: CommandName,
+  spec: CommandSpec,
+  values: Record<string, string | boolean | undefined>,
+): void {
+  const allowed = new Set(spec.options);
+  for (const [name, value] of Object.entries(values)) {
+    if (value === undefined || allowed.has(name)) {
+      continue;
+    }
+    throw new UsageError(
+      `'${command}' does not take --${name}\n  ${spec.usage}`,
+    );
+  }
+}
+
+function readNumber(
+  value: string | boolean | undefined,
+  name: string,
+  fallback: number,
+): number {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    throw new UsageError(`--${name} must be a whole number of seconds`);
+  }
+  return parsed;
+}
+
+function asCommandName(value: string | undefined): CommandName | null {
+  if (value && value in COMMANDS) {
+    return value as CommandName;
+  }
+  return null;
+}
+
+export function helpText(topic: CommandName | null): string {
+  if (topic && topic !== "help") {
+    const spec = COMMANDS[topic];
+    return [
+      spec.summary,
+      "",
+      `Usage: ${spec.usage}`,
+      "",
+      "Options:",
+      ...spec.options.map((name) => `  --${name}`),
+      "",
+    ].join("\n");
+  }
+
+  const commands = (Object.keys(COMMANDS) as CommandName[])
+    .map((name) => `  ${name.padEnd(10)} ${COMMANDS[name].summary}`)
+    .join("\n");
+
+  return `mutex - an advisory lock service for CI/CD pipelines, backed by PostgreSQL
+
+Usage: mutex <command> [id] [options] [-- <program> [args...]]
+
+Commands:
+${commands}
+
+lock and try-lock mint a UUID when no id is given, which is all a wrapped
+program needs; every other command names an existing lock.
+
+renew extends a lock you already hold: the id and the owner must both match,
+and it fails - rather than taking a new lock - if the lock expired or is gone.
+
+Lock options:
+  -r, --reason <text>            Why the lock is being taken
+  -e, --expiration <seconds>     How long the lock lasts (default: ${DEFAULT_EXPIRATION_SECONDS})
+  -w, --max-wait <seconds>       How long to wait for it (default: -1, i.e. --expiration)
+  -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
+      --no-renew                 Do not renew the lock while a wrapped program runs
+  -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER or user@host)
+  -f, --force                    Release a lock owned by someone else
+
+Connection:
+      --database-url <url>       PostgreSQL connection string
+      --env-var <NAME>           Variable holding it (default: DATABASE_URL)
+      --secenv-dir <dir>         Where to start looking for .secenv (default: cwd)
+      --no-secenv                Do not read .secenv files
+      --dotsecenv-bin <path>     The dotsecenv binary (default: $DOTSECENV_BIN or dotsecenv)
+      --dotsecenv-config <path>  Passed to dotsecenv as -c
+
+General:
+      --json                     Machine-readable output
+  -q, --quiet                    Errors only
+      --verbose                  Include debug output
+  -h, --help                     Show help
+  -V, --version                  Show the version
+
+The connection string is taken from --database-url, then $DATABASE_URL, then
+the .secenv chain above --secenv-dir, resolved through the dotsecenv CLI.
+
+Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
+5 refused (owned by another). While wrapping a program, its status is returned.
+`;
+}

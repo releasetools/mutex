@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,24 @@
  */
 
 import * as core from "@actions/core";
-import { GitHubClient, setFailed, setSkipped } from "./github.js";
+import {
+  GitHubClient,
+  setFailed,
+  setLockReleased,
+  setSkipped,
+  shouldRunAction,
+} from "./github.js";
 import { MutexSettings } from "./configuration.js";
 import { DatabaseMutex } from "./database.js";
-import { shouldRunAction, tryRelease } from "./mutex.js";
+import { tryUnlock } from "./mutex.js";
 import { Notifications } from "./notifications.js";
+import { ActionsLogger } from "./actions-logger.js";
+import { describeError } from "./helpers.js";
 
 export async function post(): Promise<void> {
+  const log = new ActionsLogger();
+  let mutex: DatabaseMutex | undefined;
+
   try {
     core.info("Running post-job cleanup step.");
 
@@ -48,13 +59,22 @@ export async function post(): Promise<void> {
       return;
     }
 
-    const mutex = new DatabaseMutex(settings);
+    mutex = new DatabaseMutex(settings, log);
     const notifications = new Notifications(settings, gh);
 
-    await tryRelease(settings, gh, mutex, notifications);
+    await tryUnlock(settings, mutex, log, {
+      onUnlocked: async () => {
+        setLockReleased();
+        await notifications.send(
+          `🔓 Lock \`${settings.identifier}\` released.`,
+        );
+      },
+      onTimeout: (message) => setFailed(message),
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    setFailed(message);
+    setFailed(describeError(error));
+  } finally {
+    await mutex?.close();
   }
 }
 
