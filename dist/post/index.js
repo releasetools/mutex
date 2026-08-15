@@ -49579,7 +49579,7 @@ class DatabaseMutex {
                 return { unlocked: true, outcome: "not-found" };
             }
             const record = toLockRecord(existing.rows[0]);
-            if (!mayUnlock(record, guard)) {
+            if (!guard?.force && !mayModify(record, guard?.owner ?? null)) {
                 await client.query("COMMIT");
                 return { unlocked: false, outcome: "owned-by-another", record };
             }
@@ -49616,10 +49616,10 @@ class DatabaseMutex {
                 return { renewed: false, outcome: "not-found" };
             }
             const record = toLockRecord(existing.rows[0]);
-            // Exact match, with no `--force` escape: renewing a lock somebody else
-            // holds is never the right thing to do. A NULL owner - every lock the
-            // Action takes - matches only a caller that has no owner either.
-            if (record.owner !== owner) {
+            // No `--force` escape: renewing a lock somebody else holds is never the
+            // right thing to do. An unowned lock has nobody to wrong, so it stays
+            // open, which is what keeps Action-written locks manageable.
+            if (!mayModify(record, owner)) {
                 await client.query("COMMIT");
                 return { renewed: false, outcome: "owned-by-another", record };
             }
@@ -49750,21 +49750,19 @@ class DatabaseMutex {
     }
 }
 /**
- * Whether `guard` may unlock `record`, using the same rule as renewal: the two
- * owners have to be the same, unowned included. `--force` is the way past it.
+ * Who may unlock or renew a lock: its owner, or anyone at all when it has none.
  *
- * Note what "unowned" is and is not. It is the absence of an identity, not an
- * identity, so any two unowned callers match each other - a lock nobody named
- * an owner for is still releasable by anyone who also names none. Naming an
- * owner is what makes a lock yours.
+ * Ownership is what confers protection, so a lock nobody claimed is nobody's to
+ * defend - which is also what lets the CLI manage the unowned locks the Action
+ * writes today. Naming an owner is the act that makes a lock yours.
  *
  * Exported for tests: the matrix is small, security-relevant, and worth pinning.
  */
-function mayUnlock(record, guard) {
-    if (!guard || guard.force) {
+function mayModify(record, owner) {
+    if (record.owner === null) {
         return true;
     }
-    return record.owner === guard.owner;
+    return record.owner === owner;
 }
 async function rollback(client, log) {
     if (!client) {

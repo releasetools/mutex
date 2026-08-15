@@ -36,4 +36,5 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 
 - Timestamps in the lock table are UTC wall time in `TIMESTAMP WITHOUT TIME ZONE` columns. Always write `(NOW() AT TIME ZONE 'UTC')` and always read `col AT TIME ZONE 'UTC'`; a bare `NOW()` silently stores session-local time and breaks expiry.
 - The CLI writes results for acting commands (`lock`, `unlock`, `renew`) to stderr and query output (`status`, `list`, `prune`) to stdout. `--json` always goes to stdout, except while wrapping a program, which owns stdout.
+- Acquiring a lock is decided by expiry alone; ownership only decides who may unlock or renew it. An unowned lock is open to anyone - see `mayModify` in `database.ts`.
 - Secrets never reach stdout, logs or error messages. The dotsecenv client captures the CLI's stdout precisely so decrypted values stay contained.

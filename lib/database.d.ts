@@ -61,14 +61,12 @@ export declare class DatabaseMutex implements MutexInterface {
     private disconnect;
 }
 /**
- * Whether `guard` may unlock `record`, using the same rule as renewal: the two
- * owners have to be the same, unowned included. `--force` is the way past it.
+ * Who may unlock or renew a lock: its owner, or anyone at all when it has none.
  *
- * Note what "unowned" is and is not. It is the absence of an identity, not an
- * identity, so any two unowned callers match each other - a lock nobody named
- * an owner for is still releasable by anyone who also names none. Naming an
- * owner is what makes a lock yours.
+ * Ownership is what confers protection, so a lock nobody claimed is nobody's to
+ * defend - which is also what lets the CLI manage the unowned locks the Action
+ * writes today. Naming an owner is the act that makes a lock yours.
  *
  * Exported for tests: the matrix is small, security-relevant, and worth pinning.
  */
-export declare function mayUnlock(record: LockRecord, guard?: UnlockGuard): boolean;
+export declare function mayModify(record: LockRecord, owner: string | null): boolean;

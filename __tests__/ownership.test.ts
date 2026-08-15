@@ -15,7 +15,7 @@
  *
  */
 
-import { mayUnlock } from "../src/database.js";
+import { mayModify } from "../src/database.js";
 import { LockRecord } from "../src/mutex.js";
 
 function lockOwnedBy(owner: string | null): LockRecord {
@@ -30,10 +30,10 @@ function lockOwnedBy(owner: string | null): LockRecord {
 }
 
 /**
- * Unlocking uses the same owner rule as renewing: both sides have to match.
- * `--force` is the only way past it.
+ * Unlocking and renewing share one rule: the owner may act, and so may anyone
+ * at all when the lock has no owner. `--force` is unlock's extra escape hatch.
  */
-describe("mayUnlock", () => {
+describe("mayModify", () => {
   const cases: Array<{
     held: string | null;
     caller: string | null;
@@ -44,53 +44,33 @@ describe("mayUnlock", () => {
       held: null,
       caller: null,
       allowed: true,
-      why: "unowned matches unowned - this is how the CLI releases Action locks",
+      why: "an unowned lock is nobody's to protect",
     },
     {
       held: null,
-      caller: "ci",
-      allowed: false,
-      why: "a named caller does not own an unowned lock",
+      caller: "bob",
+      allowed: true,
+      why: "still unowned, so a named caller may act too",
     },
     {
-      held: "ci",
+      held: "alice",
       caller: null,
       allowed: false,
       why: "an unowned caller does not own a named lock",
     },
-    { held: "ci", caller: "ci", allowed: true, why: "same owner" },
-    { held: "ci", caller: "bob", allowed: false, why: "different owners" },
+    { held: "alice", caller: "alice", allowed: true, why: "same owner" },
+    { held: "alice", caller: "bob", allowed: false, why: "different owners" },
   ];
 
   for (const { held, caller, allowed, why } of cases) {
-    it(`${allowed ? "allows" : "refuses"} ${caller ?? "unowned"} on a lock held by ${held ?? "nobody"} (${why})`, () => {
-      expect(
-        mayUnlock(lockOwnedBy(held), { owner: caller, force: false }),
-      ).toBe(allowed);
+    it(`${allowed ? "allows" : "refuses"} ${caller ?? "an unowned caller"} on a lock held by ${held ?? "nobody"} (${why})`, () => {
+      expect(mayModify(lockOwnedBy(held), caller)).toBe(allowed);
     });
   }
 
-  it("lets --force past every refusal", () => {
-    for (const { held, caller } of cases) {
-      expect(mayUnlock(lockOwnedBy(held), { owner: caller, force: true })).toBe(
-        true,
-      );
-    }
-  });
-
-  it("allows an unguarded release, which is what the Action does", () => {
-    // MutexSettings hardcodes force, so the Action keeps releasing
-    // unconditionally exactly as it did before ownership existed.
-    expect(mayUnlock(lockOwnedBy("ci"))).toBe(true);
-    expect(mayUnlock(lockOwnedBy(null))).toBe(true);
-  });
-
-  it("treats unowned as an absence, not an identity", () => {
-    // Two different unowned callers are indistinguishable, so this rule alone
-    // does not stop one unowned process releasing another's lock.
-    const alice = { owner: null, force: false };
-    const bob = { owner: null, force: false };
-    expect(mayUnlock(lockOwnedBy(null), alice)).toBe(true);
-    expect(mayUnlock(lockOwnedBy(null), bob)).toBe(true);
+  it("protects a lock only once it is owned", () => {
+    // The whole model in one line: naming an owner is what buys protection.
+    expect(mayModify(lockOwnedBy(null), "anyone")).toBe(true);
+    expect(mayModify(lockOwnedBy("alice"), "anyone")).toBe(false);
   });
 });

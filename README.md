@@ -203,39 +203,32 @@ Details worth knowing:
 
 ### Ownership
 
-Locks record who took them, and `unlock` and `renew` apply the same rule: the lock's owner and the caller's have to match.
+Acquiring is decided by expiry alone: while a lock is held, nobody gets it - not even the owner. Ownership decides who may **unlock** and **renew** it.
 
-```shell
-$ mutex unlock deploy-staging
-'deploy-staging' is held by 'ci@runner-3'; this call is unowned. Unlocking needs both to match; pass --force to break it.
+```
+alice lock LOCK1     ok          alice lock LOCK1     ok, long-running
+bob   lock LOCK1     held        bob   lock LOCK1     held
+alice unlock LOCK1   ok          bob   renew  LOCK1   wrong owner
+bob   lock LOCK1     ok          bob   unlock LOCK1   wrong owner
+bob   unlock LOCK1   ok
 ```
 
-`--owner` is optional and there is no default. Without it, and without `$MUTEX_OWNER`, the lock is **unowned** - exactly what the GitHub Action writes today, which is what lets the CLI and the Action work on each other's locks without ceremony.
+`--owner` is optional and there is no default. Without it, and without `$MUTEX_OWNER`, the lock is **unowned** - which is what the GitHub Action writes today.
 
-Naming an owner is what makes a lock yours:
+| Lock      | Caller      | `unlock`  | `renew` |
+| --------- | ----------- | --------- | ------- |
+| unowned   | anyone      | yes       | yes     |
+| same name | same name   | yes       | yes     |
+| named     | anyone else | `--force` | no      |
+
+Naming an owner is the act that buys protection. An unowned lock has nobody to wrong, so anyone may unlock or renew it - which is also what keeps the Action's locks manageable from the CLI while [#67](https://github.com/releasetools/mutex/issues/67) is outstanding.
 
 ```shell
 mutex lock deploy --owner "$CI_RUN"
 ```
 
-| Lock      | Caller     | `unlock`  | `renew` |
-| --------- | ---------- | --------- | ------- |
-| unowned   | unowned    | yes       | yes     |
-| unowned   | named      | `--force` | no      |
-| named     | unowned    | `--force` | no      |
-| same name | same name  | yes       | yes     |
-| named     | other name | `--force` | no      |
-
-> [!IMPORTANT]
-> **Unowned is an absence, not an identity.** Two unowned callers are indistinguishable, so a lock nobody named an owner for is still unlockable by anyone else who also names none. Ownership only protects a lock once you name one.
->
-> That matters most for `mutex lock ... -- <program>`. If an unowned lock is released mid-run and somebody else takes it, the wrapper will release _their_ lock when its program exits. Pass `--owner` for anything where that would hurt:
->
-> ```shell
-> mutex lock deploy --owner "$CI_RUN" -- ./deploy.sh
-> ```
-
-Locks taken by the GitHub Action are unowned, so the Action releases them unconditionally and a CLI caller that names no owner can release them too.
+> [!TIP]
+> Pass `--owner` for anything that matters. On an unowned lock, `mutex lock ... -- <program>` will release whatever holds the id when its program exits, even if that is somebody else's lock by then.
 
 ### Where the connection string comes from
 
