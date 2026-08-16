@@ -31,15 +31,24 @@ Any other job using `id: staging` now waits. The lock goes back when the job end
 
 ### On the command line
 
-```shell
-npm install
-npm run build   # the CLI is built, not committed
-npm link        # puts `mutex` on your PATH
+Install a released version directly from this repository. Node.js 24 or newer
+is required:
 
+```shell
+npm install --global "git+https://github.com/releasetools/mutex.git#v1.3.0"
+mutex version
+```
+
+Use an exact version as above for a repeatable install, or use `#v1` to follow
+the latest compatible v1 release. npm writes the command to its configured
+global prefix; a Node version manager or user-owned npm prefix keeps the whole
+installation rootless.
+
+```shell
 MUTEX_DATABASE_URL="postgres://..." mutex lock staging -- ./deploy.sh
 ```
 
-The lock is held for exactly as long as `deploy.sh` runs, and released however it exits. Without `npm link`, run `node ./bin/mutex.js` or `npm run mutex -- <args>`.
+The lock is held for exactly as long as `deploy.sh` runs, and released however it exits.
 
 ## Reference
 
@@ -353,9 +362,21 @@ Contributions are welcome.
 ```shell
 git clone https://github.com/releasetools/mutex.git
 cd mutex
-npm install
-npm run prepare   # pre-commit hooks
+npm ci
+npm run cli:link  # build, then put this checkout's `mutex` on PATH
 ```
+
+The link follows the checkout, so rebuilding updates the command in place. For
+an unlinked run, use `npm run mutex -- <args>`. The full local check is one
+command:
+
+```shell
+npm run check
+```
+
+`check` formats the source, builds the CLI and Action, and runs every test. The
+pre-commit hook runs the relevant formatting, tests, and build again before a
+commit is accepted.
 
 | Path              | What lives there                                                          |
 | ----------------- | ------------------------------------------------------------------------- |
@@ -399,7 +420,7 @@ They are separate on purpose. Replacing a release and releasing out of order are
 | Check           | Rejects a malformed version, one already released, or one below the highest released                                                                                                            |
 | Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                                                                           |
 | Build           | `npm ci`, lint, test                                                                                                                                                                            |
-| Package         | `npm run package:action` assembles `publish/`: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a `package.json` carrying the version                                                         |
+| Package         | `npm run package:action` assembles `publish/`: the Action bundle, compiled CLI, runtime manifest, README, and license                                                                           |
 | Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.3.0` and the floating `v1` at it |
 | Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
 | Verify          | Uses `releasetools/mutex@v1` for real and checks the version it reports                                                                                                                         |

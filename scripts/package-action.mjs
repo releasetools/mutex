@@ -20,7 +20,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 /**
- * Assembles the tree that gets published as the action.
+ * Assembles the tree that gets published as the action and versioned CLI.
  *
  * `dist/` is not committed, so what a consumer of `releasetools/mutex@v1`
  * receives is built and staged at release time. This is that staging, kept
@@ -40,7 +40,7 @@ import { parseArgs } from "node:util";
 
 /** Copied verbatim into the published tree. */
 const FILES = ["action.yml", "LICENSE", "README.md"];
-const DIRECTORIES = ["dist"];
+const DIRECTORIES = ["bin", "dist", "lib"];
 
 export function packageAction({ root = process.cwd(), out } = {}) {
   const source = path.resolve(root);
@@ -70,15 +70,19 @@ export function packageAction({ root = process.cwd(), out } = {}) {
     fs.cpSync(from, path.join(target, dir), { recursive: true });
   }
 
-  // Minimal by design: the published tree is not an npm package, and shipping
-  // scripts or devDependencies into it would only invite confusion. The
-  // version is the point.
+  // Keep build tooling out, but retain what npm needs to install the compiled
+  // CLI directly from a version tag. The same package.json also gives the
+  // bundled Action the version it reports at runtime.
   writeJson(path.join(target, "package.json"), {
     name: manifest.name,
     version: manifest.version,
     description: manifest.description,
     license: manifest.license,
     private: true,
+    type: manifest.type,
+    bin: manifest.bin,
+    engines: manifest.engines,
+    dependencies: manifest.dependencies,
   });
 
   verifyEntrypoints(target);
@@ -100,7 +104,9 @@ function verifyEntrypoints(target) {
 
   for (const [key, file] of declared) {
     if (!fs.existsSync(path.join(target, file))) {
-      throw new Error(`action.yml runs.${key} is ${file}, which is not in the published tree`);
+      throw new Error(
+        `action.yml runs.${key} is ${file}, which is not in the published tree`,
+      );
     }
   }
 }
@@ -148,7 +154,10 @@ function writeJson(file, value) {
 }
 
 // Run directly, rather than imported by a test.
-if (process.argv[1] && import.meta.url.endsWith(path.basename(process.argv[1]))) {
+if (
+  process.argv[1] &&
+  import.meta.url.endsWith(path.basename(process.argv[1]))
+) {
   const { values } = parseArgs({
     options: { root: { type: "string" }, out: { type: "string" } },
   });

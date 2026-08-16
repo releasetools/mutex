@@ -22,11 +22,9 @@ import path from "node:path";
 import { packageAction } from "../scripts/package-action.mjs";
 
 /**
- * The published tree is a subset of the repository, so nothing that consumes
- * it is exercised by running the repository itself. These are the checks that
- * would have caught the two defects found by hand-assembling it: an action.yml
- * naming a file that was not shipped, and a tree with no package.json, which
- * made the action report its version as "unknown".
+ * The published tree is a subset of the repository, so neither the Action nor
+ * a CLI installed from a tag is exercised by running the repository itself.
+ * These checks cover both entrypoint sets and the shared runtime manifest.
  */
 
 const ACTION_YML = `name: "Test action"
@@ -52,10 +50,12 @@ function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
   write("action.yml", overrides.actionYml ?? ACTION_YML);
   write("LICENSE", "Apache 2.0");
   write("README.md", "# test");
+  write("bin/mutex.js", '#!/usr/bin/env node\nimport "../lib/cli/main.js";\n');
   write("dist/main/index.js", "// main");
   write("dist/main/package.json", '{"type":"module"}');
   write("dist/post/index.js", "// post");
   write("dist/post/package.json", '{"type":"module"}');
+  write("lib/cli/main.js", "// cli");
   write(
     "package.json",
     JSON.stringify({
@@ -63,6 +63,10 @@ function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
       version: "1.2.3",
       description: "a lock",
       license: "Apache-2.0",
+      type: "module",
+      bin: { mutex: "./bin/mutex.js" },
+      engines: { node: ">=24.0.0" },
+      dependencies: { pg: "^8.16.3" },
       scripts: { build: "tsc" },
       devDependencies: { typescript: "^6" },
     }),
@@ -95,10 +99,12 @@ describe("packageAction", () => {
         "LICENSE",
         "README.md",
         "action.yml",
+        "bin/mutex.js",
         "dist/main/index.js",
         "dist/main/package.json",
         "dist/post/index.js",
         "dist/post/package.json",
+        "lib/cli/main.js",
         "package.json",
       ].sort(),
     );
@@ -118,6 +124,9 @@ describe("packageAction", () => {
     );
     expect(manifest.version).toBe("1.2.3");
     expect(manifest.name).toBe("mutex");
+    expect(manifest.bin).toEqual({ mutex: "./bin/mutex.js" });
+    expect(manifest.engines).toEqual({ node: ">=24.0.0" });
+    expect(manifest.dependencies).toEqual({ pg: "^8.16.3" });
   });
 
   it("leaves the repository's own scripts and devDependencies out of it", () => {

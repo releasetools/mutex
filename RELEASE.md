@@ -19,6 +19,8 @@ Newest first. One line per change.
 - Added explicit direct and server profiles, including a background TCP server that keeps PostgreSQL connections warm for faster CLI lock operations, a systemd template, and a rootless per-user macOS LaunchAgent.
 - Running `mutex` without arguments now prints the general help instead of returning a usage error.
 - `mutex server status` and `mutex server stop` now identify a missing profiles file instead of claiming the implicit direct connection is a configured profile.
+- Version tags now contain the compiled CLI and its runtime manifest, so `npm install --global git+https://github.com/releasetools/mutex.git#v1.3.0` installs a working `mutex` command directly from the repository.
+- Added `npm run cli:link` for building and linking a checkout and `npm run check` for formatting, building, and testing it locally.
 
 ## 1.2.2
 
