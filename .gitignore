@@ -192,7 +192,9 @@ out
 
 # End of https://www.toptal.com/developers/gitignore/api/node,macos,visualstudiocode
 
-# Build output. Only dist/main and dist/post are committed, because action.yaml
-# points GitHub at them directly; everything else is produced by `npm run build`.
+# Build output. None of it is committed: the release workflow builds it and
+# publishes the compiled tree to release/<major>, which the version tags point
+# at. `npm run build` produces it locally.
 /lib/
-/dist/cli/
+/dist/
+/publish/

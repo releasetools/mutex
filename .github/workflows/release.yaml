@@ -1,136 +1,238 @@
-name: Test release
+name: Release
+
+# Builds the action and publishes the compiled tree to release/v1, then points
+# the version tags at it. `dist/` is not committed on main - what consumers get
+# from releasetools/mutex@v1 is built here, on the way past.
+#
+# A tag push cannot trigger this: the tag the workflow creates would collide
+# with the one that triggered it. Dispatch with the version instead.
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. v1.3.0. package.json is bumped to match."
+        required: true
+      allow-lower-version:
+        description: "Publish a version below the highest already released. For back-porting a fix to an older line."
+        type: boolean
+        default: false
+      overwrite-existing:
+        description: "Replace a version that has already been published, moving its tag and updating its GitHub release."
+        type: boolean
+        default: false
 
 # Deny by default; each job grants only what it needs.
 permissions: {}
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Run tests
-        run: |
-          npm install
-          npm run build
-          npm run lint
-          npm test
-
-  # 'uses:' is resolved during "Set up job", before the first step runs, so a
-  # sleep step inside e2e-test would be too late — the action is already
-  # downloaded. The wait has to be its own job that e2e-test depends on.
-  # `uses:` cannot take an expression - it is one of the few keys that does not
-  # accept contexts - so the end-to-end job can only name one major tag, and it
-  # names v1. This job exists to make that hardcoding fail loudly the day it
-  # stops matching, rather than letting a v2 release quietly skip the only
-  # check that proves the published action works.
+  # Runs before anything is published, so a release that cannot be verified is
+  # blocked rather than shipped and then reported.
   check-e2e-pin:
     runs-on: ubuntu-latest
     permissions: {}
     steps:
-      - name: The end-to-end job must test the release being cut
+      - name: The verify job must test the release being published
         env:
-          TAG: ${{ github.ref_name }}
-          # Keep in step with the `uses:` in e2e-test below.
+          VERSION: ${{ inputs.version }}
+          # Keep in step with the `uses:` in verify below.
           PINNED: v1
         run: |
-          major="${TAG%%.*}"
+          major="${VERSION%%.*}"
           if [ "$major" != "$PINNED" ]; then
-            echo "::error::This release is $TAG, but e2e-test still pins releasetools/mutex@$PINNED, so nothing verifies the published $major action. Add a $major end-to-end job (uses: cannot take an expression, so it has to be written out), then update PINNED here."
+            echo "::error::This release is $VERSION, but the verify job still pins releasetools/mutex@$PINNED, so nothing would check the published $major action. Add a $major job (uses: cannot take an expression, so it has to be written out), then update PINNED here."
             exit 1
           fi
-          echo "e2e-test pins @$PINNED and this release is $TAG"
+          echo "verify pins @$PINNED and this release is $VERSION"
 
-  await-v1:
-    if: startsWith(github.ref_name, 'v1.')
+  publish:
+    needs: check-e2e-pin
     runs-on: ubuntu-latest
-    needs: build-and-test
     permissions:
-      contents: read
-    steps:
-      # Waits for v1 to have moved *and settled*. A single matching read is not
-      # enough: these endpoints are served by replicas, and the service that
-      # resolves `uses:` for the next job is a different one again, so one
-      # agreeing read says little about what the runner will be handed.
-      # Requiring several consecutive agreeing reads, from two independent
-      # resolution paths, makes a stale download much less likely.
-      #
-      # It cannot make it impossible - see the version assertion in e2e-test,
-      # which is what actually catches a stale action.
-      - name: ⏳ Wait for v1 to point at this release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXPECTED: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          attempts=36
-          required=3
-          confirmations=0
-
-          for attempt in $(seq 1 "$attempts"); do
-            # One read of the ref. v1 is annotated, so it points at a tag
-            # object; deref that to the commit it wraps.
-            ref="$(gh api "repos/$REPO/git/ref/tags/v1" \
-                     --jq '.object.type + " " + .object.sha' 2>/dev/null || true)"
-            object_type="${ref%% *}"
-            sha="${ref##* }"
-            if [ "$object_type" = "tag" ]; then
-              sha="$(gh api "repos/$REPO/git/tags/$sha" --jq '.object.sha' 2>/dev/null || true)"
-            fi
-
-            # A second, independent resolution of the same tag. Agreement
-            # between the two is better evidence than either on its own.
-            commit_sha="$(gh api "repos/$REPO/commits/v1" --jq '.sha' 2>/dev/null || true)"
-
-            if [ -n "$sha" ] && [ "$sha" = "$EXPECTED" ] && [ "$commit_sha" = "$EXPECTED" ]; then
-              confirmations=$((confirmations + 1))
-              echo "attempt $attempt/$attempts: v1 -> $sha (agreed $confirmations/$required)"
-              if [ "$confirmations" -ge "$required" ]; then
-                echo "v1 has settled on $sha"
-                exit 0
-              fi
-            else
-              if [ "$confirmations" -gt 0 ]; then
-                echo "::warning::v1 read back as '$sha'/'$commit_sha' after agreeing; restarting"
-              else
-                echo "attempt $attempt/$attempts: v1 -> ${sha:-unknown}, waiting for $EXPECTED"
-              fi
-              confirmations=0
-            fi
-
-            sleep 10
-          done
-
-          echo "::error::v1 still does not agree on $EXPECTED after 6 minutes. Was the release cut without --major?"
-          exit 1
-
-  e2e-test:
-    if: startsWith(github.ref_name, 'v1.')
-    runs-on: ubuntu-latest
-    needs: [build-and-test, await-v1]
-    permissions:
-      contents: read
-      pull-requests: write
+      contents: write
+    outputs:
+      major: ${{ steps.version.outputs.major }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # Deliberately references the moving v1 tag rather than a pinned digest:
-      # this step exists to verify the release consumers actually get from
-      # releasetools/mutex@v1. Renovate bumps the digest only *after* a release
-      # (see #63), so a pin is always one release stale at the moment this
-      # workflow runs — exactly when the check matters. 'uses:' cannot take an
-      # expression such as ${{ github.ref_name }} either; it is one of the few
-      # keys that does not accept contexts. The await-v1 job above guarantees v1
-      # has already moved. renovate.json keeps Renovate from re-pinning this.
+      - name: ✅ Check the version
+        id: version
+        env:
+          # The script reads the repository's tags itself. It runs before
+          # `npm ci`, so node_modules is not there and octokit is not an
+          # option - it uses global fetch.
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          ALLOW_LOWER: ${{ inputs.allow-lower-version }}
+          OVERWRITE: ${{ inputs.overwrite-existing }}
+        run: |
+          set -euo pipefail
+
+          args=(--version "$VERSION")
+          [ "$ALLOW_LOWER" = "true" ] && args+=(--allow-lower-version)
+          [ "$OVERWRITE" = "true" ] && args+=(--overwrite-existing)
+
+          node scripts/check-release-version.mjs "${args[@]}"
+
+      # The version lives in package.json because the action reports it at
+      # runtime. Bumping it by hand before every release is a step to forget,
+      # so the release does it - and pushes it to main, because a bump that
+      # only exists on a throwaway branch would leave main claiming the old
+      # version while the next release computed its bump from that stale value.
+      - name: ⬆️ Bump the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          node -e '
+            const fs = require("fs");
+            const version = process.env.VERSION.replace(/^v/, "");
+
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.version = version;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+
+            // The lock file carries the version twice, and npm rewrites both.
+            const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+            lock.version = version;
+            if (lock.packages && lock.packages[""]) {
+              lock.packages[""].version = version;
+            }
+            fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
+          '
+
+          mkdir -p bump
+          cp package.json package-lock.json bump/
+          echo "package.json is now $(node -p 'require("./package.json").version')"
+
+      # Upsert rather than mirror: source-dir holds only the two files that
+      # changed, and prune would otherwise read the rest of main as deleted.
+      - name: 🔏 Push the bump to main, signed
+        id: bump
+        uses: releasetools/actions/signed-push@e03d8631693c67061fb9d1216cf23b1c370a992c # v0.0.6
+        with:
+          source-dir: bump
+          target-repo: ${{ github.repository }}
+          target-branch: main
+          headline: "chore(release): ${{ inputs.version }}"
+          prune: "false"
+          token: ${{ github.token }}
+
+      - name: 🔨 Lint, test and package
+        run: |
+          npm ci
+          npm run lint
+          npm test
+          npm run package:action
+
+      # signed-push commits onto an existing branch, so the release line has to
+      # be there. Seeded from main the first time a major is published.
+      - name: 🌱 Ensure the release branch exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAJOR: ${{ steps.version.outputs.major }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="release/${MAJOR}"
+          if gh api "repos/${GITHUB_REPOSITORY}/branches/${BRANCH}" >/dev/null 2>&1; then
+            echo "${BRANCH} already exists"
+            exit 0
+          fi
+
+          MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq .commit.sha)"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/heads/${BRANCH}" -f sha="${MAIN_SHA}" >/dev/null
+          echo "Created ${BRANCH} from main at ${MAIN_SHA}"
+
+      # createCommitOnBranch signs the commit server-side with the token it is
+      # given, so the published commit is verified without a GPG key anywhere
+      # near the runner. The trailers are the provenance: the built commit's
+      # parent is the previous release, not the source it came from.
+      #
+      # The tags are applied here rather than by hand afterwards. force-tags
+      # because the floating major has to move on every release; the version
+      # tag only arrives here already existing when overwrite-existing was
+      # passed, so the version check upstream is the gate, not this flag.
+      - name: 🔏 Publish the tree, signed
+        id: publish
+        uses: releasetools/actions/signed-push@e03d8631693c67061fb9d1216cf23b1c370a992c # v0.0.6
+        with:
+          source-dir: publish
+          target-repo: ${{ github.repository }}
+          target-branch: release/${{ steps.version.outputs.major }}
+          headline: "release: ${{ inputs.version }}"
+          # signed-push appends Workflow-Commit and Published-By itself. That
+          # names the checkout the workflow ran from, which is main before the
+          # bump - this names the bump commit, which is the source of the
+          # version actually published.
+          body: |
+            Source-Commit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.bump.outputs.commit-sha }}>
+          prune: "true"
+          # The exact version, and the floating major that follows every
+          # release. One per line; signed-push trims and de-duplicates them.
+          tags: |
+            ${{ inputs.version }}
+            ${{ steps.version.outputs.major }}
+          force-tags: "true"
+          token: ${{ github.token }}
+
+      # The repository has published GitHub releases since v1.0.0, and the
+      # notes people read live in RELEASE.md. Generated notes would be no use:
+      # they are built from the commits reachable from the tag, and this tag
+      # points into release/<major>, whose history is other releases.
+      - name: 🚀 Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          node scripts/release-notes.mjs --version "$VERSION" > notes.md
+          echo "Release notes:"
+          sed 's/^/  /' notes.md
+
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release edit "$VERSION" --notes-file notes.md --title "Release $VERSION"
+            echo "Updated the existing release"
+          else
+            gh release create "$VERSION" --notes-file notes.md --title "Release $VERSION"
+            echo "Created the release"
+          fi
+
+      - name: 📝 Summary
+        env:
+          VERSION: ${{ inputs.version }}
+          MAJOR: ${{ steps.version.outputs.major }}
+          NEW_SHA: ${{ steps.publish.outputs.commit-sha }}
+          NEW_URL: ${{ steps.publish.outputs.commit-url }}
+          BUMP_SHA: ${{ steps.bump.outputs.commit-sha }}
+        run: |
+          {
+            echo "## Published ${VERSION}"
+            echo
+            echo "Signed commit: [\`${NEW_SHA:0:12}\`](${NEW_URL})"
+            echo
+            echo "- \`${VERSION}\` and \`${MAJOR}\` point at it"
+            echo "- bumped package.json on main in \`${BUMP_SHA:0:12}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Proves the published action works, by using it the way a consumer would.
+  #
+  # This runs after the tags have moved, because `uses:` cannot reference the
+  # version being published - only the floating major. So a failure here means
+  # a published release that needs fixing forward, which is still far better
+  # than finding out from somebody else's workflow.
+  verify:
+    if: startsWith(inputs.version, 'v1.')
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
       - name: 🔒 Acquire Lock (and auto-release on completion)
         id: lock
         uses: releasetools/mutex@v1
@@ -139,21 +241,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           command: "lock"
-          id: "verify-release-v0"
-          reason: "Verify released v1 version"
+          id: "verify-release-v1"
+          reason: "Verify the published ${{ inputs.version }}"
 
-      # The point of this job. await-v1 waits for the tag to move, but `uses:`
-      # resolves through GitHub's own action cache, which is a different system
-      # again - no amount of waiting can prove the runner was handed the new
-      # code. Asking the action which build it is turns "probably fresh" into
-      # something checked, and a stale resolution into a red build rather than
-      # a green one that verified the previous release.
-      - name: ✅ Verify the release under test is the one that ran
+      # The point of this job. The tags moved a moment ago, but `uses:`
+      # resolves through GitHub's action cache, which is a different system -
+      # no amount of waiting proves the runner was handed the new code. Asking
+      # the action which build it is turns "probably fresh" into something
+      # checked.
+      - name: ✅ Verify the published build is the one under test
         env:
           RAN: ${{ steps.lock.outputs.version }}
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version }}
         run: |
-          expected="${TAG#v}"
+          expected="${VERSION#v}"
 
           if [ -z "$RAN" ]; then
             echo "::error::The action reported no version. Either v1 resolved to a build from before the version output existed, or the action failed before reporting."
@@ -161,11 +262,11 @@ jobs:
           fi
 
           if [ "$RAN" != "$expected" ]; then
-            echo "::error::v1 ran mutex $RAN, but this release is $expected. Either the tag had not propagated to the action cache, or the release was cut without bumping package.json."
+            echo "::error::v1 ran mutex $RAN, but this release is $expected. The tag move may not have reached the action cache yet - re-run this job."
             exit 1
           fi
 
-          echo "v1 ran mutex $RAN, matching $TAG"
+          echo "v1 ran mutex $RAN, matching $VERSION"
 
       - name: ⏳ Mock action - wait 5 seconds and then continue
         run: sleep 5

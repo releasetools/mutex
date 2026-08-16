@@ -35,6 +35,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # dist/ is built at release time, not committed, so `uses: ./` below has
+      # nothing to run until this step produces it. Local actions are read from
+      # the workspace when their step runs - unlike remote ones, which are
+      # fetched during "Set up job" - so building here is soon enough.
+      - name: 🔨 Build the action
+        run: |
+          npm ci
+          npm run build
+
       - name: 🔒 Acquire Lock (and auto-release on completion)
         uses: ./
         with:
@@ -59,6 +68,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # dist/ is built at release time, not committed, so `uses: ./` below has
+      # nothing to run until this step produces it. Local actions are read from
+      # the workspace when their step runs - unlike remote ones, which are
+      # fetched during "Set up job" - so building here is soon enough.
+      - name: 🔨 Build the action
+        run: |
+          npm ci
+          npm run build
 
       - name: 🔒 Acquire Lock
         uses: ./
@@ -95,6 +113,15 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # dist/ is built at release time, not committed, so `uses: ./` below has
+      # nothing to run until this step produces it. Local actions are read from
+      # the workspace when their step runs - unlike remote ones, which are
+      # fetched during "Set up job" - so building here is soon enough.
+      - name: 🔨 Build the action
+        run: |
+          npm ci
+          npm run build
 
       - name: 🔒 Acquire Lock (and auto-release on completion)
         uses: ./
