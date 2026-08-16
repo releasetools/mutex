@@ -19,36 +19,38 @@ import { WebClient } from "@slack/web-api";
 import * as core from "@actions/core";
 import { MutexSettings } from "./configuration.js";
 import { logError } from "./helpers.js";
-import {
-  loadFromEnvOrGHAInput,
-  loadRequiredNonEmptyFromGHAInput,
-} from "./inputs.js";
+import { loadFromEnvOrGHAInput } from "./inputs.js";
 import { ActionsLogger } from "./actions-logger.js";
 
 export class SlackClient {
   private settings: MutexSettings;
   private slack: WebClient | null;
-  private channel: string = ""; // Initialized later if SLACK_BOT_TOKEN is provided
+  private channel: string;
 
+  /**
+   * `slack-channel` is the switch. Leaving it out means nobody asked for
+   * Slack, so nothing is said: a workflow that never wanted notifications is
+   * not misconfigured, and warning at it buries the case that is. A channel
+   * with no token is the real mistake, and that still warns.
+   *
+   * It also means a `SLACK_BOT_TOKEN` inherited from job-level `env:` no
+   * longer decides anything. It used to, and a step with no channel then
+   * failed the whole job.
+   */
   constructor(settings: MutexSettings) {
     this.settings = settings;
-    this.slack = this.initializeClient();
+    this.channel = core.getInput("slack-channel").trim();
 
-    if (this.slack) {
-      this.channel = loadRequiredNonEmptyFromGHAInput("slack-channel");
-    }
-  }
-
-  private initializeClient(): WebClient | null {
-    const token = loadFromEnvOrGHAInput("SLACK_BOT_TOKEN");
-    if (!token) {
+    const token = this.channel
+      ? loadFromEnvOrGHAInput("SLACK_BOT_TOKEN")
+      : null;
+    if (this.channel && !token) {
       core.warning(
-        "⚠️ Slack bot token not found. Slack notifications disabled.",
+        `⚠️ slack-channel is '${this.channel}' but SLACK_BOT_TOKEN is not set. Slack notifications disabled.`,
       );
-      return null;
     }
 
-    return new WebClient(token);
+    this.slack = token ? new WebClient(token) : null;
   }
 
   async postMessage(text: string): Promise<boolean> {

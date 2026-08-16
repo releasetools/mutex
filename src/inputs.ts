@@ -24,15 +24,6 @@ import * as core from "@actions/core";
  * never has to import the Actions toolkit.
  */
 
-export function loadRequiredNonEmptyFromGHAInput(name: string): string {
-  const data = core.getInput(name);
-  if (data && data.trim().length > 0) {
-    return data;
-  }
-
-  throw new Error(`🚨 ${name} not found or empty. Cannot continue...`);
-}
-
 export function loadRequiredFromEnvOrGHAInput(name: string): string {
   const token = process.env[name] || core.getInput(name);
   if (token) {
@@ -42,12 +33,11 @@ export function loadRequiredFromEnvOrGHAInput(name: string): string {
   throw new Error(`🚨 ${name} not found. Cannot continue...`);
 }
 
+/**
+ * Reads something optional. Absence is not reported here: only the caller
+ * knows whether it was wanted, and warning about every unset optional value
+ * puts a ⚠️ in the log of a job that is configured exactly as intended.
+ */
 export function loadFromEnvOrGHAInput(name: string): string | null {
-  const token = process.env[name] || core.getInput(name);
-  if (token) {
-    return token;
-  }
-
-  core.warning(`⚠️ ${name} not found.`);
-  return null;
+  return process.env[name] || core.getInput(name) || null;
 }

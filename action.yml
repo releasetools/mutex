@@ -44,10 +44,10 @@ inputs:
     required: false
     default: "false"
   SLACK_BOT_TOKEN:
-    description: "Specify a Slack bot token (xoxb-...) to post updates to a channel. Needs the `chat:write` permission. Can also be passed as an environment variable. If not specified, no Slack notifications will be sent."
+    description: "Specify a Slack bot token (xoxb-...) to post updates to a channel. Needs the `chat:write` permission. Can also be passed as an environment variable. Only read when slack-channel is set."
     required: false
   slack-channel:
-    description: "The channel ID where to post Slack notifications. Required if SLACK_BOT_TOKEN is specified."
+    description: "The channel ID where to post Slack notifications. Setting it turns Slack notifications on, and SLACK_BOT_TOKEN is then required. Leave it out and no Slack notifications are sent."
     required: false
 
 outputs:
