@@ -16,7 +16,6 @@
  */
 
 import { jest } from "@jest/globals";
-import { parseCommandLine } from "../src/cli/args.js";
 import { resolveConnectionString } from "../src/cli/config.js";
 import { ConfigurationError } from "../src/cli/exit-codes.js";
 import { findConnectionString } from "../src/connection.js";
@@ -57,7 +56,7 @@ class RecordingLogger implements Logger {
 }
 
 /** Only these are touched, so the rest of the environment is left alone. */
-const NAMES = [PREFERRED, DEPRECATED, "LOCKS_URL"];
+const NAMES = [PREFERRED, DEPRECATED];
 const original = Object.fromEntries(NAMES.map((n) => [n, process.env[n]]));
 
 const setEnv = (values: Record<string, string>) => {
@@ -131,9 +130,6 @@ describe("findConnectionString", () => {
 describe("resolveConnectionString (CLI)", () => {
   let log: RecordingLogger;
 
-  const optionsFor = (...args: string[]) =>
-    parseCommandLine(["lock", "id", ...args]).options;
-
   beforeEach(() => {
     log = new RecordingLogger();
     setEnv({});
@@ -141,30 +137,33 @@ describe("resolveConnectionString (CLI)", () => {
 
   afterAll(restoreEnv);
 
-  it("reads $MUTEX_DATABASE_URL", async () => {
+  it("reads $MUTEX_DATABASE_URL", () => {
     setEnv({ [PREFERRED]: MUTEX_DB });
 
-    const connection = await resolveConnectionString(optionsFor(), log);
-
-    expect(connection.value).toBe(MUTEX_DB);
-    expect(connection.source).toBe(`the ${PREFERRED} environment variable`);
+    expect(resolveConnectionString(log)).toEqual({
+      value: MUTEX_DB,
+      name: PREFERRED,
+    });
     expect(log.warnings).toEqual([]);
   });
 
-  it("falls back to $DATABASE_URL, and warns", async () => {
+  it("falls back to $DATABASE_URL, and warns", () => {
     setEnv({ [DEPRECATED]: MUTEX_DB });
 
-    const connection = await resolveConnectionString(optionsFor(), log);
-
-    expect(connection.value).toBe(MUTEX_DB);
-    expect(connection.source).toBe(`the ${DEPRECATED} environment variable`);
+    expect(resolveConnectionString(log)).toEqual({
+      value: MUTEX_DB,
+      name: DEPRECATED,
+    });
     expect(log.warnings).toHaveLength(1);
   });
 
-  it("fails when neither is set, naming the one to set", async () => {
-    const error = await resolveConnectionString(optionsFor(), log).catch(
-      (thrown: unknown) => thrown,
-    );
+  it("fails when neither is set, naming the one to set", () => {
+    let error;
+    try {
+      resolveConnectionString(log);
+    } catch (thrown) {
+      error = thrown;
+    }
 
     expect(error).toBeInstanceOf(ConfigurationError);
     // The name to set, not the deprecated one: it still works, but nobody
@@ -175,34 +174,6 @@ describe("resolveConnectionString (CLI)", () => {
     expect((error as ConfigurationError).hint).toContain(
       `${PREFERRED}=... mutex`,
     );
-  });
-
-  it("reads only what --env-var names", async () => {
-    setEnv({ LOCKS_URL: MUTEX_DB, [DEPRECATED]: APP_DB });
-
-    const connection = await resolveConnectionString(
-      optionsFor("--env-var", "LOCKS_URL"),
-      log,
-    );
-
-    expect(connection.value).toBe(MUTEX_DB);
-    expect(connection.source).toBe("the LOCKS_URL environment variable");
-    // Nothing was defaulted, so there is no deprecation to report.
-    expect(log.warnings).toEqual([]);
-  });
-
-  it("does not fall back from an unset --env-var", async () => {
-    // Silently reaching a different database than the one named is the whole
-    // failure this issue is about.
-    setEnv({ [PREFERRED]: MUTEX_DB, [DEPRECATED]: APP_DB });
-
-    const error = await resolveConnectionString(
-      optionsFor("--env-var", "LOCKS_URL"),
-      log,
-    ).catch((thrown: unknown) => thrown);
-
-    expect(error).toBeInstanceOf(ConfigurationError);
-    expect((error as ConfigurationError).message).toContain("LOCKS_URL");
   });
 });
 

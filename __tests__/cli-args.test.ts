@@ -46,22 +46,8 @@ describe("parseCommandLine", () => {
     expect(options.pollIntervalMs).toBe(10_000);
     // --max-wait defaults to -1, meaning "wait as long as the lease lasts".
     expect(options.pollTimeoutMs).toBe(60_000);
-    // Null, not a name: nothing was said, so the default order applies -
-    // $MUTEX_DATABASE_URL, then the deprecated $DATABASE_URL.
-    expect(options.envVar).toBeNull();
     expect(options.autoRenew).toBe(true);
     expect(options.owner).toBe("tester");
-  });
-
-  it("keeps the variable --env-var names", () => {
-    expect(
-      parseCommandLine(["lock", "id", "--env-var", "LOCKS_URL"]).options.envVar,
-    ).toBe("LOCKS_URL");
-    // Blank falls back to the default order, so `--env-var "$WHICH"` with
-    // WHICH unset does not look up a variable with no name.
-    expect(
-      parseCommandLine(["lock", "id", "--env-var", ""]).options.envVar,
-    ).toBeNull();
   });
 
   it("derives the wait from --expiration unless --max-wait says otherwise", () => {
@@ -317,6 +303,16 @@ describe("parseCommandLine", () => {
     expect(
       parseCommandLine(["unlock", "id", "--owner", "  "]).options.owner,
     ).toBeNull();
+  });
+
+  it("has no --env-var", () => {
+    // A variable under another name needs an assignment, not an option:
+    // MUTEX_DATABASE_URL="$LOCKS_URL" mutex lock id.
+    for (const command of ["lock", "unlock", "status"]) {
+      expect(() =>
+        parseCommandLine([command, "id", "--env-var", "LOCKS_URL"]),
+      ).toThrow(UsageError);
+    }
   });
 
   it("has no --reentrant flag", () => {
