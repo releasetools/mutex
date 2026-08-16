@@ -7,27 +7,11 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/mutex</string>
-    <string>server</string>
-    <string>run</string>
-    <string>-p</string>
-    <string>server</string>
+    <string>/Users/YOUR_USERNAME/.config/releasetools-mutex/run-mutex-server.zsh</string>
   </array>
 
-  <key>UserName</key>
-  <string>mutex</string>
-  <key>GroupName</key>
-  <string>mutex</string>
   <key>WorkingDirectory</key>
-  <string>/usr/local/var/releasetools-mutex</string>
-
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>MUTEX_DATABASE_URL</key>
-    <string>REPLACE_WITH_DATABASE_URL</string>
-    <key>XDG_CONFIG_HOME</key>
-    <string>/usr/local/etc</string>
-  </dict>
+  <string>/Users/YOUR_USERNAME/.config/releasetools-mutex</string>
 
   <key>RunAtLoad</key>
   <true/>

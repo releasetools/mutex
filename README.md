@@ -212,16 +212,29 @@ sudo systemctl enable --now releasetools-mutex@server.service
 
 `server.env` contains `MUTEX_DATABASE_URL=...` and is read by systemd, not passed in argv. The unit sets `XDG_CONFIG_HOME=/etc`, so mutex reads `/etc/releasetools-mutex/profiles.toml`. The configured `working_dir` must match the unit's writable working directory.
 
-#### macOS LaunchDaemon
+#### macOS LaunchAgent (current user)
 
-Review [`contrib/launchd/com.releasetools.mutex.plist`](./contrib/launchd/com.releasetools.mutex.plist) and replace its executable, profile, user, group, working directory, XDG directory, and database URL placeholders. The plist uses `mutex server run -p server`, so launchd owns the process:
+[`contrib/launchd/com.releasetools.mutex.plist`](./contrib/launchd/com.releasetools.mutex.plist) is a per-user LaunchAgent. It runs as the logged-in user, so it has no `UserName` or `GroupName` and needs no root installation. Run `mutex profile` as that user first; accepting the suggested working directory creates `~/.config/releasetools-mutex` with user ownership.
+
+The plist contains no database URL. Its user-owned wrapper changes to the working directory, retrieves `MUTEX_DATABASE_URL` from dotsecenv at startup, exports it only to the mutex process, and replaces itself with `mutex server run`. Neither the value nor a command containing it reaches the plist, a file, or process arguments.
+
+Copy both templates, then replace `YOUR_USERNAME`, the executable paths if `mutex` or `dotsecenv` is installed elsewhere, `YOUR_NAMESPACE::MUTEX_DATABASE_URL`, and the profile if it is not named `server`. launchd needs literal absolute paths in the plist: it does not run a shell to expand `~`, `$HOME`, or command substitutions.
 
 ```shell
-sudo install -m 0600 contrib/launchd/com.releasetools.mutex.plist /Library/LaunchDaemons/com.releasetools.mutex.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.releasetools.mutex.plist
+install -d -m 0700 "$HOME/Library/LaunchAgents"
+install -m 0700 contrib/launchd/run-mutex-server.zsh "$HOME/.config/releasetools-mutex/run-mutex-server.zsh"
+install -m 0600 contrib/launchd/com.releasetools.mutex.plist "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+${EDITOR:-vi} "$HOME/.config/releasetools-mutex/run-mutex-server.zsh"
+${EDITOR:-vi} "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+plutil -lint "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
 ```
 
-Keep the plist root-owned because launchd stores its environment there. Put `profiles.toml` below the configured `XDG_CONFIG_HOME` and make the working directory writable by `UserName`. To stop or replace a managed daemon, use `launchctl bootout`; `KeepAlive` restarts only failures.
+Keep the plist mode `0600` and the wrapper mode `0700`; both stay owned by the current user. The wrapper uses dotsecenv's normal vault and identity access from the configured working directory, and launchd owns the resulting mutex process and restarts only failures. Stop or replace it without root:
+
+```shell
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+```
 
 ### Wrapping a program
 

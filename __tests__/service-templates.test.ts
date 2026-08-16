@@ -23,15 +23,34 @@ describe("service-manager templates", () => {
     expect(unit).not.toContain("server start");
   });
 
-  it("ships a valid LaunchDaemon using foreground run and a profile", async () => {
+  it("ships a rootless LaunchAgent that calls the secure wrapper", async () => {
     const plist = await readFile(
       "contrib/launchd/com.releasetools.mutex.plist",
       "utf8",
     );
-    expect(plist).toContain("<key>UserName</key>");
-    expect(plist).toContain("<key>GroupName</key>");
-    expect(plist).toContain("<string>run</string>");
-    expect(plist).toContain("<string>-p</string>");
+    expect(plist).not.toContain("<key>UserName</key>");
+    expect(plist).not.toContain("<key>GroupName</key>");
+    expect(plist).toContain(
+      "/Users/YOUR_USERNAME/.config/releasetools-mutex/run-mutex-server.zsh",
+    );
+    expect(plist).toContain("/Users/YOUR_USERNAME/.config/releasetools-mutex");
+    expect(plist).not.toContain("/usr/local/var");
+    expect(plist).not.toContain("MUTEX_DATABASE_URL");
+    expect(plist).not.toContain("REPLACE_WITH_DATABASE_URL");
+    expect(plist).not.toContain("<key>EnvironmentVariables</key>");
     expect(plist).not.toContain("<string>start</string>");
+  });
+
+  it("resolves the macOS database URL through dotsecenv outside the plist", async () => {
+    const wrapper = await readFile(
+      "contrib/launchd/run-mutex-server.zsh",
+      "utf8",
+    );
+    expect(wrapper).toContain('cd "$MUTEX_WORKING_DIR"');
+    expect(wrapper).toContain(
+      '"$DOTSECENV_EXECUTABLE" --silent secret get "$DOTSECENV_SECRET"',
+    );
+    expect(wrapper).toContain("export MUTEX_DATABASE_URL");
+    expect(wrapper).toContain('exec "$MUTEX_EXECUTABLE" server run -p server');
   });
 });
