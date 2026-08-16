@@ -84,8 +84,10 @@ export async function main(argv: string[]): Promise<number> {
 
   let mutex: DatabaseMutex | undefined;
   try {
-    const connection = await resolveConnectionString(options, log);
-    log.debug(`Using the connection string from ${connection.source}.`);
+    const connection = resolveConnectionString(log);
+    log.debug(
+      `Using the connection string from the ${connection.name} environment variable.`,
+    );
 
     mutex = new DatabaseMutex(
       {

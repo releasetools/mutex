@@ -108,7 +108,6 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `-i`, `--poll-interval <secs>` | `10`                       | Delay between attempts                             |
 | `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock                             |
 | `--no-renew`                   |                            | Do not renew while a wrapped program runs          |
-| `--env-var <NAME>`             | `MUTEX_DATABASE_URL`       | Which variable holds the connection string         |
 | `--dry-run`                    |                            | `prune` only. List what would go, delete nothing   |
 | `--json`                       |                            | Machine-readable output                            |
 | `-q`, `--quiet`                |                            | Errors only                                        |
@@ -212,7 +211,7 @@ Locks taken by the GitHub Action without an `owner` are unowned, so a CLI caller
 
 ### Where the connection string comes from
 
-`$MUTEX_DATABASE_URL`, and from the environment only. Point `--env-var` at another name if something already owns that one.
+`$MUTEX_DATABASE_URL`, and from the environment only.
 
 There is no flag for it. An argument lands in shell history and in `ps`, where every user on the machine can read it for as long as mutex runs:
 
@@ -228,7 +227,13 @@ MUTEX_DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock depl
 
 Interactively there is nothing to pass, because [dotsecenv's shell plugin](https://dotsecenv.com/guides/shell-plugins/) exports it when you `cd` into the project.
 
-`$DATABASE_URL` is still read when `$MUTEX_DATABASE_URL` is unset, and warns when it is. The prefix is the point: frameworks, ORMs, PaaS providers and CI systems all set `DATABASE_URL`, and they set it to the application's own database. A repository that has one and then adds mutex would keep its locks in the app's database without ever being told, and locks in the wrong database exclude nobody. `--env-var` is exempt from all of this - it names one variable and reads that one, with no fallback.
+There is no option for reading some other variable, because a value already living under another name needs an assignment rather than an option:
+
+```shell
+MUTEX_DATABASE_URL="$LOCKS_URL" mutex lock deploy
+```
+
+`$DATABASE_URL` is still read when `$MUTEX_DATABASE_URL` is unset, and warns when it is. The prefix is the point: frameworks, ORMs, PaaS providers and CI systems all set `DATABASE_URL`, and they set it to the application's own database. A repository that has one and then adds mutex would keep its locks in the app's database without ever being told, and locks in the wrong database exclude nobody.
 
 ### Scripting
 

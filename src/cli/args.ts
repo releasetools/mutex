@@ -56,8 +56,6 @@ const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"] as const;
 /** Only `lock` waits, so only `lock` takes the options that describe waiting. */
 const LOCK_OPTIONS = [...ACQUIRE_OPTIONS, "max-wait", "poll-interval"] as const;
 
-const CONNECTION_OPTIONS = ["env-var"] as const;
-
 const GENERAL_OPTIONS = ["json", "quiet", "verbose", "help"] as const;
 
 interface CommandSpec {
@@ -74,55 +72,49 @@ export const COMMANDS: Record<CommandName, CommandSpec> = {
     usage: "mutex lock <id> [options] [-- <program> [args...]]",
     identifier: "required",
     acceptsProgram: true,
-    options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+    options: [...LOCK_OPTIONS, ...GENERAL_OPTIONS],
   },
   "try-lock": {
     summary: "Acquire a lock in a single attempt, without waiting",
     usage: "mutex try-lock <id> [options] [-- <program> [args...]]",
     identifier: "required",
     acceptsProgram: true,
-    options: [...ACQUIRE_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+    options: [...ACQUIRE_OPTIONS, ...GENERAL_OPTIONS],
   },
   unlock: {
     summary: "Release a lock",
     usage: "mutex unlock <id> [options]",
     identifier: "required",
     acceptsProgram: false,
-    options: [
-      "owner",
-      "max-wait",
-      "poll-interval",
-      ...CONNECTION_OPTIONS,
-      ...GENERAL_OPTIONS,
-    ],
+    options: ["owner", "max-wait", "poll-interval", ...GENERAL_OPTIONS],
   },
   renew: {
     summary: "Extend a lock you already hold",
     usage: "mutex renew <id> [--owner <name>] [--expiration <seconds>]",
     identifier: "required",
     acceptsProgram: false,
-    options: ["expiration", "owner", ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+    options: ["expiration", "owner", ...GENERAL_OPTIONS],
   },
   status: {
     summary: "Show who holds a lock",
     usage: "mutex status <id> [options]",
     identifier: "required",
     acceptsProgram: false,
-    options: [...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+    options: [...GENERAL_OPTIONS],
   },
   list: {
     summary: "List every lock, expired ones included",
     usage: "mutex list [options]",
     identifier: "none",
     acceptsProgram: false,
-    options: [...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+    options: [...GENERAL_OPTIONS],
   },
   prune: {
     summary: "Delete locks that have already expired",
     usage: "mutex prune [--dry-run] [options]",
     identifier: "none",
     acceptsProgram: false,
-    options: ["dry-run", ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+    options: ["dry-run", ...GENERAL_OPTIONS],
   },
   help: {
     summary: "Show this help, or help for one command",
@@ -148,7 +140,6 @@ const OPTION_CONFIG = {
   "no-renew": { type: "boolean" },
   owner: { type: "string", short: "o" },
   "dry-run": { type: "boolean" },
-  "env-var": { type: "string" },
   json: { type: "boolean" },
   quiet: { type: "boolean", short: "q" },
   verbose: { type: "boolean" },
@@ -172,8 +163,6 @@ export interface ResolvedOptions {
   autoRenew: boolean;
   owner: string | null;
   dryRun: boolean;
-  /** The variable named by `--env-var`, or null to use the default order. */
-  envVar: string | null;
   json: boolean;
   logLevel: LogLevel;
 }
@@ -313,7 +302,6 @@ function resolveOptions(
     autoRenew: values["no-renew"] !== true,
     owner: readOwner(values.owner),
     dryRun: values["dry-run"] === true,
-    envVar: readEnvVar(values["env-var"]),
     json: values.json === true,
     logLevel:
       values.quiet === true
@@ -346,20 +334,6 @@ function readOwner(value: string | boolean | undefined): string | null {
     return value.trim() || null;
   }
   return defaultOwner();
-}
-
-/**
- * The variable to read the connection string from, or null to use the default
- * order - `$MUTEX_DATABASE_URL`, then the deprecated `$DATABASE_URL`.
- *
- * Blank counts as unnamed, so `--env-var "$WHICH"` falls back to that order
- * rather than looking up a variable with no name.
- */
-function readEnvVar(value: string | boolean | undefined): string | null {
-  if (typeof value === "string") {
-    return value.trim() || null;
-  }
-  return null;
 }
 
 function rejectInapplicableOptions(
@@ -456,9 +430,6 @@ Lock options:
   -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
       --no-renew                 Do not renew the lock while a wrapped program runs
   -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
-
-Connection:
-      --env-var <NAME>           Variable holding it (default: ${CONNECTION_ENV_VAR})
 
 prune:
       --dry-run                  List what would be deleted, and delete nothing
