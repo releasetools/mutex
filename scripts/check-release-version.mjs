@@ -33,6 +33,74 @@ import { parseArgs } from "node:util";
 
 const SEMVER = /^v(\d+)\.(\d+)\.(\d+)$/;
 
+const TAGS_PER_PAGE = 100;
+
+/**
+ * Every tag name in the repository.
+ *
+ * The workflow used to do this with `gh api --paginate | tr '\n' ' '`, which
+ * flattened the names into one string for the shell to pass back and this
+ * script to split apart again. Doing it here drops the round trip, and turns
+ * pagination into something the tests can exercise rather than something that
+ * gets discovered at 101 tags.
+ *
+ * Deliberately no octokit: this runs before `npm ci`, so node_modules is not
+ * on disk yet. Global fetch is what a release actually has to work with.
+ */
+export async function fetchTags({
+  repo,
+  token,
+  apiUrl = "https://api.github.com",
+  fetchImpl = fetch,
+  maxPages = 100,
+} = {}) {
+  if (!repo) {
+    throw new Error("no repository to read tags from (set GITHUB_REPOSITORY)");
+  }
+
+  const headers = {
+    accept: "application/vnd.github+json",
+    "x-github-api-version": "2022-11-28",
+    "user-agent": "releasetools/mutex release",
+  };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+
+  const base = `${apiUrl.replace(/\/+$/, "")}/repos/${repo}/tags`;
+  const names = [];
+
+  for (let page = 1; page <= maxPages; page++) {
+    const url = `${base}?per_page=${TAGS_PER_PAGE}&page=${page}`;
+    const response = await fetchImpl(url, { headers });
+
+    if (!response.ok) {
+      throw new Error(
+        `GET ${url} returned ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+      );
+    }
+
+    const batch = await response.json();
+    if (!Array.isArray(batch)) {
+      throw new Error(`GET ${url} did not answer with a list of tags`);
+    }
+
+    for (const tag of batch) {
+      names.push(tag.name);
+    }
+
+    // A short page is the last page. Without this the loop would keep asking
+    // for pages GitHub answers with an empty list.
+    if (batch.length < TAGS_PER_PAGE) {
+      return names;
+    }
+  }
+
+  throw new Error(
+    `stopped after ${maxPages} pages of tags; that is more than any release should need`,
+  );
+}
+
 export function parseVersion(tag) {
   const match = SEMVER.exec(tag);
   if (!match) {
@@ -55,10 +123,12 @@ export function compareVersions(a, b) {
 
 /** The highest release tag in `tags`, or null when there are none. */
 export function highestVersion(tags) {
-  return tags
-    .filter((tag) => SEMVER.test(tag))
-    .sort(compareVersions)
-    .at(-1) ?? null;
+  return (
+    tags
+      .filter((tag) => SEMVER.test(tag))
+      .sort(compareVersions)
+      .at(-1) ?? null
+  );
 }
 
 export function checkReleaseVersion({
@@ -110,9 +180,22 @@ if (
   });
 
   try {
+    // --tags is for running this by hand. Left off, it reads the repository,
+    // which is what the release does.
+    const tags =
+      values.tags === undefined
+        ? await fetchTags({
+            repo: process.env.GITHUB_REPOSITORY,
+            token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN,
+            apiUrl: process.env.GITHUB_API_URL || undefined,
+          })
+        : values.tags.split(/\s+/).filter(Boolean);
+
+    process.stdout.write(`Existing tags: ${tags.join(" ") || "none"}\n`);
+
     const result = checkReleaseVersion({
       version: values.version ?? "",
-      tags: (values.tags ?? "").split(/\s+/).filter(Boolean),
+      tags,
       allowLowerVersion: values["allow-lower-version"],
       overwriteExisting: values["overwrite-existing"],
     });

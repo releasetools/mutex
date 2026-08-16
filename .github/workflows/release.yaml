@@ -59,17 +59,17 @@ jobs:
       - name: ✅ Check the version
         id: version
         env:
-          GH_TOKEN: ${{ github.token }}
+          # The script reads the repository's tags itself. It runs before
+          # `npm ci`, so node_modules is not there and octokit is not an
+          # option - it uses global fetch.
+          GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           ALLOW_LOWER: ${{ inputs.allow-lower-version }}
           OVERWRITE: ${{ inputs.overwrite-existing }}
         run: |
           set -euo pipefail
 
-          tags="$(gh api "repos/${GITHUB_REPOSITORY}/tags" --paginate --jq '.[].name' | tr '\n' ' ')"
-          echo "Existing tags: ${tags:-none}"
-
-          args=(--version "$VERSION" --tags "$tags")
+          args=(--version "$VERSION")
           [ "$ALLOW_LOWER" = "true" ] && args+=(--allow-lower-version)
           [ "$OVERWRITE" = "true" ] && args+=(--overwrite-existing)
 

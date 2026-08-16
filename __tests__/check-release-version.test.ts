@@ -19,6 +19,7 @@
 import {
   checkReleaseVersion,
   compareVersions,
+  fetchTags,
   highestVersion,
 } from "../scripts/check-release-version.mjs";
 
@@ -44,6 +45,118 @@ describe("highestVersion", () => {
 
   it("does not sort numerically-larger versions below smaller ones", () => {
     expect(highestVersion(["v1.9.0", "v1.10.0", "v1.2.0"])).toBe("v1.10.0");
+  });
+});
+
+describe("fetchTags", () => {
+  /** A page of results, in the shape fetch hands back. */
+  const page = (names: string[]) => ({
+    ok: true,
+    status: 200,
+    json: async () => names.map((name) => ({ name })),
+  });
+
+  const serving = (...pages: string[][]) => {
+    const calls: string[] = [];
+    const fetchImpl = async (url: string) => {
+      calls.push(url);
+      return page(pages[calls.length - 1] ?? []);
+    };
+    return { calls, fetchImpl };
+  };
+
+  it("returns the tag names", async () => {
+    const { fetchImpl } = serving(["v1.0.0", "v1.1.0", "v1"]);
+
+    await expect(
+      fetchTags({ repo: "releasetools/mutex", fetchImpl }),
+    ).resolves.toEqual(["v1.0.0", "v1.1.0", "v1"]);
+  });
+
+  /**
+   * The reason this moved out of the workflow: `gh api --paginate` handled
+   * this, and hand-rolled paging is where it would quietly stop at 100 tags
+   * and start reading a release as the highest one when it is not.
+   */
+  it("keeps paging while the pages come back full", async () => {
+    const full = Array.from({ length: 100 }, (_, i) => `v1.0.${i}`);
+    const { calls, fetchImpl } = serving(full, ["v2.0.0", "v2.1.0"]);
+
+    const tags = await fetchTags({ repo: "releasetools/mutex", fetchImpl });
+
+    expect(tags).toHaveLength(102);
+    expect(tags.at(-1)).toBe("v2.1.0");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain("page=2");
+  });
+
+  it("stops at the first short page, without asking for an empty one", async () => {
+    const { calls, fetchImpl } = serving(["v1.0.0"]);
+
+    await fetchTags({ repo: "releasetools/mutex", fetchImpl });
+    expect(calls).toHaveLength(1);
+  });
+
+  /**
+   * A failed read must not look like a repository with no tags: that would
+   * make every version the first release and skip both checks.
+   */
+  it("throws rather than reporting no tags when the API fails", async () => {
+    const fetchImpl = async () => ({
+      ok: false,
+      status: 403,
+      statusText: "Forbidden",
+    });
+
+    await expect(
+      fetchTags({ repo: "releasetools/mutex", fetchImpl }),
+    ).rejects.toThrow(/403 Forbidden/);
+  });
+
+  it("says what is missing when there is no repository", async () => {
+    await expect(
+      fetchTags({ fetchImpl: async () => page([]) }),
+    ).rejects.toThrow(/GITHUB_REPOSITORY/);
+  });
+
+  it("authenticates when given a token, and does not when not", async () => {
+    const seen: Array<Record<string, string>> = [];
+    const fetchImpl = async (
+      _url: string,
+      init: { headers: Record<string, string> },
+    ) => {
+      seen.push(init.headers);
+      return page([]);
+    };
+
+    await fetchTags({ repo: "a/b", token: "t0ken", fetchImpl });
+    await fetchTags({ repo: "a/b", fetchImpl });
+
+    expect(seen[0].authorization).toBe("Bearer t0ken");
+    expect(seen[1]).not.toHaveProperty("authorization");
+  });
+
+  it("honours a GitHub Enterprise API URL", async () => {
+    const { calls, fetchImpl } = serving([]);
+
+    await fetchTags({
+      repo: "a/b",
+      apiUrl: "https://github.example.com/api/v3/",
+      fetchImpl,
+    });
+
+    expect(calls[0]).toBe(
+      "https://github.example.com/api/v3/repos/a/b/tags?per_page=100&page=1",
+    );
+  });
+
+  it("gives up rather than paging forever", async () => {
+    const full = Array.from({ length: 100 }, (_, i) => `v1.0.${i}`);
+    const fetchImpl = async () => page(full);
+
+    await expect(
+      fetchTags({ repo: "a/b", fetchImpl, maxPages: 3 }),
+    ).rejects.toThrow(/stopped after 3 pages/);
   });
 });
 
