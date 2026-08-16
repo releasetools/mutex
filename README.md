@@ -40,9 +40,19 @@ mutex version
 ```
 
 Use an exact version as above for a repeatable install, or use `#v1` to follow
-the latest compatible v1 release. npm writes the command to its configured
-global prefix; a Node version manager or user-owned npm prefix keeps the whole
-installation rootless.
+the latest compatible v1 release at installation time. npm does not update a
+global Git installation automatically. Re-run the install command to update:
+
+```shell
+# Move an exact installation to a specific newer release.
+npm install --global "git+https://github.com/releasetools/mutex.git#v1.3.1"
+
+# Refresh an installation that follows the latest v1 release.
+npm install --global "git+https://github.com/releasetools/mutex.git#v1"
+```
+
+npm writes the command to its configured global prefix; a Node version manager
+or user-owned npm prefix keeps the whole installation rootless.
 
 ```shell
 MUTEX_DATABASE_URL="postgres://..." mutex lock staging -- ./deploy.sh
@@ -359,6 +369,11 @@ fi
 
 Contributions are welcome.
 
+### Local CLI development
+
+Node.js 24 or newer is required. Clone the source and create a global npm link
+once:
+
 ```shell
 git clone https://github.com/releasetools/mutex.git
 cd mutex
@@ -366,9 +381,31 @@ npm ci
 npm run cli:link  # build, then put this checkout's `mutex` on PATH
 ```
 
-The link follows the checkout, so rebuilding updates the command in place. For
-an unlinked run, use `npm run mutex -- <args>`. The full local check is one
-command:
+The link points at the checkout, so it does not need to be recreated after each
+edit. The command reads compiled files from `lib/`; either rebuild explicitly
+or leave the compiler running while developing:
+
+```shell
+npm run build
+
+# Or keep lib/ current as source files change.
+npm run build:watch
+```
+
+Run the linked command normally from another terminal:
+
+```shell
+mutex
+mutex status deploy
+```
+
+Without the global link, run the same compiled CLI through npm:
+
+```shell
+npm run mutex -- status deploy
+```
+
+Run the tests alone with `npm test`. Before committing, use the full shorthand:
 
 ```shell
 npm run check
@@ -376,7 +413,11 @@ npm run check
 
 `check` formats the source, builds the CLI and Action, and runs every test. The
 pre-commit hook runs the relevant formatting, tests, and build again before a
-commit is accepted.
+commit is accepted. Remove the development link with:
+
+```shell
+npm unlink --global mutex
+```
 
 | Path              | What lives there                                                          |
 | ----------------- | ------------------------------------------------------------------------- |
