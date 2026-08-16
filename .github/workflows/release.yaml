@@ -237,11 +237,7 @@ jobs:
         id: lock
         uses: releasetools/mutex@v1
         env:
-          # Both names, because this step runs whatever `v1` now points at -
-          # which for a back-port is a build from before MUTEX_DATABASE_URL
-          # existed. A build that knows the new name never reads the old one.
           MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           command: "lock"
