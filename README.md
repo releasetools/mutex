@@ -61,8 +61,6 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 `MUTEX_DATABASE_URL`, `GITHUB_TOKEN` and `SLACK_BOT_TOKEN` are accepted as inputs too, if you would rather pass them under `with:` than as environment variables. See Slack's [chat.postMessage docs](https://docs.slack.dev/reference/methods/chat.postMessage/#channels) for the channel ID formats it accepts.
 
 > [!WARNING]
-> **`DATABASE_URL` is deprecated.** It is still read when `MUTEX_DATABASE_URL` is unset, and warns when it is, so existing workflows keep running. Rename it: everything from ORMs to PaaS providers sets `DATABASE_URL`, usually to the application's own database, and a lock taken in the wrong database excludes nobody. It goes away in a future major version.
->
 > **`release` is deprecated.** It still works as a synonym for `unlock`, and logs a warning when used, so workflows written against earlier versions keep running. It goes away in a future major version.
 
 ### Action outputs
@@ -77,7 +75,6 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | Variable             |                                                                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `MUTEX_DATABASE_URL` | The connection string. Required by both front ends                                                                                                      |
-| `DATABASE_URL`       | Deprecated. Read when `MUTEX_DATABASE_URL` is unset, and warns                                                                                          |
 | `GITHUB_TOKEN`       | Needed by the Action for PR comments                                                                                                                    |
 | `SLACK_BOT_TOKEN`    | Read only when `slack-channel` is set. Requires `chat:write`, and the bot has to be a member of the channel or posting fails                            |
 | `SKIP_MUTEX`         | Present in the environment at all, whatever the value, and the Action skips locking. Also works as a PR label, or a word in a PR description or comment |
@@ -233,7 +230,7 @@ There is no option for reading some other variable, because a value already livi
 MUTEX_DATABASE_URL="$LOCKS_URL" mutex lock deploy
 ```
 
-`$DATABASE_URL` is still read when `$MUTEX_DATABASE_URL` is unset, and warns when it is. The prefix is the point: frameworks, ORMs, PaaS providers and CI systems all set `DATABASE_URL`, and they set it to the application's own database. A repository that has one and then adds mutex would keep its locks in the app's database without ever being told, and locks in the wrong database exclude nobody.
+`DATABASE_URL` is not read at all, in either front end. mutex read it up to 1.2.2 and warned; the prefix is the point, because frameworks, ORMs, PaaS providers and CI systems all set that name, and they set it to the application's own database. A repository that had one and then added mutex was keeping its locks in the app's database without ever being told, and locks in the wrong database exclude nobody.
 
 ### Scripting
 

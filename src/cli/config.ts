@@ -15,16 +15,11 @@
  *
  */
 
-import {
-  CONNECTION_ENV_VAR,
-  ConnectionSource,
-  findConnectionString,
-} from "../connection.js";
-import { Logger } from "../logger.js";
+import { CONNECTION_ENV_VAR } from "../constants.js";
 import { ConfigurationError } from "./exit-codes.js";
 
 /**
- * The connection string, from the environment and only from there.
+ * The connection string, from `$MUTEX_DATABASE_URL` and nowhere else.
  *
  * Not from a flag, because an argument lands in shell history and in `ps`
  * output that every user on the machine can read for as long as the process
@@ -41,19 +36,16 @@ import { ConfigurationError } from "./exit-codes.js";
  * option either, only one assignment:
  *
  *     MUTEX_DATABASE_URL="$LOCKS_URL" mutex lock x
- *
- * Which name is read, and in what order, is shared with the Action in
- * `connection.ts`.
  */
-export function resolveConnectionString(log: Logger): ConnectionSource {
-  const connection = findConnectionString((name) => process.env[name], log);
+export function resolveConnectionString(): string {
+  const value = process.env[CONNECTION_ENV_VAR];
 
-  if (!connection) {
+  if (!value) {
     throw new ConfigurationError(
       `no connection string: ${CONNECTION_ENV_VAR} is not set`,
       `Export it, or pass it for one command: ${CONNECTION_ENV_VAR}=... mutex ...`,
     );
   }
 
-  return connection;
+  return value;
 }

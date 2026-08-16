@@ -16,9 +16,8 @@
  */
 
 import * as core from "@actions/core";
-import { CONNECTION_ENV_VAR, findConnectionString } from "./connection.js";
-import { loadFromEnvOrGHAInput } from "./inputs.js";
-import { Logger } from "./logger.js";
+import { CONNECTION_ENV_VAR } from "./constants.js";
+import { loadRequiredFromEnvOrGHAInput } from "./inputs.js";
 import { LockRequest, MutexConfig } from "./mutex.js";
 import {
   DEFAULT_EXPIRATION_SECONDS,
@@ -37,15 +36,10 @@ export class MutexSettings implements MutexConfig, LockRequest {
   autoReleaseLock: boolean;
   owner: string | null;
 
-  constructor(log: Logger) {
-    // Either name works as an environment variable or as a `with:` input; the
-    // order they are tried in is shared with the CLI, in connection.ts.
-    const connection = findConnectionString(loadFromEnvOrGHAInput, log);
-    if (!connection) {
-      throw new Error(`🚨 ${CONNECTION_ENV_VAR} not found. Cannot continue...`);
-    }
-    this.dbConnectionString = connection.value;
-
+  constructor() {
+    // From the environment or from a `with:` input, whichever the workflow
+    // finds easier to pass.
+    this.dbConnectionString = loadRequiredFromEnvOrGHAInput(CONNECTION_ENV_VAR);
     this.command = core.getInput("command", { required: true });
     this.identifier = core.getInput("id", { required: true });
     // An unset or non-numeric input parses to NaN, which would otherwise flow

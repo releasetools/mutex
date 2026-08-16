@@ -2,6 +2,21 @@
 
 Newest first. One line per change.
 
+## 1.3.0
+
+> **`DATABASE_URL` is no longer read.** Any workflow or shell still passing it
+> fails with `MUTEX_DATABASE_URL not found` until it is renamed:
+>
+> ```yaml
+> env:
+>   MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }} # was DATABASE_URL:
+> ```
+>
+> 1.2.2 read both and warned when the old name was used; that warning names the
+> variable to set. The Action's `DATABASE_URL` input is gone with it.
+
+- Removed `DATABASE_URL`. `MUTEX_DATABASE_URL` is the only name mutex reads, in the Action and the CLI, so a lock can no longer land in whatever database something else set that name to.
+
 ## 1.2.2
 
 - The connection string now comes from `MUTEX_DATABASE_URL`, in both the Action and the CLI. `DATABASE_URL` is set by almost every framework, ORM and PaaS, and points at the application's database rather than the one holding locks - so mutex asks for a name of its own.
