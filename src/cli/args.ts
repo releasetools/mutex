@@ -325,9 +325,9 @@ function resolveOptions(
 /**
  * Who is taking the lock, or null when nobody says.
  *
- * Unowned is the default on purpose: it matches what the GitHub Action writes,
- * so an unowned caller can unlock and renew an unowned lock, whichever of the
- * two took it. Naming an owner is what opts into the stricter guards.
+ * Unowned is the default on purpose: it matches the GitHub Action's default, so
+ * an unowned caller can unlock and renew an unowned lock, whichever of the two
+ * took it. Naming an owner is what opts into the stricter guards.
  */
 export function defaultOwner(): string | null {
   return process.env.MUTEX_OWNER?.trim() || null;

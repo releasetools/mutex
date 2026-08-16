@@ -2,6 +2,10 @@
 
 Newest first. One line per change.
 
+## 1.3.0
+
+- The Action can now record an optional lock owner, so status commands identify the holding workflow and only that owner can unlock or renew it; leaving `owner` unset preserves unowned locks.
+
 ## 1.2.1
 
 - Slack notifications are now switched on by `slack-channel` alone. A workflow that never asked for them no longer logs a warning about a missing `SLACK_BOT_TOKEN` on every lock and release.
