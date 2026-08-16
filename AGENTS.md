@@ -18,9 +18,9 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 
 ## Before committing
 
-`npm run build` wipes and regenerates `lib/` and `dist/`. Only `dist/main` and `dist/post` are committed, because `action.yml` points GitHub at those paths directly and they have to exist at whatever ref a workflow uses. Everything else is ignored: the CLI runs from `lib/`, which is built on demand.
+`npm run build` wipes and regenerates `lib/` and `dist/`. Neither is committed. The release workflow builds the action and publishes `action.yml` plus `dist/` to `release/<major>` through `releasetools/actions/signed-push`, and the version tags point there - so what a consumer of `releasetools/mutex@v1` gets is built on the way past, not carried on `main`.
 
-It cleans first on purpose. `tsc` leaves output for deleted sources behind, and for the committed part that means a removed module stays in the repository as compiled JavaScript - `lib/logic.js` sat there from the initial commit until it was noticed. The pre-commit hook does this, but a manual `npm run lint && npm run build && npm test` first avoids surprises.
+Two consequences worth knowing. `uses: ./` in `test.yaml` needs a build step before it, because there is no `dist/` in a fresh checkout. And a release can only be cut by dispatching the release workflow; `git tag` alone publishes nothing. The pre-commit hook does this, but a manual `npm run lint && npm run build && npm test` first avoids surprises.
 
 ## Layout
 

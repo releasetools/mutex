@@ -323,15 +323,15 @@ You can learn about creating GitHub actions in this [tutorial](https://docs.gith
 
 ## Releasing
 
-You can use [releasetools-cli](https://github.com/releasetools/cli) to create release tags.
-
-Run this command to tag the HEAD commit and also update the `v1` tag.
+Bump the version in `package.json`, merge it, then dispatch the release workflow with the matching tag:
 
 ```shell
-releasetools git::release --major --sign --force --push v1.0.2
+gh workflow run release.yaml -f version=v1.3.0
 ```
 
-Since `mutex` is a Javascript-based action, no other step is needed to make a new release available.
+It builds the action, publishes `action.yml` and `dist/` to `release/v1` as a commit signed server-side by GitHub, points `v1.3.0` and `v1` at it, and then verifies the published action by using it - asserting that the version it reports matches the release.
+
+`dist/` is not committed. `main` holds source; what `releasetools/mutex@v1` resolves to is built during the release.
 
 ### Release notes
 
