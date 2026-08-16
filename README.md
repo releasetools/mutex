@@ -45,17 +45,17 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 
 ### Action inputs
 
-| Input                | Default    |                                                                   |
-| -------------------- | ---------- | ----------------------------------------------------------------- |
-| `command`            | _required_ | `lock` or `unlock`                                                |
-| `id`                 | _required_ | Name of the lock                                                  |
-| `reason`             | `""`       | Why it is being taken. Shows up in PR comments and `mutex status` |
-| `expiration`         | `60`       | Seconds the lock lasts                                            |
-| `max-wait`           | `-1`       | Seconds to wait for it. `-1` waits for as long as `expiration`    |
-| `poll-interval`      | `10`       | Seconds between attempts                                          |
-| `auto-release`       | `true`     | Give the lock back when the job ends                              |
-| `disable-pr-updates` | `false`    | Stop commenting on the pull request                               |
-| `slack-channel`      |            | Channel ID to post to, such as `C12345678`                        |
+| Input                | Default    |                                                                       |
+| -------------------- | ---------- | --------------------------------------------------------------------- |
+| `command`            | _required_ | `lock` or `unlock`                                                    |
+| `id`                 | _required_ | Name of the lock                                                      |
+| `reason`             | `""`       | Why it is being taken. Shows up in PR comments and `mutex status`     |
+| `expiration`         | `60`       | Seconds the lock lasts                                                |
+| `max-wait`           | `-1`       | Seconds to wait for it. `-1` waits for as long as `expiration`        |
+| `poll-interval`      | `10`       | Seconds between attempts                                              |
+| `auto-release`       | `true`     | Give the lock back when the job ends                                  |
+| `disable-pr-updates` | `false`    | Stop commenting on the pull request                                   |
+| `slack-channel`      |            | Channel ID to post to, such as `C12345678`. Setting it turns Slack on |
 
 `DATABASE_URL`, `GITHUB_TOKEN` and `SLACK_BOT_TOKEN` are accepted as inputs too, if you would rather pass them under `with:` than as environment variables. See Slack's [chat.postMessage docs](https://docs.slack.dev/reference/methods/chat.postMessage/#channels) for the channel ID formats it accepts.
 
@@ -75,7 +75,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`    | The connection string. Required by both front ends                                                                                                      |
 | `GITHUB_TOKEN`    | Needed by the Action for PR comments                                                                                                                    |
-| `SLACK_BOT_TOKEN` | Needed for Slack. Requires `chat:write`, and the bot has to be a member of `slack-channel` or posting fails                                             |
+| `SLACK_BOT_TOKEN` | Read only when `slack-channel` is set. Requires `chat:write`, and the bot has to be a member of the channel or posting fails                            |
 | `SKIP_MUTEX`      | Present in the environment at all, whatever the value, and the Action skips locking. Also works as a PR label, or a word in a PR description or comment |
 | `MUTEX_OWNER`     | CLI only. Supplies `--owner` when the flag is left off                                                                                                  |
 

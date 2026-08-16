@@ -49332,13 +49332,6 @@ const TABLE_NAME = "releasetools_mutex";
  * Kept separate from `helpers.ts` so the mutex core (and therefore the CLI)
  * never has to import the Actions toolkit.
  */
-function loadRequiredNonEmptyFromGHAInput(name) {
-    const data = getInput(name);
-    if (data && data.trim().length > 0) {
-        return data;
-    }
-    throw new Error(`🚨 ${name} not found or empty. Cannot continue...`);
-}
 function loadRequiredFromEnvOrGHAInput(name) {
     const token = process.env[name] || getInput(name);
     if (token) {
@@ -49346,13 +49339,13 @@ function loadRequiredFromEnvOrGHAInput(name) {
     }
     throw new Error(`🚨 ${name} not found. Cannot continue...`);
 }
+/**
+ * Reads something optional. Absence is not reported here: only the caller
+ * knows whether it was wanted, and warning about every unset optional value
+ * puts a ⚠️ in the log of a job that is configured exactly as intended.
+ */
 function loadFromEnvOrGHAInput(name) {
-    const token = process.env[name] || getInput(name);
-    if (token) {
-        return token;
-    }
-    warning(`⚠️ ${name} not found.`);
-    return null;
+    return process.env[name] || getInput(name) || null;
 }
 //# sourceMappingURL=inputs.js.map
 ;// CONCATENATED MODULE: ./lib/github.js
@@ -50429,21 +50422,27 @@ class ActionsLogger {
 class SlackClient {
     settings;
     slack;
-    channel = ""; // Initialized later if SLACK_BOT_TOKEN is provided
+    channel;
+    /**
+     * `slack-channel` is the switch. Leaving it out means nobody asked for
+     * Slack, so nothing is said: a workflow that never wanted notifications is
+     * not misconfigured, and warning at it buries the case that is. A channel
+     * with no token is the real mistake, and that still warns.
+     *
+     * It also means a `SLACK_BOT_TOKEN` inherited from job-level `env:` no
+     * longer decides anything. It used to, and a step with no channel then
+     * failed the whole job.
+     */
     constructor(settings) {
         this.settings = settings;
-        this.slack = this.initializeClient();
-        if (this.slack) {
-            this.channel = loadRequiredNonEmptyFromGHAInput("slack-channel");
+        this.channel = getInput("slack-channel").trim();
+        const token = this.channel
+            ? loadFromEnvOrGHAInput("SLACK_BOT_TOKEN")
+            : null;
+        if (this.channel && !token) {
+            warning(`⚠️ slack-channel is '${this.channel}' but SLACK_BOT_TOKEN is not set. Slack notifications disabled.`);
         }
-    }
-    initializeClient() {
-        const token = loadFromEnvOrGHAInput("SLACK_BOT_TOKEN");
-        if (!token) {
-            warning("⚠️ Slack bot token not found. Slack notifications disabled.");
-            return null;
-        }
-        return new web_api_dist.WebClient(token);
+        this.slack = token ? new web_api_dist.WebClient(token) : null;
     }
     async postMessage(text) {
         if (!this.slack) {
