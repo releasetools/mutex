@@ -18,7 +18,9 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 
 ## Before committing
 
-`npm run build` wipes and regenerates `lib/` and `dist/`, both of which are committed - the Action runs straight from `dist/`. It cleans first on purpose: `tsc` leaves output for deleted sources behind, and since the result is committed, a removed module would otherwise stay in the repository as compiled JavaScript. `lib/logic.js` sat there from the initial commit until this was noticed. The pre-commit hook does this, but a manual `npm run lint && npm run build && npm test` first avoids surprises.
+`npm run build` wipes and regenerates `lib/` and `dist/`. Only `dist/main` and `dist/post` are committed, because `action.yml` points GitHub at those paths directly and they have to exist at whatever ref a workflow uses. Everything else is ignored: the CLI runs from `lib/`, which is built on demand.
+
+It cleans first on purpose. `tsc` leaves output for deleted sources behind, and for the committed part that means a removed module stays in the repository as compiled JavaScript - `lib/logic.js` sat there from the initial commit until it was noticed. The pre-commit hook does this, but a manual `npm run lint && npm run build && npm test` first avoids surprises.
 
 ## Layout
 

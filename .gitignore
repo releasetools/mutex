@@ -191,3 +191,8 @@ out
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/node,macos,visualstudiocode
+
+# Build output. Only dist/main and dist/post are committed, because action.yaml
+# points GitHub at them directly; everything else is produced by `npm run build`.
+/lib/
+/dist/cli/

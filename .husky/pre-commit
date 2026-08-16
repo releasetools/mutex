@@ -7,5 +7,6 @@ npm test
 
 # Build the latest code
 npm run build
-git add dist/ lib/
+# Only dist/main and dist/post are committed; see .gitignore.
+git add dist/
 git update-index --again
