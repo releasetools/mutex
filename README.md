@@ -2,134 +2,86 @@
 
 [![CodeQL](https://github.com/releasetools/mutex/actions/workflows/codeql.yaml/badge.svg)](https://github.com/releasetools/mutex/actions/workflows/codeql.yaml)
 
-An advisory lock service for CI/CD pipelines. Only one job at a time holds a given lock, so concurrent workflows do not race over shared resources.
+Only one CI job at a time gets to touch a shared resource. mutex keeps advisory locks in a PostgreSQL table, so a workflow that wants the staging environment waits for whoever has it instead of racing them.
 
-Two front ends share one lock table: a GitHub Action for locking inside a workflow, and a `mutex` CLI for everywhere else.
+Two front ends sit over one table: a GitHub Action for locking inside a workflow, and a `mutex` CLI for everywhere else. A lock taken by either excludes the other. The Action comments on the pull request when a lock is taken and given back, and can post the same to Slack.
 
-## How it works
+## Quickstart
 
-Locks live in a PostgreSQL table. Taking one inserts a row, or takes over an expired row, inside a transaction guarded by a Postgres advisory lock, so two callers cannot both win. If the lock is already held, the caller waits or fails depending on how you configure it.
+You need a PostgreSQL database. [Neon](https://neon.new) has a free tier if you do not already have one. mutex creates its own table on first use.
 
-## Features
-
-- Locks are held in Postgres, shared between the Action and the CLI.
-- `mutex lock <id> -- <program>` holds a lock for exactly as long as a program runs.
-- Lock and release events are posted as pull request comments, and optionally to Slack.
-- Locking can be skipped for a pull request with a `SKIP_MUTEX` label, a `SKIP_MUTEX` mention in the description or a comment, or `SKIP_MUTEX=1` in the environment.
-
-## Usage example
-
-```yaml
-- name: Acquire Lock
-  uses: releasetools/mutex@v1
-  permissions:
-    contents: read
-    pull-requests: write
-  env:
-    DATABASE_URL: ${{ secrets.DATABASE_URL }}
-    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-  with:
-    command: "lock"
-    id: "my-resource"
-    slack-channel: "#ci-cd"
-```
-
-Any other workflow using the same lock `id` waits until this one releases it.
-
-## Configuration
-
-### Prerequisites
-
-A PostgreSQL database, from any provider. [Neon](https://neon.new) has a free tier if you need one to start with.
-
-### Environment variables
-
-#### `DATABASE_URL`
-
-Connection string for a PostgreSQL database. The action will create a table named `releasetools_mutex` if it doesn't exist, and keep its schema up to date. If the role specified in the connection string cannot create or alter tables, ensure such a table exists. You can find the schema definition in [database.ts](./src/database.ts).
-
-#### `GITHUB_TOKEN`
-
-The action needs access to the GitHub API. It can be passed via `${{ secrets.GITHUB_TOKEN }}`. The workflow needs additional permissions:
+### In a workflow
 
 ```yaml
 permissions:
   contents: read
   pull-requests: write
+
+steps:
+  - uses: releasetools/mutex@v1
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      command: "lock"
+      id: "staging"
 ```
 
-#### `SLACK_BOT_TOKEN`
+Any other job using `id: staging` now waits. The lock goes back when the job ends, so there is no unlock step to forget.
 
-The Slack Bot Token for sending notifications. It requires the `chat:write` permission, and the associated bot must be invited to the specified `slack-channel`, otherwise it will fail to post.
-
-### Action inputs
-
-#### `command`
-
-**Required.** The command to execute: `lock` or `unlock`.
-
-> [!WARNING]
-> **`release` is deprecated.** It remains accepted as a synonym for `unlock` so that workflows written against earlier versions keep working, and using it logs a deprecation warning. It will be removed in a future major version - switch to `unlock`.
-
-#### `id`
-
-**Required.** A unique identifier for the lock.
-
-#### `reason`
-
-Optional reason for taking the lock. Useful to provide context regarding which service took the lock and why.
-
-#### `expiration`
-
-Lock expiration in seconds from current time. Defaults to 60 seconds in the future.
-
-#### `max-wait`
-
-Maximum time in seconds to wait to acquire the lock, before failing.
-If not specified, it defaults to `-1` which results in using the specified `expiration` as a timeout for the current run.
-
-#### `poll-interval`
-
-Allows changing the polling interval. Useful for long-duration locks.
-
-#### `auto-release`
-
-Used to signal if a lock should be automatically released when the workflow job ends. Defaults to `true`.
-
-#### `disable-pr-updates`
-
-By default, a comment will be posted on the Pull Request running the action, when locks are acquired or released.
-Set it to `true` to never post comments on PRs.
-
-#### Outputs
-
-`status` is `locked`, `released`, `failed` or `skipped`. `version` reports which build of the action ran, which the release workflow asserts against the tag being released.
-
-#### `slack-channel`
-
-**Required for Slack notifications.** The Slack channel to post updates to (e.g., `C12345678`).
-The bot that owns the `SLACK_BOT_TOKEN` should be a member of this channel.
-
-See [Slack API docs](https://docs.slack.dev/reference/methods/chat.postMessage/#channels) for channel ID formats.
-
-## CLI
-
-The same locking core ships as a command-line tool, so you can take the same locks outside GitHub Actions. It uses the same `releasetools_mutex` table, so a CLI lock and an Action lock exclude each other.
-
-### Installing
+### On the command line
 
 ```shell
 npm install
 npm run build   # the CLI is built, not committed
 npm link        # puts `mutex` on your PATH
+
+DATABASE_URL="postgres://..." mutex lock staging -- ./deploy.sh
 ```
 
-Without `npm link`, run `node ./bin/mutex.js` or `npm run mutex -- <args>`.
+The lock is held for exactly as long as `deploy.sh` runs, and released however it exits. Without `npm link`, run `node ./bin/mutex.js` or `npm run mutex -- <args>`.
 
-### Commands
+## Reference
 
-| Command                        | What it does                               |
+### Action inputs
+
+| Input                | Default    |                                                                   |
+| -------------------- | ---------- | ----------------------------------------------------------------- |
+| `command`            | _required_ | `lock` or `unlock`                                                |
+| `id`                 | _required_ | Name of the lock                                                  |
+| `reason`             | `""`       | Why it is being taken. Shows up in PR comments and `mutex status` |
+| `expiration`         | `60`       | Seconds the lock lasts                                            |
+| `max-wait`           | `-1`       | Seconds to wait for it. `-1` waits for as long as `expiration`    |
+| `poll-interval`      | `10`       | Seconds between attempts                                          |
+| `auto-release`       | `true`     | Give the lock back when the job ends                              |
+| `disable-pr-updates` | `false`    | Stop commenting on the pull request                               |
+| `slack-channel`      |            | Channel ID to post to, such as `C12345678`                        |
+
+`DATABASE_URL`, `GITHUB_TOKEN` and `SLACK_BOT_TOKEN` are accepted as inputs too, if you would rather pass them under `with:` than as environment variables. See Slack's [chat.postMessage docs](https://docs.slack.dev/reference/methods/chat.postMessage/#channels) for the channel ID formats it accepts.
+
+> [!WARNING]
+> **`release` is deprecated.** It still works as a synonym for `unlock`, and logs a warning when used, so workflows written against earlier versions keep running. It goes away in a future major version.
+
+### Action outputs
+
+| Output    |                                                                                |
+| --------- | ------------------------------------------------------------------------------ |
+| `status`  | `locked`, `released`, `failed` or `skipped`                                    |
+| `version` | Which build of the action ran. The release workflow asserts it against the tag |
+
+### Environment variables
+
+| Variable          |                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`    | The connection string. Required by both front ends                                                                                                      |
+| `GITHUB_TOKEN`    | Needed by the Action for PR comments                                                                                                                    |
+| `SLACK_BOT_TOKEN` | Needed for Slack. Requires `chat:write`, and the bot has to be a member of `slack-channel` or posting fails                                             |
+| `SKIP_MUTEX`      | Present in the environment at all, whatever the value, and the Action skips locking. Also works as a PR label, or a word in a PR description or comment |
+| `MUTEX_OWNER`     | CLI only. Supplies `--owner` when the flag is left off                                                                                                  |
+
+### CLI commands
+
+| Command                        |                                            |
 | ------------------------------ | ------------------------------------------ |
 | `mutex lock <id>`              | Acquire a lock, waiting up to `--max-wait` |
 | `mutex lock <id> -- <program>` | Acquire it, run the program, release it    |
@@ -139,16 +91,56 @@ Without `npm link`, run `node ./bin/mutex.js` or `npm run mutex -- <args>`.
 | `mutex status <id>`            | Show who holds it                          |
 | `mutex list`                   | List every lock, expired ones included     |
 | `mutex prune`                  | Delete locks that have already expired     |
+| `mutex help [command]`         | Show help                                  |
+| `mutex version`                | Print the version                          |
 
-The names map onto [mutex.ts](./src/mutex.ts): `lock` and `try-lock` both call `tryLock`, `unlock` calls `tryUnlock`.
+### CLI options
+
+| Option                         | Default                    |                                                    |
+| ------------------------------ | -------------------------- | -------------------------------------------------- |
+| `-r`, `--reason <text>`        |                            | Why the lock is being taken                        |
+| `-e`, `--expiration <seconds>` | `60`, or `3600` on `renew` | How long the lock lasts                            |
+| `-w`, `--max-wait <seconds>`   | `-1`                       | How long to wait for it. `-1` means `--expiration` |
+| `-i`, `--poll-interval <secs>` | `10`                       | Delay between attempts                             |
+| `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock                             |
+| `--no-renew`                   |                            | Do not renew while a wrapped program runs          |
+| `--env-var <NAME>`             | `DATABASE_URL`             | Which variable holds the connection string         |
+| `--dry-run`                    |                            | `prune` only. List what would go, delete nothing   |
+| `--json`                       |                            | Machine-readable output                            |
+| `-q`, `--quiet`                |                            | Errors only                                        |
+| `--verbose`                    |                            | Include debug output                               |
+| `-h`, `--help`                 |                            | Show help                                          |
+
+### Exit codes
+
+| Code  |                                                 |
+| ----- | ----------------------------------------------- |
+| `0`   | Success. For `status`, the lock is held         |
+| `1`   | Error                                           |
+| `2`   | Usage error                                     |
+| `3`   | No usable connection string                     |
+| `4`   | Not acquired, or not held                       |
+| `5`   | Another owner holds the lock, and was not named |
+| `126` | The wrapped program exists but could not be run |
+| `127` | The wrapped program was not found               |
+
+While wrapping a program, its exit status is returned instead.
+
+## How it works
+
+Taking a lock inserts a row, or takes over an expired one, inside a transaction guarded by a Postgres advisory lock. Two callers cannot both win. If the lock is held, the caller waits or fails depending on how you configure it.
+
+mutex creates the `releasetools_mutex` table on first use and keeps its schema current. If the role in the connection string cannot create or alter tables, create it yourself first from the definition in [database.ts](./src/database.ts).
+
+The command names map onto [mutex.ts](./src/mutex.ts): `lock` and `try-lock` both call `tryLock`, `unlock` calls `tryUnlock`.
 
 ### Wrapping a program
-
-The lock is held for exactly as long as the program runs, and released on every exit path including a crash or `Ctrl-C`:
 
 ```shell
 mutex lock deploy-staging --reason "deploying $GIT_SHA" -- ./deploy.sh
 ```
+
+The lock is held for exactly as long as the program runs, and released on every exit path including a crash or `Ctrl-C`.
 
 - The program's exit status becomes mutex's, like `flock`. Killed by a signal gives `128 + signal`.
 - The program owns stdout. mutex reports on stderr, so pipelines stay clean.
@@ -157,15 +149,39 @@ mutex lock deploy-staging --reason "deploying $GIT_SHA" -- ./deploy.sh
 
 It also checks which lock it gives back. It remembers the `created_at` of the acquisition it made and declines the id if a later one replaced it, so a lock that lapses mid-run and is taken by somebody else stays theirs.
 
+### Ownership
+
+Acquiring depends on expiry alone: while a lock is held nobody gets it, including its owner. Ownership decides who may unlock and renew.
+
+| Lock      | Caller      | `unlock` | `renew` |
+| --------- | ----------- | -------- | ------- |
+| unowned   | anyone      | yes      | yes     |
+| same name | same name   | yes      | yes     |
+| named     | anyone else | refused  | refused |
+
+Only a named lock is protected. An unowned one is open to anyone, which is what lets the CLI manage the Action's locks while [#67](https://github.com/releasetools/mutex/issues/67) is open.
+
+There is no `--force`. To break somebody else's lock you name them, and the refusal says how:
+
+```shell
+$ mutex unlock deploy
+'deploy' is held by 'alice'; this call is unowned. Pass --owner 'alice' to unlock it.
+
+$ mutex unlock deploy --owner alice
+Unlocked 'deploy'.
+```
+
+That is confirmation rather than authorisation, since anyone can read the owner from `mutex status`. It makes breaking a lock deliberate.
+
 ### Renewing
 
-A lock lasts `--expiration` seconds. `renew` pushes that out for a job still running:
+`renew` pushes out the expiry of a job still running:
 
 ```shell
 mutex renew deploy --owner "$CI_RUN" --expiration 300
 ```
 
-Here `--expiration` defaults to an hour rather than the 60 seconds `lock` uses, since anything asking for a renewal has been running a while.
+Omitted, it defaults to an hour rather than the 60 seconds `lock` uses, since anything asking for a renewal has been running a while.
 
 Renewing only ever adds time. The new expiry is whichever is later, `now + --expiration` or the expiry the lock already had:
 
@@ -179,44 +195,6 @@ Kept lock 'deploy'
 Otherwise it is strict. The id and the owner must both match, and it never takes a lock rather than renewing one. An expired lock is refused too, since somebody else may already have taken it over. Exit code `4` means gone or expired, `5` means held by another owner.
 
 Locks taken by the GitHub Action are unowned, so a CLI caller that names no owner can renew them.
-
-### Ownership
-
-Acquiring depends on expiry alone: while a lock is held nobody gets it, including its owner. Ownership decides who may unlock and renew.
-
-```
-alice lock LOCK1     ok          alice lock LOCK1     ok, long-running
-bob   lock LOCK1     held        bob   lock LOCK1     held
-alice unlock LOCK1   ok          bob   renew  LOCK1   wrong owner
-bob   lock LOCK1     ok          bob   unlock LOCK1   wrong owner
-bob   unlock LOCK1   ok
-```
-
-`--owner` is optional with no default. Without it, and without `$MUTEX_OWNER`, the lock is unowned, which is what the GitHub Action writes today.
-
-| Lock      | Caller      | `unlock` | `renew` |
-| --------- | ----------- | -------- | ------- |
-| unowned   | anyone      | yes      | yes     |
-| same name | same name   | yes      | yes     |
-| named     | anyone else | refused  | refused |
-
-Only a named lock is protected. An unowned one is open to anyone, which is what lets the CLI manage the Action's locks while [#67](https://github.com/releasetools/mutex/issues/67) is open.
-
-```shell
-mutex lock deploy --owner "$CI_RUN"
-```
-
-There is no `--force`. To break somebody else's lock you name them, and the refusal says how:
-
-```shell
-$ mutex unlock deploy
-'deploy' is held by 'alice'; this call is unowned. Pass --owner 'alice' to unlock it.
-
-$ mutex unlock deploy --owner alice
-Unlocked 'deploy'.
-```
-
-That is confirmation rather than authorisation, since anyone can read the owner from `mutex status`. It makes breaking a lock deliberate.
 
 ### Where the connection string comes from
 
@@ -236,22 +214,9 @@ DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock deploy
 
 Interactively there is nothing to pass, because [dotsecenv's shell plugin](https://dotsecenv.com/guides/shell-plugins/) exports it when you `cd` into the project.
 
-### Exit codes
+### Scripting
 
-| Code  | Meaning                                         |
-| ----- | ----------------------------------------------- |
-| `0`   | Success (`status`: the lock is held)            |
-| `1`   | Error                                           |
-| `2`   | Usage error                                     |
-| `3`   | No usable connection string                     |
-| `4`   | Not acquired, or not held                       |
-| `5`   | Another owner holds the lock, and was not named |
-| `126` | The wrapped program exists but could not be run |
-| `127` | The wrapped program was not found               |
-
-While wrapping a program, its exit status is returned instead.
-
-So the read-only commands are scriptable:
+Read-only commands answer through the exit code:
 
 ```shell
 if mutex status deploy-staging --quiet; then
@@ -279,7 +244,7 @@ npm run prepare   # pre-commit hooks
 | `src/main.ts`     | The Action's entry point. `src/post.ts` auto-releases at the end of a job |
 | `src/cli/`        | The `mutex` CLI                                                           |
 
-`src/mutex.ts` and `src/database.ts` take a `Logger` and emit events instead of calling `@actions/core`, which is what lets both front-ends share them.
+`src/mutex.ts` and `src/database.ts` take a `Logger` and emit events instead of calling `@actions/core`, which is what lets both front ends share them.
 
 GitHub has a [tutorial](https://docs.github.com/en/actions/tutorials/create-actions/create-a-javascript-action) on writing JavaScript actions.
 
