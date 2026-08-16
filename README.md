@@ -2,31 +2,22 @@
 
 [![CodeQL](https://github.com/releasetools/mutex/actions/workflows/codeql.yaml/badge.svg)](https://github.com/releasetools/mutex/actions/workflows/codeql.yaml)
 
-An advisory lock service for CI/CD pipelines. It prevents race conditions by ensuring mutual exclusion - only one job can access a shared resource concurrently.
+An advisory lock service for CI/CD pipelines. Only one job at a time holds a given lock, so concurrent workflows do not race over shared resources.
 
-It ships in two forms, sharing one lock table:
-
-- a **GitHub Action**, for locking inside a workflow;
-- a **CLI** (`mutex`), for locking from a terminal, a script, or any other CI system.
+Two front ends share one lock table: a GitHub Action for locking inside a workflow, and a `mutex` CLI for everywhere else.
 
 ## How it works
 
-Locks live in a PostgreSQL table. When a job needs a lock, it inserts a row - or takes over an expired one - inside a transaction guarded by a Postgres advisory lock, so two callers can never win at once. If the lock is taken, the caller waits or fails, depending on configuration.
+Locks live in a PostgreSQL table. Taking one inserts a row, or takes over an expired row, inside a transaction guarded by a Postgres advisory lock, so two callers cannot both win. If the lock is already held, the caller waits or fails depending on how you configure it.
 
 ## Features
 
-- **Advisory Locking**: Create and manage locks within your GitHub Actions workflows.
-- **A CLI**: `mutex lock` / `mutex unlock`, plus a flock-style `mutex lock <id> -- <program>` that holds the lock for exactly as long as the program runs.
-- **Pull Request Integration**: Lock and release events are posted as PR comments.
-- **Slack Notifications**: Choose if you want to be notified in your Slack channels about locking events.
-- **Easy Disabling**: Skip locking for specific pull requests by:
-  - adding a `SKIP_MUTEX` label
-  - including `SKIP_MUTEX` in the PR's description or comment
-  - or defining `SKIP_MUTEX=1` as an environment variable.
+- Locks are held in Postgres, shared between the Action and the CLI.
+- `mutex lock <id> -- <program>` holds a lock for exactly as long as a program runs.
+- Lock and release events are posted as pull request comments, and optionally to Slack.
+- Locking can be skipped for a pull request with a `SKIP_MUTEX` label, a `SKIP_MUTEX` mention in the description or a comment, or `SKIP_MUTEX=1` in the environment.
 
-## Usage Example
-
-Here is an example of how to use the `mutex` action in a workflow:
+## Usage example
 
 ```yaml
 - name: Acquire Lock
@@ -44,17 +35,15 @@ Here is an example of how to use the `mutex` action in a workflow:
     slack-channel: "#ci-cd"
 ```
 
-Any other workflows or actions using a `mutex` on the same lock `id`, will not run until the lock is released.
+Any other workflow using the same lock `id` waits until this one releases it.
 
 ## Configuration
 
 ### Prerequisites
 
-- A **PostgreSQL database**: This action requires access to a PostgreSQL database to store lock information. You can use any standard Postgres provider. If you need a free one for getting started, consider using [Neon](https://neon.new).
+A PostgreSQL database, from any provider. [Neon](https://neon.new) has a free tier if you need one to start with.
 
-### Environment Variables
-
-The action supports the following environment variables (`env:`).
+### Environment variables
 
 #### `DATABASE_URL`
 
@@ -74,9 +63,7 @@ permissions:
 
 The Slack Bot Token for sending notifications. It requires the `chat:write` permission, and the associated bot must be invited to the specified `slack-channel`, otherwise it will fail to post.
 
-### Action Inputs
-
-The action can be configured using inputs (`with:`).
+### Action inputs
 
 #### `command`
 
@@ -128,7 +115,7 @@ See [Slack API docs](https://docs.slack.dev/reference/methods/chat.postMessage/#
 
 ## CLI
 
-The same locking core is available as a command-line tool, for locking outside GitHub Actions - from a laptop, a cron job, or another CI system. It talks to the same `releasetools_mutex` table, so a CLI lock and an Action lock exclude each other.
+The same locking core ships as a command-line tool, so you can take the same locks outside GitHub Actions. It uses the same `releasetools_mutex` table, so a CLI lock and an Action lock exclude each other.
 
 ### Installing
 
@@ -138,34 +125,49 @@ npm run build   # the CLI is built, not committed
 npm link        # puts `mutex` on your PATH
 ```
 
-Without `npm link`, run it as `node ./bin/mutex.js` or `npm run mutex -- <args>`.
+Without `npm link`, run `node ./bin/mutex.js` or `npm run mutex -- <args>`.
 
 ### Commands
 
-| Command                        | What it does                                               |
-| ------------------------------ | ---------------------------------------------------------- |
-| `mutex lock <id>`              | Acquire a lock, waiting up to `--max-wait` for it          |
-| `mutex lock <id> -- <program>` | Acquire it, run the program, release it - whatever happens |
-| `mutex try-lock <id>`          | Acquire it in a single attempt, without waiting            |
-| `mutex unlock <id>`            | Release it                                                 |
-| `mutex renew <id>`             | Extend a lock you already hold                             |
-| `mutex status <id>`            | Show who holds it                                          |
-| `mutex list`                   | List every lock, expired ones included                     |
-| `mutex prune`                  | Delete locks that have already expired                     |
+| Command                        | What it does                               |
+| ------------------------------ | ------------------------------------------ |
+| `mutex lock <id>`              | Acquire a lock, waiting up to `--max-wait` |
+| `mutex lock <id> -- <program>` | Acquire it, run the program, release it    |
+| `mutex try-lock <id>`          | Acquire it in a single attempt             |
+| `mutex unlock <id>`            | Release it                                 |
+| `mutex renew <id>`             | Extend a lock you already hold             |
+| `mutex status <id>`            | Show who holds it                          |
+| `mutex list`                   | List every lock, expired ones included     |
+| `mutex prune`                  | Delete locks that have already expired     |
 
-The command names map onto the operations in [mutex.ts](./src/mutex.ts): `lock` and `try-lock` are `tryLock` (the latter with nothing to wait for), `unlock` is `tryUnlock`.
+The names map onto [mutex.ts](./src/mutex.ts): `lock` and `try-lock` both call `tryLock`, `unlock` calls `tryUnlock`.
+
+### Wrapping a program
+
+The lock is held for exactly as long as the program runs, and released on every exit path including a crash or `Ctrl-C`:
+
+```shell
+mutex lock deploy-staging --reason "deploying $GIT_SHA" -- ./deploy.sh
+```
+
+- The program's exit status becomes mutex's, like `flock`. Killed by a signal gives `128 + signal`.
+- The program owns stdout. mutex reports on stderr, so pipelines stay clean.
+- `SIGINT`, `SIGTERM` and `SIGHUP` reach the program, and the lock goes back once it exits. Signals stay handled during that release, so a second `Ctrl-C` waits instead of killing mutex with the lock still held. Three of them and it gives up, saying so.
+- The lock renews in the background every `--expiration / 3` seconds, so a long program does not carry on holding a lock somebody else has taken. Disable with `--no-renew`.
+
+It also checks which lock it gives back. It remembers the `created_at` of the acquisition it made and declines the id if a later one replaced it, so a lock that lapses mid-run and is taken by somebody else stays theirs.
 
 ### Renewing
 
-A lock lasts `--expiration` seconds. `renew` pushes that further out for a job still running:
+A lock lasts `--expiration` seconds. `renew` pushes that out for a job still running:
 
 ```shell
 mutex renew deploy --owner "$CI_RUN" --expiration 300
 ```
 
-`--expiration` defaults to an hour here rather than the 60 seconds `lock` uses: a renewal is asked for by something that has already been running a while, so a short default is exactly wrong.
+Here `--expiration` defaults to an hour rather than the 60 seconds `lock` uses, since anything asking for a renewal has been running a while.
 
-**Renewing only ever buys time.** The new expiry is whichever is later, `now + --expiration` or the expiry the lock already had, so asking for less than it already has is a no-op rather than a silent cut:
+Renewing only ever adds time. The new expiry is whichever is later, `now + --expiration` or the expiry the lock already had:
 
 ```shell
 $ mutex lock deploy -e 7200 --owner ci   # two hours
@@ -174,34 +176,13 @@ Kept lock 'deploy'
   expires: 2026-08-16T01:44:20.165Z (in 2h 0m)
 ```
 
-It is otherwise deliberately strict, because a renewal that silently succeeds when it should not is worse than one that fails:
+Otherwise it is strict. The id and the owner must both match, and it never takes a lock rather than renewing one. An expired lock is refused too, since somebody else may already have taken it over. Exit code `4` means gone or expired, `5` means held by another owner.
 
-- **The id and the owner must both match.** Renewing a lock you do not hold is never right, so name its owner or do not renew it.
-- **It never takes a lock.** Renewing something that is not held fails rather than quietly acquiring it.
-- **An expired lock cannot be renewed.** By then somebody else may already have taken it over, so it reports the expiry and stops.
-
-Exit codes tell the cases apart: `4` for gone or expired, `5` for held by another owner.
-
-Locks taken by the GitHub Action are unowned, so a CLI caller that does not name an owner can renew them too.
-
-### Wrapping a program
-
-This is the form worth reaching for. The lock is held for exactly as long as the program runs and is released on every exit path, including a crash or a `Ctrl-C`:
-
-```shell
-mutex lock deploy-staging --reason "deploying $GIT_SHA" -- ./deploy.sh
-```
-
-Details worth knowing:
-
-- The program's exit status becomes `mutex`'s, exactly like `flock`. A program killed by a signal yields `128 + signal`.
-- The program owns stdout; `mutex` reports on stderr, so pipelines stay clean.
-- `SIGINT`, `SIGTERM` and `SIGHUP` are forwarded to the program, and the lock is released once it exits. Signals stay handled _through_ that release, so an impatient second `Ctrl-C` waits rather than killing mutex with the lock still held. Three of them and it gives up anyway, saying so.
-- The lock is renewed in the background every `--expiration / 3` seconds, so a program that outlives its lease does not carry on holding a lock somebody else has taken. Disable with `--no-renew`.
+Locks taken by the GitHub Action are unowned, so a CLI caller that names no owner can renew them.
 
 ### Ownership
 
-Acquiring is decided by expiry alone: while a lock is held, nobody gets it - not even the owner. Ownership decides who may **unlock** and **renew** it.
+Acquiring depends on expiry alone: while a lock is held nobody gets it, including its owner. Ownership decides who may unlock and renew.
 
 ```
 alice lock LOCK1     ok          alice lock LOCK1     ok, long-running
@@ -211,7 +192,7 @@ bob   lock LOCK1     ok          bob   unlock LOCK1   wrong owner
 bob   unlock LOCK1   ok
 ```
 
-`--owner` is optional and there is no default. Without it, and without `$MUTEX_OWNER`, the lock is **unowned** - which is what the GitHub Action writes today.
+`--owner` is optional with no default. Without it, and without `$MUTEX_OWNER`, the lock is unowned, which is what the GitHub Action writes today.
 
 | Lock      | Caller      | `unlock` | `renew` |
 | --------- | ----------- | -------- | ------- |
@@ -219,13 +200,13 @@ bob   unlock LOCK1   ok
 | same name | same name   | yes      | yes     |
 | named     | anyone else | refused  | refused |
 
-Naming an owner is the act that buys protection. An unowned lock has nobody to wrong, so anyone may unlock or renew it - which is also what keeps the Action's locks manageable from the CLI while [#67](https://github.com/releasetools/mutex/issues/67) is outstanding.
+Only a named lock is protected. An unowned one is open to anyone, which is what lets the CLI manage the Action's locks while [#67](https://github.com/releasetools/mutex/issues/67) is open.
 
 ```shell
 mutex lock deploy --owner "$CI_RUN"
 ```
 
-There is no `--force`. To break somebody else's lock you name them, which the refusal tells you how to do:
+There is no `--force`. To break somebody else's lock you name them, and the refusal says how:
 
 ```shell
 $ mutex unlock deploy
@@ -235,52 +216,42 @@ $ mutex unlock deploy --owner alice
 Unlocked 'deploy'.
 ```
 
-That is a confirmation, not a permission check - anyone can read the owner from `mutex status`. The point is that breaking a lock has to be a deliberate statement of whose lock it is, rather than a flag appended to a command that just failed.
-
-The wrapper is careful about which lock it gives back: it remembers the `created_at` of the acquisition it made, and declines to release the id if a later one has replaced it. So a lock that lapses mid-run and is taken by somebody else stays theirs, ownership or no ownership.
+That is confirmation rather than authorisation, since anyone can read the owner from `mutex status`. It makes breaking a lock deliberate.
 
 ### Where the connection string comes from
 
-`$DATABASE_URL`, and only from there. Rename it with `--env-var` if something else already owns that name.
+`$DATABASE_URL`, and nowhere else. Rename it with `--env-var` if something already owns that name.
 
-There is deliberately **no flag** for it: an argument lands in shell history, and in `ps` output that every user on the machine can read for as long as mutex runs. An environment variable does neither, and is no harder to pass:
+There is no flag for it. An argument lands in shell history and in `ps`, where every user on the machine can read it for as long as mutex runs:
 
 ```shell
 DATABASE_URL="postgres://..." mutex lock deploy
 ```
 
-mutex does not read secret stores itself. Whatever holds the secret can put it in the environment for a single command — with [dotsecenv](https://dotsecenv.com), for example:
+mutex does not read secret stores. Whatever holds the secret can put it in the environment for one command, with [dotsecenv](https://dotsecenv.com) for example:
 
 ```shell
 DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock deploy
 ```
 
-and interactively there is nothing to pass at all, because [dotsecenv's shell plugin](https://dotsecenv.com/guides/shell-plugins/) exports it when you `cd` into the project:
-
-```shell
-$ cd my-project          # the plugin loads .secenv
-$ mutex lock deploy
-Acquired lock 'deploy'
-```
-
-That keeps secret storage in the tool that owns it. mutex once read `.secenv` and vault files directly; it was 1,600 lines reimplementing another tool's formats, and every security-relevant defect found in review came from them.
+Interactively there is nothing to pass, because [dotsecenv's shell plugin](https://dotsecenv.com/guides/shell-plugins/) exports it when you `cd` into the project.
 
 ### Exit codes
 
-| Code  | Meaning                                                   |
-| ----- | --------------------------------------------------------- |
-| `0`   | Success (`status`: the lock is held)                      |
-| `1`   | Error                                                     |
-| `2`   | Usage error                                               |
-| `3`   | Configuration error - no usable connection string         |
-| `4`   | Not acquired, or not held                                 |
-| `5`   | Refused - another owner holds the lock, and was not named |
-| `126` | The wrapped program exists but could not be run           |
-| `127` | The wrapped program was not found                         |
+| Code  | Meaning                                         |
+| ----- | ----------------------------------------------- |
+| `0`   | Success (`status`: the lock is held)            |
+| `1`   | Error                                           |
+| `2`   | Usage error                                     |
+| `3`   | No usable connection string                     |
+| `4`   | Not acquired, or not held                       |
+| `5`   | Another owner holds the lock, and was not named |
+| `126` | The wrapped program exists but could not be run |
+| `127` | The wrapped program was not found               |
 
 While wrapping a program, its exit status is returned instead.
 
-This makes the read-only commands scriptable:
+So the read-only commands are scriptable:
 
 ```shell
 if mutex status deploy-staging --quiet; then
@@ -288,38 +259,29 @@ if mutex status deploy-staging --quiet; then
 fi
 ```
 
-`--quiet` silences the ordinary report and leaves the exit code to answer. It does not silence a _deviation_ - a lock not acquired, a release refused, a lock left held - which is printed to stderr whatever the verbosity, since those are the cases where an exit code alone leaves you guessing which of several reasons applied. `--json` is unaffected by either.
+`--quiet` silences the ordinary report and leaves the exit code to answer. It does not silence a lock not acquired, a release refused, or a lock left held: those go to stderr whatever the verbosity. `--json` is unaffected by both.
 
 ## Development
 
-**All contributions are welcome!**
+Contributions are welcome.
 
-1. Clone the repository:
-
-   ```shell
-   git clone https://github.com/releasetools/mutex.git
-   cd mutex
-   ```
-
-2. Install dependencies and pre-commit hooks:
-
-   ```shell
-    npm install
-    npm run prepare
-   ```
-
-Layout:
+```shell
+git clone https://github.com/releasetools/mutex.git
+cd mutex
+npm install
+npm run prepare   # pre-commit hooks
+```
 
 | Path              | What lives there                                                          |
 | ----------------- | ------------------------------------------------------------------------- |
-| `src/mutex.ts`    | `tryLock` / `tryUnlock` - the polling logic, with no GitHub dependencies  |
+| `src/mutex.ts`    | `tryLock` / `tryUnlock`, the polling logic, with no GitHub dependencies   |
 | `src/database.ts` | The PostgreSQL lock store                                                 |
-| `src/main.ts`     | The Action's entry point; `src/post.ts` auto-releases at the end of a job |
+| `src/main.ts`     | The Action's entry point. `src/post.ts` auto-releases at the end of a job |
 | `src/cli/`        | The `mutex` CLI                                                           |
 
-`src/mutex.ts` and `src/database.ts` take a `Logger` and emit events rather than calling into `@actions/core`, which is what lets both front-ends share them.
+`src/mutex.ts` and `src/database.ts` take a `Logger` and emit events instead of calling `@actions/core`, which is what lets both front-ends share them.
 
-You can learn about creating GitHub actions in this [tutorial](https://docs.github.com/en/actions/tutorials/create-actions/create-a-javascript-action).
+GitHub has a [tutorial](https://docs.github.com/en/actions/tutorials/create-actions/create-a-javascript-action) on writing JavaScript actions.
 
 ## Releasing
 
@@ -327,40 +289,40 @@ You can learn about creating GitHub actions in this [tutorial](https://docs.gith
 
 ### Cutting a release
 
-Add the notes for the new version to [RELEASE.md](./RELEASE.md) under a `## 1.3.0` heading and merge that to `main`. Then:
+Add the notes for the new version to [RELEASE.md](./RELEASE.md) under a `## 1.3.0` heading, merge that to `main`, then:
 
 ```shell
 gh workflow run release.yaml -f version=v1.3.0
 ```
 
-That is the whole thing. The version in `package.json` is bumped by the release itself and pushed to `main` as a signed commit, so there is no version to remember to edit — and no way for `package.json` and the tag to disagree.
+The release bumps `package.json` itself and pushes that to `main` as a signed commit, so there is no version to remember to edit and no way for `package.json` and the tag to disagree.
 
 Two options, both off by default:
 
-| Option                |                                                                                                                                          |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `allow-lower-version` | Publish below the highest released version, for back-porting a fix to an older line. Without it, `v1.2.22` after `v1.3.0` is refused.    |
-| `overwrite-existing`  | Replace a version already published: moves its tag and updates its GitHub release. Without it, releasing an existing version is refused. |
+| Option                |                                                                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `allow-lower-version` | Publish below the highest released version, for back-porting to an older line. Without it, `v1.2.22` after `v1.3.0` is refused. |
+| `overwrite-existing`  | Replace a version already published: moves its tag and updates its GitHub release.                                              |
 
-The two are deliberately separate. Replacing a release and releasing out of order are different decisions, so neither flag grants the other.
+They are separate on purpose. Replacing a release and releasing out of order are different decisions, so neither flag grants the other.
 
 ### What it does
 
-| Step            |                                                                                                                                                                           |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `check-e2e-pin` | Refuses to publish a major the verify step cannot test (see below)                                                                                                        |
-| Check           | Rejects a malformed version, one already released, or one below the highest released                                                                                      |
-| Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main` as a signed commit                                                                  |
-| Build           | `npm ci`, lint, test                                                                                                                                                      |
-| Package         | `npm run package:action` assembles the published tree into `publish/`: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a generated `package.json` carrying the version |
-| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub                            |
-| Tag             | Points `v1.3.0` and the floating `v1` at that commit                                                                                                                      |
-| Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                     |
-| Verify          | Uses `releasetools/mutex@v1` for real and asserts the version it reports matches the release                                                                              |
+| Step            |                                                                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-e2e-pin` | Refuses to publish a major the verify step cannot test                                                                                         |
+| Check           | Rejects a malformed version, one already released, or one below the highest released                                                           |
+| Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                          |
+| Build           | `npm ci`, lint, test                                                                                                                           |
+| Package         | `npm run package:action` assembles `publish/`: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a `package.json` carrying the version        |
+| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub |
+| Tag             | Points `v1.3.0` and the floating `v1` at that commit                                                                                           |
+| Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                          |
+| Verify          | Uses `releasetools/mutex@v1` for real and checks the version it reports                                                                        |
 
 The first release on a new major seeds `release/<major>` from `main` automatically.
 
-The packaging step is a script rather than workflow YAML, so you can see exactly what a release would publish without cutting one:
+Packaging is a script rather than workflow YAML, so you can see what a release would publish without cutting one:
 
 ```shell
 npm run package:action
@@ -369,25 +331,23 @@ node publish/dist/main/index.js      # reports the version it would report in CI
 
 ### Afterwards
 
-Check the run summary for the signed commit, then confirm the published tree looks right:
-
 ```shell
 git fetch origin 'refs/tags/*:refs/tags/*'
-git show --stat v1.3.0        # action.yml, dist/, README.md, LICENSE, package.json
+git show --stat v1.3.0
 gh api repos/releasetools/mutex/commits/v1 --jq .commit.verification.verified
 ```
 
-Each published commit's parent is the previous release, so `release/v1` reads as a history of releases. The source it came from is recorded as a `Source-Commit:` trailer rather than a parent, which also names the repository.
+Each published commit's parent is the previous release, so `release/v1` reads as a history of releases. The source it was built from is a `Source-Commit:` trailer rather than a parent.
 
 ### When something goes wrong
 
-**The verify step fails.** The tags have already moved by then — `uses:` cannot reference the version being published, only the floating `v1`, so `v1` has to move before anything can use it. Fix forward with a new patch release. If the failure is `v1 ran mutex <older version>`, the tag move had not reached GitHub's action cache yet, and re-running just the verify job is enough.
+The verify step failing means the release is published but broken, since `v1` has to move before anything can use it. Fix forward with a new patch. If it says `v1 ran mutex <older version>`, the tag move had not reached GitHub's action cache yet and re-running that job is enough.
 
-**`check-e2e-pin` fails.** You are releasing a major the verify step still pins to `@v1`. `uses:` cannot take an expression, so a second verify job has to be written out for the new major, and `PINNED` updated alongside it. Nothing is published until then.
+`check-e2e-pin` failing means you are releasing a major the verify step still pins to `@v1`. Write a second verify job for the new major and update `PINNED`. Nothing is published until then.
 
-**A version mismatch.** `package.json` and the dispatched tag disagree. Nothing has been published; fix whichever is wrong.
+A version mismatch means `package.json` and the dispatched tag disagree. Nothing has been published.
 
-Note that `uses: releasetools/mutex@main` does not work, and is not meant to — there is no `dist/` there. Reference a version.
+`uses: releasetools/mutex@main` does not work, and is not meant to. There is no `dist/` there.
 
 ## License
 
