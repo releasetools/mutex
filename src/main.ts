@@ -46,7 +46,7 @@ export async function run(): Promise<void> {
       return;
     }
 
-    const settings = new MutexSettings();
+    const settings = new MutexSettings(log);
     mutex = new DatabaseMutex(settings, log);
     const notifications = new Notifications(settings, gh);
 

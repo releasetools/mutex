@@ -50,7 +50,7 @@ export async function post(): Promise<void> {
       return;
     }
 
-    const settings = new MutexSettings();
+    const settings = new MutexSettings(log);
     if (settings.autoReleaseLock !== true) {
       core.warning(
         `⚠️ Auto-releasing is disabled. Lock '${settings.identifier}' will not be released.`,

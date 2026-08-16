@@ -2,6 +2,13 @@
 
 Newest first. One line per change.
 
+## 1.3.0
+
+- The connection string now comes from `MUTEX_DATABASE_URL`, in both the Action and the CLI. `DATABASE_URL` is set by almost every framework, ORM and PaaS, and points at the application's database rather than the one holding locks - so mutex asks for a name of its own.
+- `DATABASE_URL` still works and still takes locks, but warns when it is what was used. It will be removed in a future major version.
+- The Action takes a `MUTEX_DATABASE_URL` input as well, for workflows that pass it under `with:` rather than as an environment variable.
+- `--env-var` now defaults to `MUTEX_DATABASE_URL`. A name you pass it is read on its own: no fallback, so an unset variable fails rather than quietly reaching whatever `DATABASE_URL` points at.
+
 ## 1.2.1
 
 - Slack notifications are now switched on by `slack-channel` alone. A workflow that never asked for them no longer logs a warning about a missing `SLACK_BOT_TOKEN` on every lock and release.

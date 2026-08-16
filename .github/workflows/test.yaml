@@ -50,7 +50,7 @@ jobs:
           command: "lock"
           id: "test-lock1"
           reason: "Test mutex action: test01"
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           slack-channel: "C09CF3TR60P"
@@ -82,7 +82,7 @@ jobs:
         uses: ./
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         with:
           command: "lock"
@@ -98,7 +98,7 @@ jobs:
         uses: ./
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }}
         with:
           command: "release"
           id: "test-lock2"
@@ -123,6 +123,8 @@ jobs:
           npm ci
           npm run build
 
+      # Deliberately the deprecated name, which every workflow written against
+      # v1 passes: this job is what proves it still takes a lock, and warns.
       - name: 🔒 Acquire Lock (and auto-release on completion)
         uses: ./
         env:
