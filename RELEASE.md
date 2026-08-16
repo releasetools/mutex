@@ -8,6 +8,7 @@ Newest first. One line per change.
 - `DATABASE_URL` still works and still takes locks, but warns when it is what was used. It will be removed in a future major version.
 - The Action takes a `MUTEX_DATABASE_URL` input as well, for workflows that pass it under `with:` rather than as an environment variable.
 - `--env-var` now defaults to `MUTEX_DATABASE_URL`. A name you pass it is read on its own: no fallback, so an unset variable fails rather than quietly reaching whatever `DATABASE_URL` points at.
+- The Action can now record an optional lock owner, so status commands identify the holding workflow and only that owner can unlock or renew it; leaving `owner` unset preserves unowned locks.
 
 ## 1.2.1
 

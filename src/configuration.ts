@@ -35,13 +35,7 @@ export class MutexSettings implements MutexConfig, LockRequest {
   pollTimeoutMs: number;
   pollIntervalMs: number;
   autoReleaseLock: boolean;
-
-  /**
-   * The Action does not record an owner yet (see issue #67), so every lock it
-   * takes is unowned - releasable by itself, and by any caller that likewise
-   * names no owner.
-   */
-  readonly owner = null;
+  owner: string | null;
 
   constructor(log: Logger) {
     // Either name works as an environment variable or as a `with:` input; the
@@ -62,6 +56,8 @@ export class MutexSettings implements MutexConfig, LockRequest {
       this.expiration = DEFAULT_EXPIRATION_SECONDS;
     }
     this.reason = core.getInput("reason", { trimWhitespace: true });
+    this.owner =
+      core.getInput("owner", { trimWhitespace: true }).trim() || null;
     this.autoReleaseLock = core.getInput("auto-release") === "true";
 
     this.pollTimeoutMs = pollTimeoutMs(

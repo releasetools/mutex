@@ -560,8 +560,8 @@ function isMissingSchema(error: unknown): boolean {
  * Who may unlock or renew a lock: its owner, or anyone at all when it has none.
  *
  * Ownership is what confers protection, so a lock nobody claimed is nobody's to
- * defend - which is also what lets the CLI manage the unowned locks the Action
- * writes today. Naming an owner is the act that makes a lock yours.
+ * defend - which is also what lets either front end manage the unowned locks
+ * both write by default. Naming an owner is the act that makes a lock yours.
  *
  * There is no override. Breaking somebody else's lock means naming them, which
  * makes it a deliberate act rather than a flag appended to a failing command.

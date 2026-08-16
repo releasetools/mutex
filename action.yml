@@ -26,6 +26,10 @@ inputs:
     description: "Optional: Why was the lock acquired in the first place?"
     required: false
     default: ""
+  owner:
+    description: "Optional: Who owns the lock. Only the same owner can unlock it; leave it unset to keep the lock unowned."
+    required: false
+    default: ""
   expiration:
     description: "Defines the lock's expiration. Defaults to 60 seconds."
     required: false
