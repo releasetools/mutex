@@ -111,14 +111,12 @@ jobs:
       # changed, and prune would otherwise read the rest of main as deleted.
       - name: 🔏 Push the bump to main, signed
         id: bump
-        uses: releasetools/actions/signed-push@57073d3d58774563dfaa76eaaf89ae086c278ee3 # v0
+        uses: releasetools/actions/signed-push@47254d3c7bb7f14bdc1e4cde8f512b006707c2dc # v0.0.5
         with:
           source-dir: bump
           target-repo: ${{ github.repository }}
           target-branch: main
           headline: "chore(release): ${{ inputs.version }}"
-          body: |
-            Released-By: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           prune: "false"
           token: ${{ github.token }}
 
@@ -155,21 +153,28 @@ jobs:
       # parent is the previous release, not the source it came from.
       - name: 🔏 Publish the tree, signed
         id: publish
-        uses: releasetools/actions/signed-push@57073d3d58774563dfaa76eaaf89ae086c278ee3 # v0
+        uses: releasetools/actions/signed-push@47254d3c7bb7f14bdc1e4cde8f512b006707c2dc # v0.0.5
         with:
           source-dir: publish
           target-repo: ${{ github.repository }}
           target-branch: release/${{ steps.version.outputs.major }}
           headline: "release: ${{ inputs.version }}"
+          # signed-push appends Workflow-Commit and Published-By itself. That
+          # names the checkout the workflow ran from, which is main before the
+          # bump - this names the bump commit, which is the source of the
+          # version actually published.
           body: |
-            Source-Commit: ${{ github.repository }}@${{ steps.bump.outputs.commit-sha }}
-            Published-By: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Source-Commit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.bump.outputs.commit-sha }}>
           prune: "true"
           token: ${{ github.token }}
 
       # signed-push tags the exact version; the floating major follows every
       # release, so it is moved here. Retried once, because GitHub's ref API is
       # eventually consistent and a first read can miss a ref that exists.
+      # Not signed-push's `tag:` input: it creates one tag and treats an
+      # existing one as success without moving it, so it can neither serve
+      # overwrite-existing nor touch the floating major. Doing both here keeps
+      # one path rather than splitting on a flag.
       - name: 🏷️ Point the tags at the published commit
         env:
           GH_TOKEN: ${{ github.token }}
