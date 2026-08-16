@@ -71,6 +71,12 @@ describe("Main Action Logic (Locking)", () => {
     jest.resetAllMocks();
     jest.useFakeTimers();
 
+    // The connection string is read from the environment before the inputs,
+    // so a developer running the tests with either name exported would have
+    // this reach their own database.
+    delete process.env.MUTEX_DATABASE_URL;
+    delete process.env.DATABASE_URL;
+
     searchMock = jest.fn();
     mockOctokit = {
       rest: {
@@ -102,7 +108,7 @@ describe("Main Action Logic (Locking)", () => {
       switch (name) {
         case "GITHUB_TOKEN":
           return "fake-token";
-        case "DATABASE_URL":
+        case "MUTEX_DATABASE_URL":
           return "postgresql://user:password@localhost:5432/dbname";
         case "command":
           return "lock";

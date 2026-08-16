@@ -16,6 +16,10 @@
  */
 
 import { parseArgs } from "node:util";
+import {
+  CONNECTION_ENV_VAR,
+  DEPRECATED_CONNECTION_ENV_VAR,
+} from "../connection.js";
 import { LogLevel } from "../logger.js";
 import {
   DEFAULT_EXPIRATION_SECONDS,
@@ -168,7 +172,8 @@ export interface ResolvedOptions {
   autoRenew: boolean;
   owner: string | null;
   dryRun: boolean;
-  envVar: string;
+  /** The variable named by `--env-var`, or null to use the default order. */
+  envVar: string | null;
   json: boolean;
   logLevel: LogLevel;
 }
@@ -308,10 +313,7 @@ function resolveOptions(
     autoRenew: values["no-renew"] !== true,
     owner: readOwner(values.owner),
     dryRun: values["dry-run"] === true,
-    envVar:
-      typeof values["env-var"] === "string"
-        ? values["env-var"]
-        : "DATABASE_URL",
+    envVar: readEnvVar(values["env-var"]),
     json: values.json === true,
     logLevel:
       values.quiet === true
@@ -344,6 +346,20 @@ function readOwner(value: string | boolean | undefined): string | null {
     return value.trim() || null;
   }
   return defaultOwner();
+}
+
+/**
+ * The variable to read the connection string from, or null to use the default
+ * order - `$MUTEX_DATABASE_URL`, then the deprecated `$DATABASE_URL`.
+ *
+ * Blank counts as unnamed, so `--env-var "$WHICH"` falls back to that order
+ * rather than looking up a variable with no name.
+ */
+function readEnvVar(value: string | boolean | undefined): string | null {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+  return null;
 }
 
 function rejectInapplicableOptions(
@@ -442,7 +458,7 @@ Lock options:
   -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
 
 Connection:
-      --env-var <NAME>           Variable holding it (default: DATABASE_URL)
+      --env-var <NAME>           Variable holding it (default: ${CONNECTION_ENV_VAR})
 
 prune:
       --dry-run                  List what would be deleted, and delete nothing
@@ -453,12 +469,16 @@ General:
       --verbose                  Include debug output
   -h, --help                     Show help
 
-The connection string comes from $DATABASE_URL, and only from there. Not from
-a flag: an argument is visible in shell history, and in "ps" to every user on
-the machine for as long as mutex runs. Anything holding the secret can put it
-in the environment for one command, for example:
+The connection string comes from $${CONNECTION_ENV_VAR}, and from the environment
+only. Not from a flag: an argument is visible in shell history, and in "ps" to
+every user on the machine for as long as mutex runs. Anything holding the
+secret can put it in the environment for one command, for example:
 
-    DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
+    ${CONNECTION_ENV_VAR}="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
+
+$${DEPRECATED_CONNECTION_ENV_VAR} is still read when $${CONNECTION_ENV_VAR} is not set, and warns when
+it is. It is deprecated because almost everything else sets that name too, and
+usually to an application's own database rather than the one holding locks.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.

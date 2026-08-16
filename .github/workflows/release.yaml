@@ -237,7 +237,7 @@ jobs:
         id: lock
         uses: releasetools/mutex@v1
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           command: "lock"

@@ -16,6 +16,7 @@
  */
 
 import { jest } from "@jest/globals";
+import { SilentLogger } from "../src/logger.js";
 
 type AnyFn = (...args: unknown[]) => unknown;
 const core = { getInput: jest.fn<AnyFn>() };
@@ -24,10 +25,16 @@ jest.unstable_mockModule("@actions/core", () => core);
 
 const { MutexSettings } = await import("../src/configuration.js");
 
+/** Ownership is what these test; where the connection string comes from is covered in connection.test.ts. */
+const log = new SilentLogger();
+
 describe("MutexSettings ownership", () => {
-  const originalDatabaseUrl = process.env.DATABASE_URL;
+  const originalEnv = {
+    MUTEX_DATABASE_URL: process.env.MUTEX_DATABASE_URL,
+    DATABASE_URL: process.env.DATABASE_URL,
+  };
   const inputs: Record<string, string> = {
-    DATABASE_URL: "postgresql://user:password@localhost/mutex",
+    MUTEX_DATABASE_URL: "postgresql://user:password@localhost/mutex",
     command: "lock",
     id: "deploy",
     expiration: "60",
@@ -40,32 +47,36 @@ describe("MutexSettings ownership", () => {
 
   beforeEach(() => {
     jest.resetAllMocks();
+    // Both names, since either would be read ahead of the inputs below.
+    delete process.env.MUTEX_DATABASE_URL;
     delete process.env.DATABASE_URL;
     inputs.owner = "";
     core.getInput.mockImplementation((name) => inputs[name as string] ?? "");
   });
 
   afterAll(() => {
-    if (originalDatabaseUrl === undefined) {
-      delete process.env.DATABASE_URL;
-    } else {
-      process.env.DATABASE_URL = originalDatabaseUrl;
+    for (const [name, value] of Object.entries(originalEnv)) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
     }
   });
 
   it("keeps locks unowned when owner is unset", () => {
-    expect(new MutexSettings().owner).toBeNull();
+    expect(new MutexSettings(log).owner).toBeNull();
   });
 
   it("treats a blank owner as unowned", () => {
     inputs.owner = "   ";
 
-    expect(new MutexSettings().owner).toBeNull();
+    expect(new MutexSettings(log).owner).toBeNull();
   });
 
   it("records a named owner", () => {
     inputs.owner = " releasetools/mutex@12345 ";
 
-    expect(new MutexSettings().owner).toBe("releasetools/mutex@12345");
+    expect(new MutexSettings(log).owner).toBe("releasetools/mutex@12345");
   });
 });

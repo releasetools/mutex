@@ -15,6 +15,7 @@
  *
  */
 
+import { CONNECTION_ENV_VAR, findConnectionString } from "../connection.js";
 import { Logger } from "../logger.js";
 import { ResolvedOptions } from "./args.js";
 import { ConfigurationError } from "./exit-codes.js";
@@ -28,6 +29,10 @@ export interface Connection {
 /**
  * Works out the PostgreSQL connection string.
  *
+ * From `$MUTEX_DATABASE_URL`, or from the variable `--env-var` names; the
+ * order the default is looked up in is shared with the Action, in
+ * `connection.ts`.
+ *
  * It comes from the environment, and only from there. Not from a flag,
  * because an argument lands in shell history and in `ps` output that every
  * user on the machine can read for as long as the process runs. And not from
@@ -37,7 +42,7 @@ export interface Connection {
  *
  * Whatever holds the secret can put it in the environment instead:
  *
- *     DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
+ *     MUTEX_DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
  *
  * or, interactively, the dotsecenv shell plugin exports it on `cd` and there
  * is nothing to pass at all.
@@ -46,15 +51,30 @@ export async function resolveConnectionString(
   options: ResolvedOptions,
   log: Logger,
 ): Promise<Connection> {
-  const value = process.env[options.envVar];
-
-  if (!value) {
-    throw new ConfigurationError(
-      `no connection string: ${options.envVar} is not set`,
-      `Export it, or pass it for one command: ${options.envVar}=... mutex ...`,
-    );
+  // --env-var is taken at its word: that name is read and no other, and the
+  // deprecation does not apply to it, since nothing was left to default.
+  if (options.envVar) {
+    const value = process.env[options.envVar];
+    if (!value) {
+      throw notSet(options.envVar);
+    }
+    return { value, source: `the ${options.envVar} environment variable` };
   }
 
-  log.debug(`Using the connection string from ${options.envVar}.`);
-  return { value, source: `the ${options.envVar} environment variable` };
+  const connection = findConnectionString((name) => process.env[name], log);
+  if (!connection) {
+    throw notSet(CONNECTION_ENV_VAR);
+  }
+
+  return {
+    value: connection.value,
+    source: `the ${connection.name} environment variable`,
+  };
+}
+
+function notSet(name: string): ConfigurationError {
+  return new ConfigurationError(
+    `no connection string: ${name} is not set`,
+    `Export it, or pass it for one command: ${name}=... mutex ...`,
+  );
 }

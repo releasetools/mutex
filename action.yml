@@ -10,8 +10,11 @@ inputs:
   GITHUB_TOKEN:
     description: 'GitHub token used to authenticate API requests.  Pass it from "secrets.GITHUB_TOKEN". Can also be specified as an environment variable.'
     required: false
+  MUTEX_DATABASE_URL:
+    description: "Database credentials for storing the locks. Can also be specified as an environment variable."
+    required: false
   DATABASE_URL:
-    description: "Database credentials for storing the locks."
+    description: "DEPRECATED: use MUTEX_DATABASE_URL. Still read when that is unset, and warns when it is; it will be removed in a future major version."
     required: false
   command:
     description: "The command to execute: 'lock' or 'unlock'. DEPRECATED: 'release' is still accepted as a synonym for 'unlock' and will be removed in a future major version."
