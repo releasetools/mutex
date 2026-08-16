@@ -16,5 +16,13 @@
  *
  */
 
-// Launcher for the compiled CLI. Run `npm run build` first.
-import "../lib/cli/main.js";
+// Launcher for the compiled CLI, which is built rather than committed.
+try {
+  await import("../lib/cli/main.js");
+} catch (error) {
+  if (error?.code === "ERR_MODULE_NOT_FOUND") {
+    process.stderr.write("mutex: not built yet - run `npm run build`.\n");
+    process.exit(1);
+  }
+  throw error;
+}

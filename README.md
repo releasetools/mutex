@@ -134,7 +134,7 @@ The same locking core is available as a command-line tool, for locking outside G
 
 ```shell
 npm install
-npm run build
+npm run build   # the CLI is built, not committed
 npm link        # puts `mutex` on your PATH
 ```
 

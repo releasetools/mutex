@@ -12,7 +12,7 @@
     "lint": "prettier --ignore-unknown --write '**/*.{ts,js,json,md,yml,yaml}'",
     "build:watch": "tsc --watch",
     "build": "npm run clean && tsc && npm run package",
-    "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post && ncc build lib/cli/main.js -o dist/cli",
+    "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
     "mutex": "node ./bin/mutex.js",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "prepare": "husky"
