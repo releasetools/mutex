@@ -15,8 +15,9 @@
     "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
     "package:action": "npm run build && node scripts/package-action.mjs",
     "mutex": "node ./bin/mutex.js",
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-    "prepare": "husky"
+    "test": "npm run typecheck && NODE_OPTIONS=--experimental-vm-modules jest",
+    "prepare": "husky",
+    "typecheck": "tsc -p tsconfig.test.json"
   },
   "engines": {
     "node": ">=24.0.0"
@@ -27,10 +28,11 @@
     "@slack/web-api": "^8.0.0",
     "@types/pg": "^8.15.5",
     "pg": "^8.16.3",
-    "pg-format": "^1.0.4",
-    "ts-node": "^10.9.2"
+    "pg-format": "^1.0.4"
   },
   "devDependencies": {
+    "@swc/core": "^1.15.0",
+    "@swc/jest": "^0.2.39",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
     "@types/pg-format": "^1.0.5",
@@ -38,8 +40,7 @@
     "husky": "^9.1.7",
     "jest": "^30.0.0",
     "prettier": "^3.6.2",
-    "ts-jest": "^29.1.5",
-    "typescript": "^6.0.0"
+    "typescript": "^7.0.0"
   },
   "type": "module"
 }

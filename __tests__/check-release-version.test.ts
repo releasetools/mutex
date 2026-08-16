@@ -19,12 +19,12 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-// @ts-expect-error - build tooling, deliberately plain JS with no types
 import {
   checkReleaseVersion,
   compareVersions,
   fetchTags,
   highestVersion,
+  // @ts-expect-error - build tooling, deliberately plain JS with no types
 } from "../scripts/check-release-version.mjs";
 
 const RELEASED = ["v1.0.0", "v1.0.1", "v1.1.0", "v1"];
