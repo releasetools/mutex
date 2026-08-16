@@ -6,18 +6,20 @@ export interface Connection {
     source: string;
 }
 /**
- * Works out the PostgreSQL connection string, in order of precedence:
+ * Works out the PostgreSQL connection string.
  *
- *   1. the environment (DATABASE_URL by default)
- *   2. ./.secenv, decrypted through the dotsecenv CLI
+ * It comes from the environment, and only from there. Not from a flag,
+ * because an argument lands in shell history and in `ps` output that every
+ * user on the machine can read for as long as the process runs. And not from
+ * a secret store either: reading one means reimplementing somebody else's
+ * file formats and owning a decryption subprocess, which is a great deal of
+ * surface for a lock tool to carry.
  *
- * The environment comes first, so a one-off override never has to fight with
- * whatever the project's `.secenv` says - and when it is set there is nothing
- * to resolve, so no vault is opened and no GPG prompt can appear for a value
- * that was already to hand.
+ * Whatever holds the secret can put it in the environment instead:
  *
- * There is no flag. A connection string passed on the command line lands in
- * shell history, and in `ps` for every user on the machine to read for as long
- * as the process runs; an environment variable does neither.
+ *     DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
+ *
+ * or, interactively, the dotsecenv shell plugin exports it on `cd` and there
+ * is nothing to pass at all.
  */
 export declare function resolveConnectionString(options: ResolvedOptions, log: Logger): Promise<Connection>;

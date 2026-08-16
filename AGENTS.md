@@ -28,7 +28,6 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 | `src/database.ts` | The PostgreSQL lock store                                                 |
 | `src/main.ts`     | The Action's entry point; `src/post.ts` auto-releases at the end of a job |
 | `src/cli/`        | The `mutex` CLI                                                           |
-| `src/dotsecenv/`  | The `.secenv` / vault client                                              |
 
 `src/mutex.ts` and `src/database.ts` take a `Logger` and emit events rather than calling into `@actions/core`. Keep it that way: it is what lets the Action and the CLI share them, and it keeps the CLI bundle free of the Actions toolkit.
 
@@ -38,4 +37,4 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 - The CLI writes results for acting commands (`lock`, `unlock`, `renew`) to stderr and query output (`status`, `list`, `prune`) to stdout. `--json` always goes to stdout, except while wrapping a program, which owns stdout.
 - Acquiring a lock is decided by expiry alone; ownership only decides who may unlock or renew it. An unowned lock is open to anyone, and there is no override flag - breaking a lock means naming its owner. See `mayModify` in `database.ts`.
 - Anything spawned goes through `spawn` with an argument array and never a shell. Values that become arguments are validated first and passed after `--`, so a flag-shaped value cannot be read as an option by the program being run.
-- Secrets never reach stdout, logs, error messages - or argv. There is no flag that takes a connection string, because arguments are readable from `ps` by every user on the machine and land in shell history; the environment and the vault are the two ways in. The dotsecenv client captures the CLI's stdout precisely so decrypted values stay contained.
+- Secrets never reach stdout, logs, error messages - or argv. There is no flag that takes a connection string, because arguments are readable from `ps` by every user on the machine and land in shell history. The environment is the only way in, and reading a secret store is somebody else's job.

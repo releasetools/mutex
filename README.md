@@ -17,7 +17,6 @@ Locks live in a PostgreSQL table. When a job needs a lock, it inserts a row - or
 
 - **Advisory Locking**: Create and manage locks within your GitHub Actions workflows.
 - **A CLI**: `mutex lock` / `mutex unlock`, plus a flock-style `mutex lock <id> -- <program>` that holds the lock for exactly as long as the program runs.
-- **Secrets via dotsecenv**: The CLI reads the connection string from a `.secenv` file, decrypting it through the [dotsecenv](https://dotsecenv.com) CLI, so it never has to be pasted on a command line.
 - **Pull Request Integration**: Lock and release events are posted as PR comments.
 - **Slack Notifications**: Choose if you want to be notified in your Slack channels about locking events.
 - **Easy Disabling**: Skip locking for specific pull requests by:
@@ -242,35 +241,29 @@ The wrapper is careful about which lock it gives back: it remembers the `created
 
 ### Where the connection string comes from
 
-In order of precedence:
+`$DATABASE_URL`, and only from there. Rename it with `--env-var` if something else already owns that name.
 
-1. `$DATABASE_URL` (rename with `--env-var`)
-2. `./.secenv`, decrypted through the dotsecenv CLI
-
-**There is deliberately no `--database-url` flag.** A connection string on the command line lands in shell history, and in `ps` output that every user on the machine can read for as long as mutex runs. An environment variable does neither.
-
-The second is the interesting one. Given a project like this:
-
-```
-my-project/
-├── .secenv                  DATABASE_URL={dotsecenv/myapp::DATABASE_URL}
-└── .dotsecenv/vault         the encrypted vault, safe to commit
-```
-
-running `mutex lock deploy` in `my-project` resolves `DATABASE_URL` on its own:
+There is deliberately **no flag** for it: an argument lands in shell history, and in `ps` output that every user on the machine can read for as long as mutex runs. An environment variable does neither, and is no harder to pass:
 
 ```shell
-$ mutex lock deploy --verbose
-debug: Reading /my-project/.secenv
-debug: Resolved DATABASE_URL from secret 'myapp::DATABASE_URL' (.dotsecenv/vault).
+DATABASE_URL="postgres://..." mutex lock deploy
+```
+
+mutex does not read secret stores itself. Whatever holds the secret can put it in the environment for a single command — with [dotsecenv](https://dotsecenv.com), for example:
+
+```shell
+DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock deploy
+```
+
+and interactively there is nothing to pass at all, because [dotsecenv's shell plugin](https://dotsecenv.com/guides/shell-plugins/) exports it when you `cd` into the project:
+
+```shell
+$ cd my-project          # the plugin loads .secenv
+$ mutex lock deploy
 Acquired lock 'deploy'
 ```
 
-Nothing is stored in shell history, and no plaintext connection string is written anywhere.
-
-Only the working directory's `.secenv` is read - there is no search, upward or otherwise. A search has to stop somewhere, and outside a repository there is no sensible somewhere: from `/tmp/build-1234` it would reach `/tmp`, where anyone could plant the file that decides which database mutex locks against. Run mutex from the directory holding the `.secenv`.
-
-Use `--no-secenv` to switch this off entirely.
+That keeps secret storage in the tool that owns it. mutex once read `.secenv` and vault files directly; it was 1,600 lines reimplementing another tool's formats, and every security-relevant defect found in review came from them.
 
 ### Exit codes
 
@@ -296,27 +289,6 @@ fi
 ```
 
 `--quiet` silences the ordinary report and leaves the exit code to answer. It does not silence a _deviation_ - a lock not acquired, a release refused, a lock left held - which is printed to stderr whatever the verbosity, since those are the cases where an exit code alone leaves you guessing which of several reasons applied. `--json` is unaffected by either.
-
-### The dotsecenv client
-
-The CLI does not reimplement dotsecenv's cryptography. [`src/dotsecenv/`](./src/dotsecenv) is a small Node client that:
-
-- **reads a `.secenv`** ([`secenv.ts`](./src/dotsecenv/secenv.ts)) using the same rules as the dotsecenv shell plugin - `{dotsecenv}`, `{dotsecenv/SECRET}`, `{dotsecenv/ns::SECRET}`, quote stripping, and two-phase loading, plain values before secrets.
-- **reads the vault index** ([`vault.ts`](./src/dotsecenv/vault.ts)) from `.dotsecenv/vault`, parsing the v2 header without touching GPG. Older vaults are rejected outright, pointing at `dotsecenv vault doctor` to upgrade them. This is what turns an exit code into a usable message - it knows which secrets a vault holds, which GPG fingerprints each is readable by, and which have been forgotten:
-
-  ```shell
-  $ mutex status deploy
-  error: could not resolve DATABASE_URL from .secenv:
-  could not read secret 'myapp::NOT_THERE' (/my-project/.secenv:1 maps DATABASE_URL to secret 'myapp::NOT_THERE')
-    secret 'myapp::NOT_THERE' not found in any vault
-    hint: /my-project/.dotsecenv/vault holds: myapp::DATABASE_URL.
-  ```
-
-- **calls the dotsecenv CLI** ([`cli.ts`](./src/dotsecenv/cli.ts)) to decrypt. It runs the binary from the directory holding the `.secenv`, which is what makes a relative vault path such as `.dotsecenv/vault` resolve to the project's own vault. Values are fetched with `--json` so they survive trailing whitespace, stdout is captured so a secret never lands in the tool's own output, and stdin is inherited so a GPG passphrase prompt can still reach the terminal.
-
-It requires the [dotsecenv CLI](https://dotsecenv.com) on `PATH` - override with `--dotsecenv-bin` or `$DOTSECENV_BIN`.
-
-Only the variable actually needed is decrypted; anything else the `.secenv` references stays encrypted.
 
 ## Development
 
@@ -344,7 +316,6 @@ Layout:
 | `src/database.ts` | The PostgreSQL lock store                                                 |
 | `src/main.ts`     | The Action's entry point; `src/post.ts` auto-releases at the end of a job |
 | `src/cli/`        | The `mutex` CLI                                                           |
-| `src/dotsecenv/`  | The `.secenv` / vault client                                              |
 
 `src/mutex.ts` and `src/database.ts` take a `Logger` and emit events rather than calling into `@actions/core`, which is what lets both front-ends share them.
 

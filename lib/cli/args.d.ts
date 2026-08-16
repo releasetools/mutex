@@ -33,9 +33,6 @@ export interface ResolvedOptions {
     owner: string | null;
     dryRun: boolean;
     envVar: string;
-    useSecenv: boolean;
-    dotsecenvBin: string | null;
-    dotsecenvConfig: string | null;
     json: boolean;
     logLevel: LogLevel;
 }

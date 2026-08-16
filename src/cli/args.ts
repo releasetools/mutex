@@ -52,12 +52,7 @@ const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"] as const;
 /** Only `lock` waits, so only `lock` takes the options that describe waiting. */
 const LOCK_OPTIONS = [...ACQUIRE_OPTIONS, "max-wait", "poll-interval"] as const;
 
-const CONNECTION_OPTIONS = [
-  "env-var",
-  "no-secenv",
-  "dotsecenv-bin",
-  "dotsecenv-config",
-] as const;
+const CONNECTION_OPTIONS = ["env-var"] as const;
 
 const GENERAL_OPTIONS = ["json", "quiet", "verbose", "help"] as const;
 
@@ -150,9 +145,6 @@ const OPTION_CONFIG = {
   owner: { type: "string", short: "o" },
   "dry-run": { type: "boolean" },
   "env-var": { type: "string" },
-  "no-secenv": { type: "boolean" },
-  "dotsecenv-bin": { type: "string" },
-  "dotsecenv-config": { type: "string" },
   json: { type: "boolean" },
   quiet: { type: "boolean", short: "q" },
   verbose: { type: "boolean" },
@@ -177,9 +169,6 @@ export interface ResolvedOptions {
   owner: string | null;
   dryRun: boolean;
   envVar: string;
-  useSecenv: boolean;
-  dotsecenvBin: string | null;
-  dotsecenvConfig: string | null;
   json: boolean;
   logLevel: LogLevel;
 }
@@ -323,15 +312,6 @@ function resolveOptions(
       typeof values["env-var"] === "string"
         ? values["env-var"]
         : "DATABASE_URL",
-    useSecenv: values["no-secenv"] !== true,
-    dotsecenvBin:
-      typeof values["dotsecenv-bin"] === "string"
-        ? values["dotsecenv-bin"]
-        : null,
-    dotsecenvConfig:
-      typeof values["dotsecenv-config"] === "string"
-        ? values["dotsecenv-config"]
-        : null,
     json: values.json === true,
     logLevel:
       values.quiet === true
@@ -463,9 +443,6 @@ Lock options:
 
 Connection:
       --env-var <NAME>           Variable holding it (default: DATABASE_URL)
-      --no-secenv                Do not read ./.secenv
-      --dotsecenv-bin <path>     The dotsecenv binary (default: $DOTSECENV_BIN or dotsecenv)
-      --dotsecenv-config <path>  Passed to dotsecenv as -c
 
 prune:
       --dry-run                  List what would be deleted, and delete nothing
@@ -476,10 +453,12 @@ General:
       --verbose                  Include debug output
   -h, --help                     Show help
 
-The connection string is taken from $DATABASE_URL, then ./.secenv in the
-working directory, resolved through the dotsecenv CLI. There is deliberately no
-flag for it: a connection string on the command line is visible in shell
-history, and in "ps" to every user on the machine for as long as mutex runs.
+The connection string comes from $DATABASE_URL, and only from there. Not from
+a flag: an argument is visible in shell history, and in "ps" to every user on
+the machine for as long as mutex runs. Anything holding the secret can put it
+in the environment for one command, for example:
+
+    DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.

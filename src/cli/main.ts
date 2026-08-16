@@ -17,7 +17,6 @@
  */
 
 import { DatabaseMutex } from "../database.js";
-import { DotsecenvError } from "../dotsecenv/errors.js";
 import { logError } from "../helpers.js";
 import { ConsoleLogger } from "../logger.js";
 import { CommandName, helpText, parseCommandLine } from "./args.js";
@@ -133,11 +132,6 @@ export async function main(argv: string[]): Promise<number> {
       );
       return EXIT_CONFIGURATION;
     }
-    if (error instanceof DotsecenvError) {
-      log.error(error.describe());
-      return EXIT_CONFIGURATION;
-    }
-
     logError(log, error, null);
     return EXIT_ERROR;
   } finally {

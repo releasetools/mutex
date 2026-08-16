@@ -7542,68 +7542,6 @@ function toIsoString(value) {
     return String(value);
 }
 //# sourceMappingURL=database.js.map
-;// CONCATENATED MODULE: ./lib/dotsecenv/errors.js
-/*
- * Copyright (c) 2025-2026 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-/**
- * The dotsecenv CLI's documented exit codes (pkg/dotsecenv/output/exitcodes.go).
- * Mapping them to kinds is what lets the caller tell "this secret does not
- * exist" apart from "GPG could not decrypt it".
- */
-const KIND_BY_EXIT_CODE = {
-    1: "general",
-    2: "config",
-    3: "vault",
-    4: "gpg",
-    5: "auth",
-    6: "validation",
-    7: "fingerprint",
-    8: "access-denied",
-    9: "algorithm",
-};
-function kindForExitCode(code) {
-    return KIND_BY_EXIT_CODE[code] ?? "general";
-}
-class DotsecenvError extends Error {
-    kind;
-    exitCode;
-    stderr;
-    hint;
-    constructor(message, options) {
-        super(message, { cause: options.cause });
-        this.name = "DotsecenvError";
-        this.kind = options.kind;
-        this.exitCode = options.exitCode ?? null;
-        this.stderr = options.stderr?.trim() ?? "";
-        this.hint = options.hint ?? null;
-    }
-    /** A multi-line rendering that keeps the CLI's own message and the hint. */
-    describe() {
-        const lines = [this.message];
-        if (this.stderr) {
-            lines.push(...this.stderr.split("\n").map((line) => `  ${line}`));
-        }
-        if (this.hint) {
-            lines.push(`  hint: ${this.hint}`);
-        }
-        return lines.join("\n");
-    }
-}
-//# sourceMappingURL=errors.js.map
 ;// CONCATENATED MODULE: external "node:util"
 const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
 ;// CONCATENATED MODULE: ./lib/timing.js
@@ -7738,12 +7676,7 @@ class ConfigurationError extends Error {
 const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"];
 /** Only `lock` waits, so only `lock` takes the options that describe waiting. */
 const LOCK_OPTIONS = [...ACQUIRE_OPTIONS, "max-wait", "poll-interval"];
-const CONNECTION_OPTIONS = [
-    "env-var",
-    "no-secenv",
-    "dotsecenv-bin",
-    "dotsecenv-config",
-];
+const CONNECTION_OPTIONS = ["env-var"];
 const GENERAL_OPTIONS = ["json", "quiet", "verbose", "help"];
 const COMMANDS = {
     lock: {
@@ -7825,9 +7758,6 @@ const OPTION_CONFIG = {
     owner: { type: "string", short: "o" },
     "dry-run": { type: "boolean" },
     "env-var": { type: "string" },
-    "no-secenv": { type: "boolean" },
-    "dotsecenv-bin": { type: "string" },
-    "dotsecenv-config": { type: "string" },
     json: { type: "boolean" },
     quiet: { type: "boolean", short: "q" },
     verbose: { type: "boolean" },
@@ -7936,13 +7866,6 @@ function resolveOptions(command, values) {
         envVar: typeof values["env-var"] === "string"
             ? values["env-var"]
             : "DATABASE_URL",
-        useSecenv: values["no-secenv"] !== true,
-        dotsecenvBin: typeof values["dotsecenv-bin"] === "string"
-            ? values["dotsecenv-bin"]
-            : null,
-        dotsecenvConfig: typeof values["dotsecenv-config"] === "string"
-            ? values["dotsecenv-config"]
-            : null,
         json: values.json === true,
         logLevel: values.quiet === true
             ? "error"
@@ -8049,9 +7972,6 @@ Lock options:
 
 Connection:
       --env-var <NAME>           Variable holding it (default: DATABASE_URL)
-      --no-secenv                Do not read ./.secenv
-      --dotsecenv-bin <path>     The dotsecenv binary (default: $DOTSECENV_BIN or dotsecenv)
-      --dotsecenv-config <path>  Passed to dotsecenv as -c
 
 prune:
       --dry-run                  List what would be deleted, and delete nothing
@@ -8062,10 +7982,12 @@ General:
       --verbose                  Include debug output
   -h, --help                     Show help
 
-The connection string is taken from $DATABASE_URL, then ./.secenv in the
-working directory, resolved through the dotsecenv CLI. There is deliberately no
-flag for it: a connection string on the command line is visible in shell
-history, and in "ps" to every user on the machine for as long as mutex runs.
+The connection string comes from $DATABASE_URL, and only from there. Not from
+a flag: an argument is visible in shell history, and in "ps" to every user on
+the machine for as long as mutex runs. Anything holding the secret can put it
+in the environment for one command, for example:
+
+    DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.
@@ -8774,700 +8696,6 @@ function renderTable(records) {
         .join("  "));
 }
 //# sourceMappingURL=commands.js.map
-;// CONCATENATED MODULE: external "node:fs"
-const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
-;// CONCATENATED MODULE: ./lib/dotsecenv/secenv.js
-/*
- * Copyright (c) 2025-2026 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-
-/**
- * A parser for `.secenv` files.
- *
- * The rules mirror `_dotsecenv_parse_line` in the dotsecenv shell plugin, so a
- * file behaves the same whether it is loaded by the shell or by this client:
- *
- *   KEY=value                    plain value
- *   KEY="value" / KEY='value'    plain value, surrounding quotes stripped
- *   KEY={dotsecenv}              secret named KEY
- *   KEY={dotsecenv/}             secret named KEY
- *   KEY={dotsecenv/SECRET}       secret named SECRET
- *   KEY={dotsecenv/ns::SECRET}   secret named ns::SECRET
- *   # comment / empty            ignored
- */
-const SECENV_FILENAME = ".secenv";
-/** Environment variable names: a letter or underscore, then word characters. */
-const KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-/** Secret keys, optionally carrying a single `namespace::` prefix. */
-const SECRET_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)?$/;
-const SECRET_REFERENCE = /^\{dotsecenv\/(.*)\}$/;
-function parseSecenv(content, file) {
-    const entries = [];
-    const issues = [];
-    content.split("\n").forEach((raw, index) => {
-        const line = index + 1;
-        // Trim both ends, which also drops the trailing CR of a CRLF file so a
-        // `{dotsecenv/}` reference keeps a clean closing brace.
-        const trimmed = raw.trim();
-        if (trimmed === "" || trimmed.startsWith("#")) {
-            return;
-        }
-        const separator = trimmed.indexOf("=");
-        if (separator < 0) {
-            return;
-        }
-        const key = trimmed.slice(0, separator);
-        if (!KEY_PATTERN.test(key)) {
-            return;
-        }
-        const value = stripQuotes(trimmed.slice(separator + 1));
-        if (value === "{dotsecenv}") {
-            entries.push({ key, kind: "secret", value: key, file, line });
-            return;
-        }
-        const reference = SECRET_REFERENCE.exec(value);
-        if (!reference) {
-            entries.push({ key, kind: "plain", value, file, line });
-            return;
-        }
-        const name = reference[1];
-        if (name === "") {
-            // `{dotsecenv/}` means the same as `{dotsecenv}`.
-            entries.push({ key, kind: "secret", value: key, file, line });
-            return;
-        }
-        if (name.includes("/")) {
-            issues.push({
-                file,
-                line,
-                message: `invalid syntax '${value}' - only one '/' allowed`,
-            });
-            return;
-        }
-        if (!SECRET_NAME_PATTERN.test(name)) {
-            issues.push({
-                file,
-                line,
-                message: `invalid secret name '${name}' in '${value}'`,
-            });
-            return;
-        }
-        entries.push({ key, kind: "secret", value: name, file, line });
-    });
-    return { file, entries, issues };
-}
-async function readSecenv(file) {
-    const content = await external_node_fs_namespaceObject.promises.readFile(file, "utf8");
-    return parseSecenv(content, file);
-}
-/**
- * The `.secenv` in `cwd`, or null when there is none.
- *
- * Deliberately does not walk upwards. An upward search has to stop somewhere,
- * and outside a git repository there is no sensible somewhere: from
- * /tmp/build-1234 it reaches /tmp, which anybody can write to, and a planted
- * `.secenv` there would decide which database mutex locks against. Reading one
- * directory is predictable and cannot be steered from outside it.
- *
- * Point `--secenv-dir` at the project root to use a file that lives higher up.
- */
-function findSecenvFile(cwd = process.cwd()) {
-    const candidate = external_node_path_namespaceObject.join(external_node_path_namespaceObject.resolve(cwd), SECENV_FILENAME);
-    return isFile(candidate) ? candidate : null;
-}
-function stripQuotes(value) {
-    if (value.length >= 2) {
-        const quote = value[0];
-        if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
-            return value.slice(1, -1);
-        }
-    }
-    return value;
-}
-function isFile(candidate) {
-    try {
-        return external_node_fs_namespaceObject.statSync(candidate).isFile();
-    }
-    catch {
-        return false;
-    }
-}
-//# sourceMappingURL=secenv.js.map
-;// CONCATENATED MODULE: ./lib/dotsecenv/cli.js
-/*
- * Copyright (c) 2025-2026 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-
-
-/**
- * A thin wrapper around the `dotsecenv` binary.
- *
- * Decryption is delegated rather than reimplemented: the CLI owns GPG, vault
- * resolution and signature verification, and it is the only thing that can
- * read a secret. This module's job is to invoke it correctly and to turn its
- * exit codes into errors a caller can act on.
- */
-const DEFAULT_TIMEOUT_MS = 60_000;
-/**
- * How long a timed-out child gets to exit on SIGTERM before SIGKILL.
- *
- * SIGTERM is a request, and the likeliest reason to be here is GPG sitting on
- * a passphrase prompt that never comes - which can decline it. Since the
- * promise only settles on `close`, a child that ignores SIGTERM hangs mutex
- * for good, with stdout still buffering. SIGKILL cannot be declined, so the
- * timeout keeps its promise.
- */
-const KILL_GRACE_MS = 5_000;
-function dotsecenvBinary(explicit) {
-    return explicit || process.env.DOTSECENV_BIN || "dotsecenv";
-}
-/**
- * Decrypts one secret.
- *
- * `--json` is used rather than the bare value so the result survives a value
- * that ends in a newline, and so the vault it came from is known for reporting.
- *
- * The key is checked and passed after `--`, because a flag-shaped key would
- * otherwise be read as an option by the CLI rather than as the secret to fetch:
- * `secret get --config=/etc/passwd` really does load that file as config.
- * `.secenv` parsing already rejects such names, but this is the boundary where
- * it matters, and `getSecret` is exported for callers who never went through it.
- */
-async function getSecret(key, options) {
-    if (!SECRET_NAME_PATTERN.test(key)) {
-        throw new DotsecenvError(`'${key}' is not a valid secret key`, {
-            kind: "validation",
-            hint: "Keys are NAME or namespace::NAME, using letters, digits and underscores.",
-        });
-    }
-    const result = await run([...globalFlags(options), "secret", "get", "--json", "--", key], options);
-    if (result.code !== 0) {
-        throw failure(`could not read secret '${key}'`, result, options);
-    }
-    const payload = parseJson(result, `secret '${key}'`);
-    if (typeof payload?.value !== "string") {
-        throw new DotsecenvError(`dotsecenv returned no value for secret '${key}'`, { kind: "parse", stderr: result.stderr });
-    }
-    return {
-        key,
-        value: payload.value,
-        vault: typeof payload.vault === "string" ? payload.vault : null,
-        addedAt: typeof payload.added_at === "string" ? payload.added_at : null,
-    };
-}
-/** Lists the secret keys reachable from `options.cwd`, without decrypting. */
-async function listSecrets(options) {
-    const result = await run([...globalFlags(options), "secret", "get", "--json"], options);
-    if (result.code !== 0) {
-        throw failure("could not list secrets", result, options);
-    }
-    const payload = parseJson(result, "the secret listing");
-    if (!Array.isArray(payload)) {
-        return [];
-    }
-    return payload
-        .filter((entry) => entry && typeof entry.key === "string")
-        .map((entry) => ({ key: entry.key, vault: String(entry.vault ?? "") }));
-}
-async function version(options) {
-    const result = await run(["version"], options);
-    if (result.code !== 0) {
-        throw failure("could not read the dotsecenv version", result, options);
-    }
-    return result.stdout.trim();
-}
-function globalFlags(options) {
-    // `-s` suppresses the CLI's advisory warnings, which would otherwise be
-    // reported as if they were failures.
-    const flags = ["-s"];
-    if (options.config) {
-        flags.push("-c", options.config);
-    }
-    for (const vault of options.vaults ?? []) {
-        flags.push("-v", vault);
-    }
-    return flags;
-}
-function run(args, options) {
-    const binary = dotsecenvBinary(options.binary);
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    return new Promise((resolve, reject) => {
-        // Never a shell, and arguments are passed as an array, so no part of a
-        // secret name or path can be interpreted as syntax. The binary itself is
-        // whatever the operator chose via --dotsecenv-bin or $DOTSECENV_BIN.
-        const child = (0,external_node_child_process_namespaceObject.spawn)(binary, args, {
-            cwd: options.cwd,
-            env: options.env ?? process.env,
-            // stdin is inherited so a GPG passphrase prompt can reach the terminal;
-            // stdout is piped so a decrypted value never leaks into our own output.
-            stdio: ["inherit", "pipe", "pipe"],
-        });
-        let stdout = "";
-        let stderr = "";
-        let settled = false;
-        let killTimer;
-        const stopTimers = () => {
-            clearTimeout(timer);
-            if (killTimer) {
-                clearTimeout(killTimer);
-            }
-        };
-        /** Settles once, and lets the process exit afterwards. */
-        const settle = (finish) => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            stopTimers();
-            finish();
-        };
-        const abandon = () => {
-            // Nothing else may keep mutex alive on this child's account.
-            child.stdout?.destroy();
-            child.stderr?.destroy();
-            child.unref();
-            settle(() => reject(new DotsecenvError(`'${binary}' timed out after ${timeoutMs / 1000}s`, {
-                kind: "timeout",
-                stderr,
-                hint: "GPG may be waiting for a passphrase that cannot be entered here.",
-            })));
-        };
-        const timer = setTimeout(() => {
-            child.kill("SIGTERM");
-            killTimer = setTimeout(() => {
-                child.kill("SIGKILL");
-                // Settling here rather than waiting for `close`: that event needs
-                // every holder of the pipes to let go, and a grandchild outliving the
-                // process we killed would keep it from ever firing.
-                abandon();
-            }, KILL_GRACE_MS);
-            killTimer.unref();
-        }, timeoutMs);
-        timer.unref();
-        child.stdout.setEncoding("utf8");
-        child.stdout.on("data", (chunk) => {
-            stdout += chunk;
-        });
-        child.stderr.setEncoding("utf8");
-        child.stderr.on("data", (chunk) => {
-            stderr += chunk;
-        });
-        child.on("error", (error) => {
-            settle(() => {
-                if (error.code === "ENOENT") {
-                    reject(new DotsecenvError(`the '${binary}' CLI was not found`, {
-                        kind: "not-installed",
-                        cause: error,
-                        hint: "Install it from https://dotsecenv.com, or point DOTSECENV_BIN at the binary.",
-                    }));
-                    return;
-                }
-                reject(new DotsecenvError(`could not run '${binary}'`, {
-                    kind: "general",
-                    cause: error,
-                }));
-            });
-        });
-        child.on("close", (code, signal) => {
-            settle(() => resolve({ stdout, stderr, code: code ?? (signal ? 1 : 0) }));
-        });
-    });
-}
-function parseJson(result, subject) {
-    try {
-        return JSON.parse(result.stdout);
-    }
-    catch {
-        // The SyntaxError is deliberately not attached as `cause`: Node quotes the
-        // offending input in its message, and the input here is the decrypted
-        // secret. Node prints `[cause]` for any uncaught rejection or console
-        // dump, which would put the value straight into a log.
-        throw new DotsecenvError(`could not parse the JSON dotsecenv returned for ${subject}`, { kind: "parse", stderr: result.stderr });
-    }
-}
-function failure(message, result, options) {
-    const kind = kindForExitCode(result.code);
-    return new DotsecenvError(message, {
-        kind,
-        exitCode: result.code,
-        stderr: result.stderr,
-        hint: hintFor(kind, options),
-    });
-}
-function hintFor(kind, options) {
-    switch (kind) {
-        case "vault":
-            return `Checked from ${options.cwd}; run 'dotsecenv secret get' there to see which secrets are reachable.`;
-        case "config":
-            return "Check DOTSECENV_CONFIG, or ~/.config/dotsecenv/config, for the list of vault paths.";
-        case "gpg":
-            return "Confirm your GPG key is available and unlocked (gpg --list-secret-keys).";
-        case "access-denied":
-            return "The secret is not shared with your identity; ask a holder to run 'dotsecenv secret share'.";
-        case "fingerprint":
-            return "Run 'dotsecenv login' to register your GPG fingerprint.";
-        default:
-            return undefined;
-    }
-}
-//# sourceMappingURL=cli.js.map
-;// CONCATENATED MODULE: ./lib/dotsecenv/vault.js
-/*
- * Copyright (c) 2025-2026 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-
-
-/**
- * A reader for dotsecenv vault files.
- *
- * The layout is a marker, a JSON header, a marker, then one JSON record per
- * line:
- *
- *   # === VAULT HEADER ===
- *   {"version":2,"identities":{...},"secrets":{"ns::KEY":{"secret":6,"values":[7,9]}}}
- *   # === VAULT DATA ===
- *   {"type":"identity","data":{...}}
- *   {"type":"secret","data":{...}}
- *   {"type":"value","secret":"ns::KEY","data":{...}}
- *
- * The header indexes records by 1-based line number, so which secrets a vault
- * holds - and who they are encrypted for - can be read without touching GPG.
- * Nothing here decrypts: values stay ciphertext, and `cli.ts` shells out to the
- * real dotsecenv binary for that.
- *
- * Only format v2 is read. Older vaults are rejected with a pointer at
- * `dotsecenv vault doctor` rather than parsed on a best-effort basis.
- */
-const HEADER_MARKER = "# === VAULT HEADER ===";
-const DATA_MARKER = "# === VAULT DATA ===";
-/** The only vault format this client reads. */
-const SUPPORTED_FORMAT_VERSION = 2;
-const VAULT_DIRECTORY = ".dotsecenv";
-const VAULT_FILENAME = "vault";
-/** The conventional vault location for a directory holding a `.secenv`. */
-function vaultPathFor(dir) {
-    return external_node_path_namespaceObject.join(dir, VAULT_DIRECTORY, VAULT_FILENAME);
-}
-function parseVault(content, vaultPath) {
-    const lines = content.split("\n");
-    if (lines.length < 3) {
-        throw new DotsecenvError(`${vaultPath} is not a vault file (truncated)`, {
-            kind: "parse",
-        });
-    }
-    const marker = lines[0].trim();
-    if (marker !== HEADER_MARKER) {
-        // Superseded vaults carry a versioned marker. Recognising it only to name
-        // the version turns "this is not a vault" into something actionable.
-        const legacy = /^# === VAULT HEADER v(\d+) ===$/.exec(marker);
-        if (legacy) {
-            throw unsupportedVersion(vaultPath, Number(legacy[1]));
-        }
-        throw new DotsecenvError(`${vaultPath} is not a vault file (unexpected header marker)`, { kind: "parse" });
-    }
-    let header;
-    try {
-        header = JSON.parse(lines[1]);
-    }
-    catch (cause) {
-        throw new DotsecenvError(`could not parse the header of ${vaultPath}`, {
-            kind: "parse",
-            cause,
-        });
-    }
-    if (header.version !== SUPPORTED_FORMAT_VERSION) {
-        throw unsupportedVersion(vaultPath, header.version);
-    }
-    if (lines[2].trim() !== DATA_MARKER) {
-        throw new DotsecenvError(`${vaultPath} is not a vault file (missing data marker)`, { kind: "parse" });
-    }
-    const secrets = new Map();
-    for (const [key, index] of Object.entries(header.secrets ?? {})) {
-        const valueLines = index?.values ?? [];
-        // Values are appended, so the last one that parses is the current one -
-        // the same rule the CLI applies when it decides what to decrypt.
-        let latest = null;
-        for (const lineNumber of valueLines) {
-            const record = readRecord(lines, lineNumber);
-            if (record?.type === "value") {
-                latest = record;
-            }
-        }
-        secrets.set(key, {
-            key,
-            availableTo: latest?.data?.available_to ?? [],
-            deleted: latest?.data?.deleted === true,
-            addedAt: latest?.data?.added_at ?? null,
-            valueCount: valueLines.length,
-        });
-    }
-    return {
-        path: vaultPath,
-        version: header.version,
-        identities: Object.keys(header.identities ?? {}),
-        secrets,
-    };
-}
-/** Reads a vault, returning null when the file does not exist. */
-async function readVault(vaultPath) {
-    let content;
-    try {
-        content = await external_node_fs_namespaceObject.promises.readFile(vaultPath, "utf8");
-    }
-    catch (error) {
-        if (error.code === "ENOENT") {
-            return null;
-        }
-        throw new DotsecenvError(`could not read ${vaultPath}`, {
-            kind: "vault",
-            cause: error,
-        });
-    }
-    return parseVault(content, vaultPath);
-}
-function unsupportedVersion(vaultPath, version) {
-    return new DotsecenvError(`${vaultPath} uses vault format v${version ?? "?"}; only v${SUPPORTED_FORMAT_VERSION} is supported`, {
-        kind: "vault",
-        hint: "Upgrade the vault with 'dotsecenv vault doctor'.",
-    });
-}
-function readRecord(lines, lineNumber) {
-    const raw = lines[lineNumber - 1];
-    if (!raw) {
-        return null;
-    }
-    try {
-        return JSON.parse(raw);
-    }
-    catch {
-        // A record we cannot read is not worth failing over: the header index is
-        // only used to explain failures, and the CLI remains the authority.
-        return null;
-    }
-}
-//# sourceMappingURL=vault.js.map
-;// CONCATENATED MODULE: ./lib/dotsecenv/index.js
-/*
- * Copyright (c) 2025-2026 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-
-
-
-
-
-
-
-
-
-async function loadSecenv(options = {}) {
-    const log = options.log ?? new SilentLogger();
-    const found = findSecenvFile(options.cwd);
-    const files = found ? [found] : [];
-    const issues = [];
-    const winners = new Map();
-    for (const file of files) {
-        const parsed = await readSecenv(file);
-        issues.push(...parsed.issues);
-        // Two phases per file, matching the shell plugin: plain values first, so a
-        // key defined both ways in one file resolves to its secret.
-        for (const entry of parsed.entries.filter((e) => e.kind === "plain")) {
-            winners.set(entry.key, entry);
-        }
-        for (const entry of parsed.entries.filter((e) => e.kind === "secret")) {
-            winners.set(entry.key, entry);
-        }
-    }
-    for (const issue of issues) {
-        log.warning(`${issue.file}:${issue.line}: ${issue.message}`);
-    }
-    const wanted = options.only ? new Set(options.only) : null;
-    const values = {};
-    const resolved = new Map();
-    const vaults = new VaultCache();
-    const decrypted = new Map();
-    for (const entry of winners.values()) {
-        if (entry.kind === "plain") {
-            values[entry.key] = entry.value;
-            resolved.set(entry.key, {
-                key: entry.key,
-                value: entry.value,
-                kind: "plain",
-                file: entry.file,
-            });
-            continue;
-        }
-        if (wanted && !wanted.has(entry.key)) {
-            continue;
-        }
-        const dir = external_node_path_namespaceObject.dirname(entry.file);
-        const cacheKey = `${dir}\u0000${entry.value}`;
-        let secret = decrypted.get(cacheKey);
-        if (!secret) {
-            secret = await fetchSecret(entry, dir, vaults, options, log);
-            decrypted.set(cacheKey, secret);
-        }
-        values[entry.key] = secret.value;
-        resolved.set(entry.key, {
-            key: entry.key,
-            value: secret.value,
-            kind: "secret",
-            file: entry.file,
-            secret: entry.value,
-            vault: secret.vault,
-        });
-    }
-    return { files, values, resolved, issues };
-}
-/**
- * Resolves a single environment variable from the `.secenv` chain.
- *
- * Returns null when no `.secenv` defines it, so a caller can fall back to
- * whatever other source it prefers.
- */
-async function resolveEnvValue(key, options = {}) {
-    const loaded = await loadSecenv({ ...options, only: [key] });
-    return loaded.resolved.get(key) ?? null;
-}
-async function fetchSecret(entry, dir, vaults, options, log) {
-    // Read the neighbouring vault's header first. It cannot decrypt anything,
-    // but it can rule out a fetch that is guaranteed to fail, and it explains
-    // failures the CLI reports only as an exit code.
-    const vault = await vaults.read(vaultPathFor(dir), log);
-    const known = vault?.secrets.get(entry.value);
-    if (known?.deleted) {
-        throw new DotsecenvError(`${entry.key} cannot be resolved: secret '${entry.value}' was forgotten in ${vault?.path}`, {
-            kind: "vault",
-            hint: "Store it again with 'dotsecenv secret store', or drop the reference from the .secenv file.",
-        });
-    }
-    try {
-        const secret = await getSecret(entry.value, {
-            // Run where the .secenv lives, so a config entry like `.dotsecenv/vault`
-            // resolves to this project's vault rather than to one under the cwd.
-            cwd: dir,
-            binary: options.binary,
-            config: options.config,
-            timeoutMs: options.timeoutMs,
-        });
-        log.debug(`Resolved ${entry.key} from secret '${entry.value}' (${secret.vault ?? "unknown vault"}).`);
-        return secret;
-    }
-    catch (error) {
-        throw enrich(error, entry, vault, known?.availableTo);
-    }
-}
-function enrich(error, entry, vault, availableTo) {
-    if (!(error instanceof DotsecenvError)) {
-        return error;
-    }
-    const context = `${entry.file}:${entry.line} maps ${entry.key} to secret '${entry.value}'`;
-    if (error.kind === "access-denied" && availableTo?.length) {
-        return new DotsecenvError(`${error.message} (${context})`, {
-            kind: error.kind,
-            exitCode: error.exitCode,
-            stderr: error.stderr,
-            cause: error,
-            hint: `In ${vault?.path} it is readable by: ${availableTo.join(", ")}.`,
-        });
-    }
-    if (error.kind === "vault" && vault && !vault.secrets.has(entry.value)) {
-        const known = [...vault.secrets.keys()];
-        return new DotsecenvError(`${error.message} (${context})`, {
-            kind: error.kind,
-            exitCode: error.exitCode,
-            stderr: error.stderr,
-            cause: error,
-            hint: known.length
-                ? `${vault.path} holds: ${known.join(", ")}.`
-                : `${vault.path} holds no secrets.`,
-        });
-    }
-    return new DotsecenvError(`${error.message} (${context})`, {
-        kind: error.kind,
-        exitCode: error.exitCode,
-        stderr: error.stderr,
-        hint: error.hint ?? undefined,
-        cause: error,
-    });
-}
-/** Reads each vault at most once, and never fails the load over a bad one. */
-class VaultCache {
-    cache = new Map();
-    async read(vaultPath, log) {
-        if (this.cache.has(vaultPath)) {
-            return this.cache.get(vaultPath) ?? null;
-        }
-        let vault = null;
-        try {
-            vault = await readVault(vaultPath);
-        }
-        catch (error) {
-            // Diagnostics only: the CLI still gets its chance to resolve the secret.
-            log.debug(`Ignoring unreadable vault ${vaultPath}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        this.cache.set(vaultPath, vault);
-        return vault;
-    }
-}
-//# sourceMappingURL=index.js.map
 ;// CONCATENATED MODULE: ./lib/cli/config.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -9486,63 +8714,36 @@ class VaultCache {
  *
  */
 
-
-
-
 /**
- * Works out the PostgreSQL connection string, in order of precedence:
+ * Works out the PostgreSQL connection string.
  *
- *   1. the environment (DATABASE_URL by default)
- *   2. ./.secenv, decrypted through the dotsecenv CLI
+ * It comes from the environment, and only from there. Not from a flag,
+ * because an argument lands in shell history and in `ps` output that every
+ * user on the machine can read for as long as the process runs. And not from
+ * a secret store either: reading one means reimplementing somebody else's
+ * file formats and owning a decryption subprocess, which is a great deal of
+ * surface for a lock tool to carry.
  *
- * The environment comes first, so a one-off override never has to fight with
- * whatever the project's `.secenv` says - and when it is set there is nothing
- * to resolve, so no vault is opened and no GPG prompt can appear for a value
- * that was already to hand.
+ * Whatever holds the secret can put it in the environment instead:
  *
- * There is no flag. A connection string passed on the command line lands in
- * shell history, and in `ps` for every user on the machine to read for as long
- * as the process runs; an environment variable does neither.
+ *     DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
+ *
+ * or, interactively, the dotsecenv shell plugin exports it on `cd` and there
+ * is nothing to pass at all.
  */
 async function resolveConnectionString(options, log) {
-    const fromEnvironment = process.env[options.envVar];
-    if (fromEnvironment) {
-        return {
-            value: fromEnvironment,
-            source: `the ${options.envVar} environment variable`,
-        };
+    const value = process.env[options.envVar];
+    if (!value) {
+        throw new ConfigurationError(`no connection string: ${options.envVar} is not set`, `Export it, or pass it for one command: ${options.envVar}=... mutex ...`);
     }
-    if (!options.useSecenv) {
-        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and --no-secenv was given`, `Export ${options.envVar}.`);
-    }
-    const file = findSecenvFile();
-    if (!file) {
-        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and there is no .secenv here`, `Export ${options.envVar}, or run this from the directory whose .secenv defines it.`);
-    }
-    log.debug(`Reading ${file}`);
-    let resolved;
-    try {
-        resolved = await resolveEnvValue(options.envVar, {
-            binary: options.dotsecenvBin ?? undefined,
-            config: options.dotsecenvConfig ?? undefined,
-            log,
-        });
-    }
-    catch (error) {
-        if (error instanceof DotsecenvError) {
-            throw new ConfigurationError(`could not resolve ${options.envVar} from .secenv:\n${error.describe()}`);
-        }
-        throw error;
-    }
-    if (!resolved) {
-        throw new ConfigurationError(`no connection string: ${file} does not define ${options.envVar}`, `Add it there, or export ${options.envVar}.`);
-    }
-    const origin = resolved.kind === "secret"
-        ? `${resolved.file} (secret '${resolved.secret}' in ${resolved.vault ?? "a configured vault"})`
-        : resolved.file;
-    return { value: resolved.value, source: origin };
+    log.debug(`Using the connection string from ${options.envVar}.`);
+    return { value, source: `the ${options.envVar} environment variable` };
 }
 //# sourceMappingURL=config.js.map
+;// CONCATENATED MODULE: external "node:fs"
+const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: external "node:url"
 const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 ;// CONCATENATED MODULE: ./lib/version.js
@@ -9631,7 +8832,6 @@ function readPackageVersion() {
 
 
 
-
 async function main(argv) {
     let commandLine;
     try {
@@ -9696,10 +8896,6 @@ async function main(argv) {
         }
         if (error instanceof ConfigurationError) {
             log.error(error.hint ? `${error.message}\n  hint: ${error.hint}` : error.message);
-            return EXIT_CONFIGURATION;
-        }
-        if (error instanceof DotsecenvError) {
-            log.error(error.describe());
             return EXIT_CONFIGURATION;
         }
         logError(log, error, null);

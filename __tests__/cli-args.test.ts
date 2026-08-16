@@ -47,7 +47,6 @@ describe("parseCommandLine", () => {
     // --max-wait defaults to -1, meaning "wait as long as the lease lasts".
     expect(options.pollTimeoutMs).toBe(60_000);
     expect(options.envVar).toBe("DATABASE_URL");
-    expect(options.useSecenv).toBe(true);
     expect(options.autoRenew).toBe(true);
     expect(options.owner).toBe("tester");
   });
