@@ -16,11 +16,23 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 - **minor** - new commands, flags or CLI features, and backwards-compatible schema additions;
 - **major** - removing or repurposing an Action input, or a schema change that breaks older versions.
 
+## Build output
+
+`npm run build` wipes and regenerates `lib/` and `dist/`. **Neither is committed.** The release workflow builds the action and publishes `action.yml` plus `dist/` to `release/<major>` through `releasetools/actions/signed-push`; the version tags point there. So what a consumer of `releasetools/mutex@v1` gets is built on the way past, not carried on `main`.
+
+It cleans first on purpose: `tsc` leaves output for sources that no longer exist, and `lib/logic.js` sat in the repository from the initial commit until that was noticed.
+
+Three consequences, each of which has already bitten:
+
+- **`uses: ./` needs a build step before it.** A fresh checkout has no `dist/`, so `test.yaml`'s lock jobs build first. This works because local actions are read from the workspace when their step runs, unlike remote ones, which are fetched during "Set up job".
+- **The published tree needs its own `package.json`.** The action reports its version by walking up from the bundle to the nearest `package.json` that has a `version` field, and ncc's marker file has none. Without one the published action reports `unknown`, and the release verifies that against the tag. The staging step generates it.
+- **A release is a workflow dispatch, not a tag.** `git tag` publishes nothing, and the tag the workflow creates would collide with one that triggered it — which is why it is dispatched with a version instead.
+
+Anything else that ships a subset of the repository is worth assembling and running before trusting it. Both of the above surfaced that way and neither would have surfaced from reading the code.
+
 ## Before committing
 
-`npm run build` wipes and regenerates `lib/` and `dist/`. Neither is committed. The release workflow builds the action and publishes `action.yml` plus `dist/` to `release/<major>` through `releasetools/actions/signed-push`, and the version tags point there - so what a consumer of `releasetools/mutex@v1` gets is built on the way past, not carried on `main`.
-
-Two consequences worth knowing. `uses: ./` in `test.yaml` needs a build step before it, because there is no `dist/` in a fresh checkout. And a release can only be cut by dispatching the release workflow; `git tag` alone publishes nothing. The pre-commit hook does this, but a manual `npm run lint && npm run build && npm test` first avoids surprises.
+The pre-commit hook builds and runs the tests, but a manual `npm run lint && npm run build && npm test` first avoids surprises.
 
 ## Layout
 

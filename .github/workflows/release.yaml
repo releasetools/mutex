@@ -18,7 +18,27 @@ on:
 permissions: {}
 
 jobs:
+  # Runs before anything is published, so a release that cannot be verified is
+  # blocked rather than shipped and then reported.
+  check-e2e-pin:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: The verify job must test the release being published
+        env:
+          VERSION: ${{ inputs.version }}
+          # Keep in step with the `uses:` in verify below.
+          PINNED: v1
+        run: |
+          major="${VERSION%%.*}"
+          if [ "$major" != "$PINNED" ]; then
+            echo "::error::This release is $VERSION, but the verify job still pins releasetools/mutex@$PINNED, so nothing would check the published $major action. Add a $major job (uses: cannot take an expression, so it has to be written out), then update PINNED here."
+            exit 1
+          fi
+          echo "verify pins @$PINNED and this release is $VERSION"
+
   publish:
+    needs: check-e2e-pin
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -95,8 +115,7 @@ jobs:
           find stage -type f | sort | sed 's/^/  /'
 
           echo "Version the published action will report:"
-          (cd stage && node -e 'process.env.GITHUB_TOKEN = ""' \
-            && node -p 'require("./package.json").version' | sed 's/^/  /')
+          (cd stage && node -p 'require("./package.json").version' | sed 's/^/  /')
 
       # signed-push commits onto an existing branch, so the release line has to
       # be there. Seeded from main the first time a major is published.
@@ -182,27 +201,6 @@ jobs:
             echo "- built from ${GITHUB_SHA}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # `uses:` cannot take an expression, so the end-to-end job can only name one
-  # major tag, and it names v1. This makes that hardcoding fail loudly the day
-  # it stops matching, rather than letting a v2 release quietly skip the only
-  # check that proves the published action works.
-  check-e2e-pin:
-    runs-on: ubuntu-latest
-    permissions: {}
-    steps:
-      - name: The end-to-end job must test the release being published
-        env:
-          VERSION: ${{ inputs.version }}
-          # Keep in step with the `uses:` in verify below.
-          PINNED: v1
-        run: |
-          major="${VERSION%%.*}"
-          if [ "$major" != "$PINNED" ]; then
-            echo "::error::This release is $VERSION, but the verify job still pins releasetools/mutex@$PINNED, so nothing checks the published $major action. Add a $major job (uses: cannot take an expression, so it has to be written out), then update PINNED here."
-            exit 1
-          fi
-          echo "verify pins @$PINNED and this release is $VERSION"
-
   # Proves the published action works, by using it the way a consumer would.
   #
   # This runs after the tags have moved, because `uses:` cannot reference the
@@ -211,7 +209,7 @@ jobs:
   # than finding out from somebody else's workflow.
   verify:
     if: startsWith(inputs.version, 'v1.')
-    needs: [publish, check-e2e-pin]
+    needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: read

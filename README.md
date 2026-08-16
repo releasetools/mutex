@@ -323,40 +323,53 @@ You can learn about creating GitHub actions in this [tutorial](https://docs.gith
 
 ## Releasing
 
-Bump the version in `package.json`, merge it, then dispatch the release workflow with the matching tag:
+`main` holds source only. What `releasetools/mutex@v1` resolves to is built during the release and published to the `release/v1` branch, so a release is a workflow run rather than a `git tag`.
+
+### Cutting one
+
+1. Bump `version` in `package.json` and add the changes to [RELEASE.md](./RELEASE.md). Merge that to `main`.
+2. Dispatch the release workflow with the matching tag:
+
+   ```shell
+   gh workflow run release.yaml -f version=v1.3.0
+   ```
+
+The version must match `package.json` exactly, prefixed with `v`. The workflow checks this before publishing anything, because the action reports its own version at runtime and the release is verified against it.
+
+### What it does
+
+| Step            |                                                                                                                                                                   |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-e2e-pin` | Refuses to publish a major the verify step cannot test (see below)                                                                                                |
+| Build           | `npm ci`, lint, test, build                                                                                                                                       |
+| Stage           | Assembles the published tree: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a generated `package.json` carrying the version                                  |
+| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and tags `v1.3.0` |
+| Tag             | Moves the floating `v1` to the same commit                                                                                                                        |
+| Verify          | Uses `releasetools/mutex@v1` for real and asserts the version it reports matches the release                                                                      |
+
+The first release on a new major seeds `release/<major>` from `main` automatically.
+
+### Afterwards
+
+Check the run summary for the signed commit, then confirm the published tree looks right:
 
 ```shell
-gh workflow run release.yaml -f version=v1.3.0
+git fetch origin 'refs/tags/*:refs/tags/*'
+git show --stat v1.3.0        # action.yml, dist/, README.md, LICENSE, package.json
+gh api repos/releasetools/mutex/commits/v1 --jq .commit.verification.verified
 ```
 
-It builds the action, publishes `action.yml` and `dist/` to `release/v1` as a commit signed server-side by GitHub, points `v1.3.0` and `v1` at it, and then verifies the published action by using it - asserting that the version it reports matches the release.
+Each published commit's parent is the previous release, so `release/v1` reads as a history of releases. The source it came from is recorded as a `Source-Commit:` trailer rather than a parent, which also names the repository.
 
-`dist/` is not committed. `main` holds source; what `releasetools/mutex@v1` resolves to is built during the release.
+### When something goes wrong
 
-### Release notes
+**The verify step fails.** The tags have already moved by then — `uses:` cannot reference the version being published, only the floating `v1`, so `v1` has to move before anything can use it. Fix forward with a new patch release. If the failure is `v1 ran mutex <older version>`, the tag move had not reached GitHub's action cache yet, and re-running just the verify job is enough.
 
-Use the template below to draft new releases. Update the changelog section to include all relevant changes/features/bugfixes.
+**`check-e2e-pin` fails.** You are releasing a major the verify step still pins to `@v1`. `uses:` cannot take an expression, so a second verify job has to be written out for the new major, and `PINNED` updated alongside it. Nothing is published until then.
 
-```markdown
-## Summary
+**A version mismatch.** `package.json` and the dispatched tag disagree. Nothing has been published; fix whichever is wrong.
 
-- An advisory lock service for CI/CD pipelines, implemented as a GitHub Action.
-- It prevents race conditions by ensuring mutual exclusion - only one job can access a shared resource concurrently.
-
-## Features
-
-- **Advisory Locking**: Create and manage locks within your GitHub Actions workflows.
-- **Pull Request Integration**: Lock and release events are posted as PR comments.
-- **Slack Notifications**: Choose if you want to be notified on Slack about locking events.
-- **Easy Disabling**: Skip locking for specific pull requests by:
-  - adding a `SKIP_MUTEX` label
-  - including `SKIP_MUTEX` in the PR's description or comment
-  - or defining `SKIP_MUTEX=1` as an environment variable.
-
-## Changelog
-
-- TBD.
-```
+Note that `uses: releasetools/mutex@main` does not work, and is not meant to — there is no `dist/` there. Reference a version.
 
 ## License
 
