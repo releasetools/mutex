@@ -11,8 +11,16 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g. v1.3.0). Must match package.json."
+        description: "Version to publish, e.g. v1.3.0. package.json is bumped to match."
         required: true
+      allow-lower-version:
+        description: "Publish a version below the highest already released. For back-porting a fix to an older line."
+        type: boolean
+        default: false
+      overwrite-existing:
+        description: "Replace a version that has already been published, moving its tag and updating its GitHub release."
+        type: boolean
+        default: false
 
 # Deny by default; each job grants only what it needs.
 permissions: {}
@@ -51,25 +59,68 @@ jobs:
       - name: ✅ Check the version
         id: version
         env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          ALLOW_LOWER: ${{ inputs.allow-lower-version }}
+          OVERWRITE: ${{ inputs.overwrite-existing }}
+        run: |
+          set -euo pipefail
+
+          tags="$(gh api "repos/${GITHUB_REPOSITORY}/tags" --paginate --jq '.[].name' | tr '\n' ' ')"
+          echo "Existing tags: ${tags:-none}"
+
+          args=(--version "$VERSION" --tags "$tags")
+          [ "$ALLOW_LOWER" = "true" ] && args+=(--allow-lower-version)
+          [ "$OVERWRITE" = "true" ] && args+=(--overwrite-existing)
+
+          node scripts/check-release-version.mjs "${args[@]}"
+
+      # The version lives in package.json because the action reports it at
+      # runtime. Bumping it by hand before every release is a step to forget,
+      # so the release does it - and pushes it to main, because a bump that
+      # only exists on a throwaway branch would leave main claiming the old
+      # version while the next release computed its bump from that stale value.
+      - name: ⬆️ Bump the version
+        env:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
-          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::version must look like v1.3.0 (got: $VERSION)"
-            exit 1
-          fi
+          node -e '
+            const fs = require("fs");
+            const version = process.env.VERSION.replace(/^v/, "");
 
-          # The action reports package.json's version at runtime and the
-          # end-to-end job asserts it against this tag, so a mismatch here
-          # would only be discovered after publishing.
-          declared="$(node -p 'require("./package.json").version')"
-          if [ "$VERSION" != "v$declared" ]; then
-            echo "::error::package.json says $declared, but this release is $VERSION. Bump one of them."
-            exit 1
-          fi
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.version = version;
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
 
-          echo "major=$(printf '%s' "$VERSION" | cut -d. -f1)" >> "$GITHUB_OUTPUT"
+            // The lock file carries the version twice, and npm rewrites both.
+            const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+            lock.version = version;
+            if (lock.packages && lock.packages[""]) {
+              lock.packages[""].version = version;
+            }
+            fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
+          '
+
+          mkdir -p bump
+          cp package.json package-lock.json bump/
+          echo "package.json is now $(node -p 'require("./package.json").version')"
+
+      # Upsert rather than mirror: source-dir holds only the two files that
+      # changed, and prune would otherwise read the rest of main as deleted.
+      - name: 🔏 Push the bump to main, signed
+        id: bump
+        uses: releasetools/actions/signed-push@57073d3d58774563dfaa76eaaf89ae086c278ee3 # v0
+        with:
+          source-dir: bump
+          target-repo: ${{ github.repository }}
+          target-branch: main
+          headline: "chore(release): ${{ inputs.version }}"
+          body: |
+            Released-By: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          prune: "false"
+          token: ${{ github.token }}
 
       - name: 🔨 Lint, test and package
         run: |
@@ -111,40 +162,70 @@ jobs:
           target-branch: release/${{ steps.version.outputs.major }}
           headline: "release: ${{ inputs.version }}"
           body: |
-            Source-Commit: ${{ github.repository }}@${{ github.sha }}
+            Source-Commit: ${{ github.repository }}@${{ steps.bump.outputs.commit-sha }}
             Published-By: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           prune: "true"
-          tag: ${{ inputs.version }}
           token: ${{ github.token }}
 
       # signed-push tags the exact version; the floating major follows every
       # release, so it is moved here. Retried once, because GitHub's ref API is
       # eventually consistent and a first read can miss a ref that exists.
-      - name: 🏷️ Move the floating major tag
+      - name: 🏷️ Point the tags at the published commit
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
           MAJOR: ${{ steps.version.outputs.major }}
           NEW_SHA: ${{ steps.publish.outputs.commit-sha }}
         run: |
           set -euo pipefail
 
-          for attempt in 1 2 3; do
-            if gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${MAJOR}" \
-                 -f sha="${NEW_SHA}" -F force=true --silent 2>/dev/null; then
-              echo "moved ${MAJOR} -> ${NEW_SHA:0:12}"
-              exit 0
-            fi
-            if gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-                 -f ref="refs/tags/${MAJOR}" -f sha="${NEW_SHA}" --silent 2>/dev/null; then
-              echo "created ${MAJOR} at ${NEW_SHA:0:12}"
-              exit 0
-            fi
-            echo "attempt ${attempt}/3 failed; retrying in 2s"
-            sleep 2
-          done
+          # Retried, because GitHub's ref API is eventually consistent and a
+          # first read can miss a ref that exists.
+          upsert() {
+            local ref="$1"
+            for attempt in 1 2 3; do
+              if gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${ref}" \
+                   -f sha="${NEW_SHA}" -F force=true --silent 2>/dev/null; then
+                echo "  moved ${ref} -> ${NEW_SHA:0:12}"
+                return 0
+              fi
+              if gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+                   -f ref="refs/tags/${ref}" -f sha="${NEW_SHA}" --silent 2>/dev/null; then
+                echo "  created ${ref} at ${NEW_SHA:0:12}"
+                return 0
+              fi
+              echo "  ${ref} attempt ${attempt}/3 failed; retrying in 2s"
+              sleep 2
+            done
+            echo "::error::Could not point ${ref} at ${NEW_SHA}"
+            return 1
+          }
 
-          echo "::error::Could not point ${MAJOR} at ${NEW_SHA}"
-          exit 1
+          upsert "${VERSION}"
+          upsert "${MAJOR}"
+
+      # The repository has published GitHub releases since v1.0.0, and the
+      # notes people read live in RELEASE.md. Generated notes would be no use:
+      # they are built from the commits reachable from the tag, and this tag
+      # points into release/<major>, whose history is other releases.
+      - name: 🚀 Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          node scripts/release-notes.mjs --version "$VERSION" > notes.md
+          echo "Release notes:"
+          sed 's/^/  /' notes.md
+
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release edit "$VERSION" --notes-file notes.md --title "Release $VERSION"
+            echo "Updated the existing release"
+          else
+            gh release create "$VERSION" --notes-file notes.md --title "Release $VERSION"
+            echo "Created the release"
+          fi
 
       - name: 📝 Summary
         env:
@@ -152,6 +233,7 @@ jobs:
           MAJOR: ${{ steps.version.outputs.major }}
           NEW_SHA: ${{ steps.publish.outputs.commit-sha }}
           NEW_URL: ${{ steps.publish.outputs.commit-url }}
+          BUMP_SHA: ${{ steps.bump.outputs.commit-sha }}
         run: |
           {
             echo "## Published ${VERSION}"
@@ -159,7 +241,7 @@ jobs:
             echo "Signed commit: [\`${NEW_SHA:0:12}\`](${NEW_URL})"
             echo
             echo "- \`${VERSION}\` and \`${MAJOR}\` point at it"
-            echo "- built from ${GITHUB_SHA}"
+            echo "- bumped package.json on main in \`${BUMP_SHA:0:12}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Proves the published action works, by using it the way a consumer would.

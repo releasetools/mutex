@@ -8,7 +8,7 @@ Every user-visible change goes in [RELEASE.md](./RELEASE.md), newest version fir
 - **Write for the person who has to decide whether to upgrade.** Say what changed for them, not which files moved.
 - **Plain sentences.** No "feat:"/"fix:" prefixes, no bullet-point telegraphese, no marketing. "Fixed lock expiry on databases whose session time zone is not UTC" beats "TZ handling improvements".
 - **Name the consequence when there is one.** A bug fix should say what was broken, not just what was patched.
-- **Group under a version heading**, and bump the version in `package.json` in the same change.
+- **Group under a version heading** - `## 1.3.0`, which is what the release reads to fill in the GitHub release body. The version in `package.json` is bumped by the release itself; do not edit it by hand.
 
 Versioning is semver, judged from the **Action's** public surface (its inputs, outputs and lock-table behaviour), since that is what workflows pin:
 
@@ -26,7 +26,7 @@ Three consequences, each of which has already bitten:
 
 - **`uses: ./` needs a build step before it.** A fresh checkout has no `dist/`, so `test.yaml`'s lock jobs build first. This works because local actions are read from the workspace when their step runs, unlike remote ones, which are fetched during "Set up job".
 - **The published tree needs its own `package.json`.** The action reports its version by walking up from the bundle to the nearest `package.json` that has a `version` field, and ncc's marker file has none. Without one the published action reports `unknown`, and the release verifies that against the tag. `scripts/package-action.mjs` generates it.
-- **A release is a workflow dispatch, not a tag.** `git tag` publishes nothing, and the tag the workflow creates would collide with one that triggered it — which is why it is dispatched with a version instead.
+- **A release is a workflow dispatch, not a tag.** `git tag` publishes nothing, and the tag the workflow creates would collide with one that triggered it - which is why it is dispatched with a version instead. The release bumps `package.json` and pushes that to `main` itself, so the bump cannot be forgotten and the tag cannot disagree with what the action reports.
 
 Anything else that ships a subset of the repository is worth assembling and running before trusting it. Both of the above surfaced that way and neither would have surfaced from reading the code - which is why the packaging lives in `scripts/package-action.mjs` rather than in the workflow:
 

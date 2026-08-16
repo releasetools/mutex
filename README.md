@@ -325,27 +325,38 @@ You can learn about creating GitHub actions in this [tutorial](https://docs.gith
 
 `main` holds source only. What `releasetools/mutex@v1` resolves to is built during the release and published to the `release/v1` branch, so a release is a workflow run rather than a `git tag`.
 
-### Cutting one
+### Cutting a release
 
-1. Bump `version` in `package.json` and add the changes to [RELEASE.md](./RELEASE.md). Merge that to `main`.
-2. Dispatch the release workflow with the matching tag:
+Add the notes for the new version to [RELEASE.md](./RELEASE.md) under a `## 1.3.0` heading and merge that to `main`. Then:
 
-   ```shell
-   gh workflow run release.yaml -f version=v1.3.0
-   ```
+```shell
+gh workflow run release.yaml -f version=v1.3.0
+```
 
-The version must match `package.json` exactly, prefixed with `v`. The workflow checks this before publishing anything, because the action reports its own version at runtime and the release is verified against it.
+That is the whole thing. The version in `package.json` is bumped by the release itself and pushed to `main` as a signed commit, so there is no version to remember to edit — and no way for `package.json` and the tag to disagree.
+
+Two options, both off by default:
+
+| Option                |                                                                                                                                          |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow-lower-version` | Publish below the highest released version, for back-porting a fix to an older line. Without it, `v1.2.22` after `v1.3.0` is refused.    |
+| `overwrite-existing`  | Replace a version already published: moves its tag and updates its GitHub release. Without it, releasing an existing version is refused. |
+
+The two are deliberately separate. Replacing a release and releasing out of order are different decisions, so neither flag grants the other.
 
 ### What it does
 
-| Step            |                                                                                                                                                                   |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `check-e2e-pin` | Refuses to publish a major the verify step cannot test (see below)                                                                                                |
-| Build           | `npm ci`, lint, test, build                                                                                                                                       |
-| Stage           | Assembles the published tree: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a generated `package.json` carrying the version                                  |
-| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and tags `v1.3.0` |
-| Tag             | Moves the floating `v1` to the same commit                                                                                                                        |
-| Verify          | Uses `releasetools/mutex@v1` for real and asserts the version it reports matches the release                                                                      |
+| Step            |                                                                                                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-e2e-pin` | Refuses to publish a major the verify step cannot test (see below)                                                                                                        |
+| Check           | Rejects a malformed version, one already released, or one below the highest released                                                                                      |
+| Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main` as a signed commit                                                                  |
+| Build           | `npm ci`, lint, test                                                                                                                                                      |
+| Package         | `npm run package:action` assembles the published tree into `publish/`: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a generated `package.json` carrying the version |
+| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub                            |
+| Tag             | Points `v1.3.0` and the floating `v1` at that commit                                                                                                                      |
+| Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                     |
+| Verify          | Uses `releasetools/mutex@v1` for real and asserts the version it reports matches the release                                                                              |
 
 The first release on a new major seeds `release/<major>` from `main` automatically.
 
