@@ -2,6 +2,11 @@
 
 Newest first. One line per change.
 
+## 1.2.1
+
+- Slack notifications are now switched on by `slack-channel` alone. A workflow that never asked for them no longer logs a warning about a missing `SLACK_BOT_TOKEN` on every lock and release.
+- Fixed a `SLACK_BOT_TOKEN` inherited from job-level `env:` failing any mutex step that set no `slack-channel`. The channel decides; an unrelated variable in the environment no longer can.
+
 ## 1.2.0
 
 > **Upgrading from 1.1.0 adds a column.** It is applied automatically on the

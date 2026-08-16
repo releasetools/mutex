@@ -5,7 +5,6 @@ git update-index --again
 # Run tests before committing
 npm test
 
-# Build the latest code
+# Build, to catch a broken build before it is pushed. Nothing to stage: the
+# output is gitignored and produced again at release time.
 npm run build
-git add dist/ lib/
-git update-index --again

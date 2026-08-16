@@ -191,3 +191,10 @@ out
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/node,macos,visualstudiocode
+
+# Build output. None of it is committed: the release workflow builds it and
+# publishes the compiled tree to release/<major>, which the version tags point
+# at. `npm run build` produces it locally.
+/lib/
+/dist/
+/publish/
