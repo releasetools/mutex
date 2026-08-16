@@ -63,8 +63,7 @@ describe("parseCommandLine", () => {
   });
 
   it("gives try-lock no time to wait at all", () => {
-    const { options } = parseCommandLine(["try-lock", "id", "-w", "600"]);
-    expect(options.pollTimeoutMs).toBe(0);
+    expect(parseCommandLine(["try-lock", "id"]).options.pollTimeoutMs).toBe(0);
   });
 
   it("keeps everything after -- for the wrapped program", () => {
@@ -213,23 +212,61 @@ describe("parseCommandLine", () => {
     );
   });
 
-  it("rejects non-numeric and out-of-range durations", () => {
-    expect(() => parseCommandLine(["lock", "id", "-e", "abc"])).toThrow(
-      /whole number/,
-    );
-    expect(() => parseCommandLine(["lock", "id", "-e", "1.5"])).toThrow(
-      /whole number/,
-    );
+  it("rejects anything that is not a whole number of seconds", () => {
+    // Number() alone accepts all of these, each wrongly: "" is 0, so
+    // `-e "$UNSET"` would mean zero; 0x3c is 60; 1e21 is an "integer" that
+    // reaches Postgres as a syntax error.
+    for (const value of [
+      "abc",
+      "1.5",
+      "",
+      "0x3c",
+      "1e21",
+      " 30",
+      "30s",
+      "+30",
+    ]) {
+      expect(() => parseCommandLine(["lock", "id", "-e", value])).toThrow(
+        /whole number of seconds/,
+      );
+    }
+
     expect(() => parseCommandLine(["lock", "id", "-e", "0"])).toThrow(
       /greater than 0/,
     );
-    // A negative value needs the `--flag=-N` form; `-i -1` is ambiguous.
     expect(() =>
       parseCommandLine(["lock", "id", "--poll-interval=-1"]),
     ).toThrow(/cannot be negative/);
   });
 
-  it("accepts negative durations in the --flag=-N form", () => {
+  it("tolerates the -e=45 form parseArgs hands back", () => {
+    // node's parseArgs keeps the '=' for short options, so the value arrives
+    // as "=45" - and the error it raises for `-w -1` recommends exactly this
+    // spelling, so it had better work.
+    expect(parseCommandLine(["lock", "id", "-e=45"]).options.expiration).toBe(
+      45,
+    );
+    expect(
+      parseCommandLine(["lock", "id", "-e=45", "--max-wait=-1"]).options
+        .pollTimeoutMs,
+    ).toBe(45_000);
+  });
+
+  it("does not offer try-lock the options it would discard", () => {
+    // try-lock never waits, so advertising --max-wait and --poll-interval
+    // only invites someone to set them and wonder why nothing changed.
+    expect(() =>
+      parseCommandLine(["try-lock", "id", "--max-wait", "30"]),
+    ).toThrow(/does not take --max-wait/);
+    expect(() =>
+      parseCommandLine(["try-lock", "id", "--poll-interval", "5"]),
+    ).toThrow(/does not take --poll-interval/);
+    expect(
+      parseCommandLine(["lock", "id", "-w", "30"]).options.pollTimeoutMs,
+    ).toBe(30_000);
+  });
+
+  it("accepts the documented --max-wait=-1", () => {
     expect(
       parseCommandLine(["lock", "id", "-e", "45", "--max-wait=-1"]).options
         .pollTimeoutMs,

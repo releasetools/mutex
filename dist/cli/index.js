@@ -7152,8 +7152,8 @@ class DatabaseMutex {
     async acquireLock(name, reason, owner = null) {
         return this.withSchemaRetry(`Acquiring lock '${name}'`, () => this.acquireLockInternal(name, reason, owner));
     }
-    async releaseLock(name, owner = null) {
-        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, owner));
+    async releaseLock(name, owner = null, fence = null) {
+        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, owner, fence));
     }
     /**
      * Extends a lock that `owner` currently holds.
@@ -7272,7 +7272,7 @@ class DatabaseMutex {
             this.disconnect(client);
         }
     }
-    async releaseLockInternal(name, owner) {
+    async releaseLockInternal(name, owner, fence) {
         let client;
         try {
             client = await this.connect();
@@ -7291,6 +7291,13 @@ class DatabaseMutex {
             if (!mayModify(record, owner)) {
                 await client.query("COMMIT");
                 return { unlocked: false, outcome: "owned-by-another", record };
+            }
+            // The caller knows which acquisition it is releasing, and this is not
+            // it: the lock lapsed and somebody took it over. Ownership cannot catch
+            // this when neither side named an owner, which is the default.
+            if (fence !== null && record.createdAt !== fence) {
+                await client.query("COMMIT");
+                return { unlocked: false, outcome: "superseded", record };
             }
             await client.query(pg_format_lib(`DELETE FROM %I WHERE id = $1;`, TABLE_NAME), [
                 name,
@@ -7597,10 +7604,62 @@ class DotsecenvError extends Error {
     }
 }
 //# sourceMappingURL=errors.js.map
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: external "node:util"
 const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
+;// CONCATENATED MODULE: ./lib/timing.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+/**
+ * How the lock durations relate to each other.
+ *
+ * Shared by the Action's inputs and the CLI's flags, which express the same
+ * three numbers and used to derive them separately - so a change to one could
+ * silently leave the other behind.
+ */
+const DEFAULT_EXPIRATION_SECONDS = 60;
+const DEFAULT_POLL_INTERVAL_SECONDS = 10;
+/** "Wait as long as the lease would have lasted." */
+const WAIT_FOR_THE_LEASE = -1;
+const DEFAULT_MAX_WAIT_SECONDS = WAIT_FOR_THE_LEASE;
+/** A whole number of seconds, or the fallback for anything else. */
+function seconds(value, fallback) {
+    return Number.isFinite(value) ? value : fallback;
+}
+/**
+ * How long to keep trying, in milliseconds.
+ *
+ * `maxWait` of -1 - the default - means "for as long as this lock would have
+ * lasted", which is the most useful thing to do when nobody says otherwise:
+ * waiting longer than the lease you are about to take is rarely what you want.
+ */
+function pollTimeoutMs(expiration, maxWait) {
+    const lease = Math.max(seconds(expiration, DEFAULT_EXPIRATION_SECONDS), 0);
+    let wait = seconds(maxWait, WAIT_FOR_THE_LEASE);
+    if (wait < WAIT_FOR_THE_LEASE) {
+        wait = WAIT_FOR_THE_LEASE;
+    }
+    return (wait === WAIT_FOR_THE_LEASE ? lease : wait) * 1000;
+}
+/** How long to wait between attempts, in milliseconds. */
+function pollIntervalMs(pollInterval) {
+    const interval = seconds(pollInterval, DEFAULT_POLL_INTERVAL_SECONDS);
+    return Math.max(interval, 0) * 1000;
+}
+//# sourceMappingURL=timing.js.map
 ;// CONCATENATED MODULE: ./lib/cli/exit-codes.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -7633,7 +7692,10 @@ const EXIT_CONFIGURATION = 3;
 const EXIT_UNAVAILABLE = 4;
 /** Refused: another owner holds the lock, and the caller did not name them. */
 const EXIT_REFUSED = 5;
-/** The wrapped program could not be started. */
+/** The wrapped program exists but could not be run - not executable, or a
+ *  directory. The shell convention. */
+const EXIT_NOT_EXECUTABLE = 126;
+/** The wrapped program was not found. Also the shell convention. */
 const EXIT_NO_PROGRAM = 127;
 /** Raised for anything the user can fix by changing the command line. */
 class UsageError extends Error {
@@ -7672,18 +7734,13 @@ class ConfigurationError extends Error {
 
 
 
-const LOCK_OPTIONS = [
-    "reason",
-    "expiration",
-    "max-wait",
-    "poll-interval",
-    "no-renew",
-    "owner",
-];
+/** Shared by both acquiring commands. */
+const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"];
+/** Only `lock` waits, so only `lock` takes the options that describe waiting. */
+const LOCK_OPTIONS = [...ACQUIRE_OPTIONS, "max-wait", "poll-interval"];
 const CONNECTION_OPTIONS = [
     "database-url",
     "env-var",
-    "secenv-dir",
     "no-secenv",
     "dotsecenv-bin",
     "dotsecenv-config",
@@ -7702,7 +7759,7 @@ const COMMANDS = {
         usage: "mutex try-lock <id> [options] [-- <program> [args...]]",
         identifier: "required",
         acceptsProgram: true,
-        options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+        options: [...ACQUIRE_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
     },
     unlock: {
         summary: "Release a lock",
@@ -7770,7 +7827,6 @@ const OPTION_CONFIG = {
     "dry-run": { type: "boolean" },
     "database-url": { type: "string" },
     "env-var": { type: "string" },
-    "secenv-dir": { type: "string" },
     "no-secenv": { type: "boolean" },
     "dotsecenv-bin": { type: "string" },
     "dotsecenv-config": { type: "string" },
@@ -7779,7 +7835,6 @@ const OPTION_CONFIG = {
     verbose: { type: "boolean" },
     help: { type: "boolean", short: "h" },
 };
-const DEFAULT_EXPIRATION_SECONDS = 60;
 /**
  * `renew` leases longer than `lock` does, because the two answer different
  * questions: a lock says how long the work is expected to take, a renewal says
@@ -7788,9 +7843,6 @@ const DEFAULT_EXPIRATION_SECONDS = 60;
  * running a while.
  */
 const DEFAULT_RENEW_EXPIRATION_SECONDS = 3600;
-const DEFAULT_POLL_INTERVAL_SECONDS = 10;
-/** -1 means "wait as long as the lock would have lasted", as in the Action. */
-const DEFAULT_MAX_WAIT_SECONDS = -1;
 function parseCommandLine(argv) {
     // Split on `--` before parsing, so the wrapped program's own flags are never
     // mistaken for mutex's.
@@ -7870,17 +7922,16 @@ function resolveOptions(command, values) {
     if (pollInterval < 0) {
         throw new UsageError("--poll-interval cannot be negative");
     }
-    let maxWait = readNumber(values["max-wait"], "max-wait", DEFAULT_MAX_WAIT_SECONDS);
-    if (maxWait < -1) {
-        maxWait = DEFAULT_MAX_WAIT_SECONDS;
+    const maxWait = readNumber(values["max-wait"], "max-wait", DEFAULT_MAX_WAIT_SECONDS);
+    if (maxWait < DEFAULT_MAX_WAIT_SECONDS) {
+        throw new UsageError(`--max-wait cannot be below ${DEFAULT_MAX_WAIT_SECONDS}, which already means "as long as the lease"`);
     }
-    // try-lock is exactly one attempt: no waiting, whatever --max-wait says.
-    const pollTimeoutMs = command === "try-lock" ? 0 : (maxWait === -1 ? expiration : maxWait) * 1000;
     return {
         reason: typeof values.reason === "string" ? values.reason : "",
         expiration,
-        pollTimeoutMs,
-        pollIntervalMs: pollInterval * 1000,
+        // try-lock is exactly one attempt: no waiting, whatever else was passed.
+        pollTimeoutMs: command === "try-lock" ? 0 : pollTimeoutMs(expiration, maxWait),
+        pollIntervalMs: pollIntervalMs(pollInterval),
         autoRenew: values["no-renew"] !== true,
         owner: readOwner(values.owner),
         dryRun: values["dry-run"] === true,
@@ -7890,9 +7941,6 @@ function resolveOptions(command, values) {
         envVar: typeof values["env-var"] === "string"
             ? values["env-var"]
             : "DATABASE_URL",
-        secenvDir: external_node_path_namespaceObject.resolve(typeof values["secenv-dir"] === "string"
-            ? values["secenv-dir"]
-            : process.cwd()),
         useSecenv: values["no-secenv"] !== true,
         dotsecenvBin: typeof values["dotsecenv-bin"] === "string"
             ? values["dotsecenv-bin"]
@@ -7939,13 +7987,24 @@ function rejectInapplicableOptions(command, spec, values) {
         throw new UsageError(`'${command}' does not take --${name}\n  ${spec.usage}`);
     }
 }
+/** A whole number of seconds, and nothing else pretending to be one. */
+const WHOLE_SECONDS = /^-?\d+$/;
 function readNumber(value, name, fallback) {
     if (typeof value !== "string") {
         return fallback;
     }
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
-        throw new UsageError(`--${name} must be a whole number of seconds`);
+    // `-e=45` is a habit worth tolerating: node's parseArgs keeps the '=' for
+    // short options, so the value arrives as "=45".
+    const text = value.startsWith("=") ? value.slice(1) : value;
+    // Number() alone is far too generous here: "" is 0, so `-e "$UNSET"` would
+    // silently mean zero; "0x3c" is 60; "1e21" is an integer that reaches
+    // Postgres as a syntax error. Only digits.
+    if (!WHOLE_SECONDS.test(text)) {
+        throw new UsageError(`--${name} must be a whole number of seconds, not '${value}'`);
+    }
+    const parsed = Number(text);
+    if (!Number.isSafeInteger(parsed)) {
+        throw new UsageError(`--${name} is out of range: '${value}'`);
     }
     return parsed;
 }
@@ -7996,10 +8055,12 @@ Lock options:
 Connection:
       --database-url <url>       PostgreSQL connection string
       --env-var <NAME>           Variable holding it (default: DATABASE_URL)
-      --secenv-dir <dir>         Where to start looking for .secenv (default: cwd)
-      --no-secenv                Do not read .secenv files
+      --no-secenv                Do not read ./.secenv
       --dotsecenv-bin <path>     The dotsecenv binary (default: $DOTSECENV_BIN or dotsecenv)
       --dotsecenv-config <path>  Passed to dotsecenv as -c
+
+prune:
+      --dry-run                  List what would be deleted, and delete nothing
 
 General:
       --json                     Machine-readable output
@@ -8008,7 +8069,7 @@ General:
   -h, --help                     Show help
 
 The connection string is taken from --database-url, then $DATABASE_URL, then
-the .secenv chain above --secenv-dir, resolved through the dotsecenv CLI.
+./.secenv in the working directory, resolved through the dotsecenv CLI.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.
@@ -8120,8 +8181,10 @@ async function tryUnlock(request, mutex, log, events = {}) {
     log.info(`Attempting to unlock '${request.identifier}'.`);
     let result = { unlocked: false, outcome: "contended" };
     for (;;) {
-        result = await mutex.releaseLock(request.identifier, request.owner ?? null);
-        if (result.unlocked || result.outcome === "owned-by-another") {
+        result = await mutex.releaseLock(request.identifier, request.owner ?? null, request.fence ?? null);
+        if (result.unlocked ||
+            result.outcome === "owned-by-another" ||
+            result.outcome === "superseded") {
             break;
         }
         if (Date.now() + intervalMs >= deadline) {
@@ -8134,8 +8197,11 @@ async function tryUnlock(request, mutex, log, events = {}) {
         log.info(`Lock '${request.identifier}' released.`);
         await events.onUnlocked?.(result);
     }
-    else if (result.outcome === "owned-by-another") {
-        const message = `Refusing to unlock '${request.identifier}': it is held by another owner.`;
+    else if (result.outcome === "owned-by-another" ||
+        result.outcome === "superseded") {
+        const message = result.outcome === "superseded"
+            ? `Refusing to unlock '${request.identifier}': it has since been taken by somebody else.`
+            : `Refusing to unlock '${request.identifier}': it is held by another owner.`;
         log.warning(message);
         await (events.onRefused
             ? events.onRefused(result)
@@ -8318,6 +8384,14 @@ const CLEANUP_INTERVAL_MS = 250;
 /** Interrupts during the release before mutex stops waiting and gives up. */
 const IMPATIENT_SIGNALS = 3;
 /**
+ * Floor for the background renewal.
+ *
+ * Low on purpose. At the previous 1000 ms, a one-second lease renewed at the
+ * exact moment it expired - a coin flip on whether the lock survived - which
+ * quietly defeated renewal for the shortest leases instead of protecting them.
+ */
+const MIN_RENEWAL_INTERVAL_MS = 250;
+/**
  * `mutex lock` and `mutex try-lock`, which differ only in how long they wait -
  * `parseCommandLine` has already zeroed the timeout for `try-lock`.
  *
@@ -8485,9 +8559,17 @@ async function runProgram(ctx, identifier, program, lock, command) {
         return await spawnProgram(program, signals);
     }
     catch (error) {
-        if (error.code === "ENOENT") {
+        // Shell convention, which scripts branch on: 127 is "no such command",
+        // 126 is "there it is, but I cannot run it". Collapsing the second into a
+        // generic failure makes it indistinguishable from mutex itself breaking.
+        const code = error.code;
+        if (code === "ENOENT" || code === "ENOTDIR") {
             ctx.log.error(`${program[0]}: command not found`);
             return EXIT_NO_PROGRAM;
+        }
+        if (code === "EACCES" || code === "EPERM" || code === "EISDIR") {
+            ctx.log.error(`${program[0]}: not executable`);
+            return EXIT_NOT_EXECUTABLE;
         }
         throw error;
     }
@@ -8499,7 +8581,7 @@ async function runProgram(ctx, identifier, program, lock, command) {
         try {
             // The lock must go back even when the program crashed, so a failure here
             // is reported rather than thrown - it must not mask the program's status.
-            await unlockQuietly(ctx, identifier);
+            await unlockQuietly(ctx, identifier, lock.record?.createdAt ?? null);
         }
         finally {
             signals.dispose();
@@ -8515,7 +8597,10 @@ async function runProgram(ctx, identifier, program, lock, command) {
  */
 function startRenewal(ctx, identifier) {
     // A third of the lease, so a renewal can fail twice before the lock lapses.
-    const intervalMs = Math.max(Math.floor((ctx.options.expiration * 1000) / 3), 1000);
+    // The floor is only there to stop a pathological zero becoming a busy loop;
+    // it must stay well under the shortest usable lease, or it would schedule
+    // the renewal at or after the expiry it exists to prevent.
+    const intervalMs = Math.max(Math.floor((ctx.options.expiration * 1000) / 3), MIN_RENEWAL_INTERVAL_MS);
     let inFlight = false;
     const timer = setInterval(() => {
         if (inFlight) {
@@ -8547,7 +8632,7 @@ function startRenewal(ctx, identifier) {
  * warning: `--quiet` lowers the threshold to errors, and "the lock is still
  * held" is precisely what someone running quietly still needs to be told.
  */
-async function unlockQuietly(ctx, identifier) {
+async function unlockQuietly(ctx, identifier, fence) {
     const stranded = (detail) => {
         const owner = ctx.options.owner ? ` --owner '${ctx.options.owner}'` : "";
         ctx.log.error(`${detail}\n` +
@@ -8559,9 +8644,16 @@ async function unlockQuietly(ctx, identifier) {
             ...requestFor(ctx, identifier),
             pollTimeoutMs: CLEANUP_TIMEOUT_MS,
             pollIntervalMs: CLEANUP_INTERVAL_MS,
+            fence,
         }, ctx.mutex, ctx.log);
         if (result.unlocked) {
             ctx.log.info(`Unlocked '${identifier}'.`);
+            return;
+        }
+        if (result.outcome === "superseded") {
+            // Not stranded: the lease lapsed, somebody else holds it now, and
+            // deleting theirs would be the worse outcome by far.
+            ctx.log.error(`'${identifier}' expired while the program ran and has been taken by somebody else; left alone.`);
             return;
         }
         stranded(`Could not unlock '${identifier}' (${result.outcome}).`);
@@ -8672,6 +8764,8 @@ function renderTable(records) {
 //# sourceMappingURL=commands.js.map
 ;// CONCATENATED MODULE: external "node:fs"
 const external_node_fs_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
+;// CONCATENATED MODULE: external "node:path"
+const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 ;// CONCATENATED MODULE: ./lib/dotsecenv/secenv.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -8832,6 +8926,16 @@ function isFile(candidate) {
  * exit codes into errors a caller can act on.
  */
 const DEFAULT_TIMEOUT_MS = 60_000;
+/**
+ * How long a timed-out child gets to exit on SIGTERM before SIGKILL.
+ *
+ * SIGTERM is a request, and the likeliest reason to be here is GPG sitting on
+ * a passphrase prompt that never comes - which can decline it. Since the
+ * promise only settles on `close`, a child that ignores SIGTERM hangs mutex
+ * for good, with stdout still buffering. SIGKILL cannot be declined, so the
+ * timeout keeps its promise.
+ */
+const KILL_GRACE_MS = 5_000;
 function dotsecenvBinary(explicit) {
     return explicit || process.env.DOTSECENV_BIN || "dotsecenv";
 }
@@ -8918,10 +9022,44 @@ function run(args, options) {
         });
         let stdout = "";
         let stderr = "";
-        let timedOut = false;
+        let settled = false;
+        let killTimer;
+        const stopTimers = () => {
+            clearTimeout(timer);
+            if (killTimer) {
+                clearTimeout(killTimer);
+            }
+        };
+        /** Settles once, and lets the process exit afterwards. */
+        const settle = (finish) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            stopTimers();
+            finish();
+        };
+        const abandon = () => {
+            // Nothing else may keep mutex alive on this child's account.
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            child.unref();
+            settle(() => reject(new DotsecenvError(`'${binary}' timed out after ${timeoutMs / 1000}s`, {
+                kind: "timeout",
+                stderr,
+                hint: "GPG may be waiting for a passphrase that cannot be entered here.",
+            })));
+        };
         const timer = setTimeout(() => {
-            timedOut = true;
             child.kill("SIGTERM");
+            killTimer = setTimeout(() => {
+                child.kill("SIGKILL");
+                // Settling here rather than waiting for `close`: that event needs
+                // every holder of the pipes to let go, and a grandchild outliving the
+                // process we killed would keep it from ever firing.
+                abandon();
+            }, KILL_GRACE_MS);
+            killTimer.unref();
         }, timeoutMs);
         timer.unref();
         child.stdout.setEncoding("utf8");
@@ -8933,31 +9071,23 @@ function run(args, options) {
             stderr += chunk;
         });
         child.on("error", (error) => {
-            clearTimeout(timer);
-            if (error.code === "ENOENT") {
-                reject(new DotsecenvError(`the '${binary}' CLI was not found`, {
-                    kind: "not-installed",
+            settle(() => {
+                if (error.code === "ENOENT") {
+                    reject(new DotsecenvError(`the '${binary}' CLI was not found`, {
+                        kind: "not-installed",
+                        cause: error,
+                        hint: "Install it from https://dotsecenv.com, or point DOTSECENV_BIN at the binary.",
+                    }));
+                    return;
+                }
+                reject(new DotsecenvError(`could not run '${binary}'`, {
+                    kind: "general",
                     cause: error,
-                    hint: "Install it from https://dotsecenv.com, or point DOTSECENV_BIN at the binary.",
                 }));
-                return;
-            }
-            reject(new DotsecenvError(`could not run '${binary}'`, {
-                kind: "general",
-                cause: error,
-            }));
+            });
         });
         child.on("close", (code, signal) => {
-            clearTimeout(timer);
-            if (timedOut) {
-                reject(new DotsecenvError(`'${binary}' timed out after ${timeoutMs / 1000}s`, {
-                    kind: "timeout",
-                    stderr,
-                    hint: "GPG may be waiting for a passphrase that cannot be entered here.",
-                }));
-                return;
-            }
-            resolve({ stdout, stderr, code: code ?? (signal ? 1 : 0) });
+            settle(() => resolve({ stdout, stderr, code: code ?? (signal ? 1 : 0) }));
         });
     });
 }
@@ -9371,15 +9501,14 @@ async function resolveConnectionString(options, log) {
     if (!options.useSecenv) {
         throw new ConfigurationError(`no connection string: ${options.envVar} is unset and --no-secenv was given`, `Pass --database-url, or export ${options.envVar}.`);
     }
-    const file = findSecenvFile(options.secenvDir);
+    const file = findSecenvFile();
     if (!file) {
-        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and ${options.secenvDir} has no .secenv`, "Pass --database-url, or point --secenv-dir at the directory whose .secenv defines it.");
+        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and there is no .secenv here`, `Pass --database-url, export ${options.envVar}, or run this from the directory whose .secenv defines it.`);
     }
     log.debug(`Reading ${file}`);
     let resolved;
     try {
         resolved = await resolveEnvValue(options.envVar, {
-            cwd: options.secenvDir,
             binary: options.dotsecenvBin ?? undefined,
             config: options.dotsecenvConfig ?? undefined,
             log,

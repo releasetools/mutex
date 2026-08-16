@@ -17,7 +17,7 @@ export declare class DatabaseMutex implements MutexInterface {
     private schemaAttempted;
     constructor(config: MutexConfig, log?: Logger);
     acquireLock(name: string, reason: string, owner?: string | null): Promise<LockResult>;
-    releaseLock(name: string, owner?: string | null): Promise<UnlockResult>;
+    releaseLock(name: string, owner?: string | null, fence?: string | null): Promise<UnlockResult>;
     /**
      * Extends a lock that `owner` currently holds.
      *

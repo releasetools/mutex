@@ -19,13 +19,12 @@ import * as core from "@actions/core";
 import {
   GitHubClient,
   setFailed,
-  setLockReleased,
   setSkipped,
   shouldRunAction,
 } from "./github.js";
+import { releaseAndAnnounce } from "./action-steps.js";
 import { MutexSettings } from "./configuration.js";
 import { DatabaseMutex } from "./database.js";
-import { tryUnlock } from "./mutex.js";
 import { Notifications } from "./notifications.js";
 import { ActionsLogger } from "./actions-logger.js";
 import { describeError } from "./helpers.js";
@@ -62,19 +61,7 @@ export async function post(): Promise<void> {
     mutex = new DatabaseMutex(settings, log);
     const notifications = new Notifications(settings, gh);
 
-    await tryUnlock(settings, mutex, log, {
-      onUnlocked: async () => {
-        setLockReleased();
-        await notifications.send(
-          `🔓 Lock \`${settings.identifier}\` released.`,
-        );
-      },
-      onRefused: () =>
-        setFailed(
-          `🔒 Lock '${settings.identifier}' is held by another owner and was not released.`,
-        ),
-      onTimeout: (message) => setFailed(message),
-    });
+    await releaseAndAnnounce(settings, mutex, log, notifications);
   } catch (error) {
     setFailed(describeError(error));
   } finally {

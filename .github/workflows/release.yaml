@@ -3,7 +3,7 @@ name: Test release
 on:
   push:
     tags:
-      - "v1.*.*"
+      - "v*.*.*"
 
 # Deny by default; each job grants only what it needs.
 permissions: {}
@@ -27,7 +27,12 @@ jobs:
   # 'uses:' is resolved during "Set up job", before the first step runs, so a
   # sleep step inside e2e-test would be too late — the action is already
   # downloaded. The wait has to be its own job that e2e-test depends on.
+  # `uses:` cannot take an expression, so the end-to-end job can only name one
+  # major tag - v1. It is therefore skipped for a v2+ release, which needs its
+  # own job rather than a silently wrong one. build-and-test still runs for
+  # every version.
   await-v1:
+    if: startsWith(github.ref_name, 'v1.')
     runs-on: ubuntu-latest
     needs: build-and-test
     permissions:
@@ -90,6 +95,7 @@ jobs:
           exit 1
 
   e2e-test:
+    if: startsWith(github.ref_name, 'v1.')
     runs-on: ubuntu-latest
     needs: [build-and-test, await-v1]
     permissions:

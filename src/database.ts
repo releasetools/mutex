@@ -87,9 +87,10 @@ export class DatabaseMutex implements MutexInterface {
   async releaseLock(
     name: string,
     owner: string | null = null,
+    fence: string | null = null,
   ): Promise<UnlockResult> {
     return this.withSchemaRetry(`Releasing lock '${name}'`, () =>
-      this.releaseLockInternal(name, owner),
+      this.releaseLockInternal(name, owner, fence),
     );
   }
 
@@ -255,6 +256,7 @@ export class DatabaseMutex implements MutexInterface {
   private async releaseLockInternal(
     name: string,
     owner: string | null,
+    fence: string | null,
   ): Promise<UnlockResult> {
     let client: PoolClient | undefined;
     try {
@@ -283,6 +285,14 @@ export class DatabaseMutex implements MutexInterface {
       if (!mayModify(record, owner)) {
         await client.query("COMMIT");
         return { unlocked: false, outcome: "owned-by-another", record };
+      }
+
+      // The caller knows which acquisition it is releasing, and this is not
+      // it: the lock lapsed and somebody took it over. Ownership cannot catch
+      // this when neither side named an owner, which is the default.
+      if (fence !== null && record.createdAt !== fence) {
+        await client.query("COMMIT");
+        return { unlocked: false, outcome: "superseded", record };
       }
 
       await client.query(format(`DELETE FROM %I WHERE id = $1;`, TABLE_NAME), [

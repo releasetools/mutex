@@ -1,6 +1,6 @@
 # mutex
 
-[![CodeQL](https://github.com/releasetools/mutex/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/releasetools/mutex/security/code-scanning)
+[![CodeQL](https://github.com/releasetools/mutex/actions/workflows/codeql.yaml/badge.svg)](https://github.com/releasetools/mutex/actions/workflows/codeql.yaml)
 
 An advisory lock service for CI/CD pipelines. It prevents race conditions by ensuring mutual exclusion - only one job can access a shared resource concurrently.
 
@@ -238,8 +238,7 @@ Unlocked 'deploy'.
 
 That is a confirmation, not a permission check - anyone can read the owner from `mutex status`. The point is that breaking a lock has to be a deliberate statement of whose lock it is, rather than a flag appended to a command that just failed.
 
-> [!TIP]
-> Pass `--owner` for anything that matters. On an unowned lock, `mutex lock ... -- <program>` will release whatever holds the id when its program exits, even if that is somebody else's lock by then.
+The wrapper is careful about which lock it gives back: it remembers the `created_at` of the acquisition it made, and declines to release the id if a later one has replaced it. So a lock that lapses mid-run and is taken by somebody else stays theirs, ownership or no ownership.
 
 ### Where the connection string comes from
 
@@ -268,9 +267,9 @@ Acquired lock 'deploy'
 
 Nothing is stored in shell history, and no plaintext connection string is written anywhere.
 
-Only the named directory's `.secenv` is read - there is no upward search. An upward search has to stop somewhere, and outside a repository there is no sensible somewhere: from `/tmp/build-1234` it would reach `/tmp`, where anyone could plant the file that decides which database mutex locks against. Run mutex from the directory holding the `.secenv`, or point `--secenv-dir` at it.
+Only the working directory's `.secenv` is read - there is no search, upward or otherwise. A search has to stop somewhere, and outside a repository there is no sensible somewhere: from `/tmp/build-1234` it would reach `/tmp`, where anyone could plant the file that decides which database mutex locks against. Run mutex from the directory holding the `.secenv`.
 
-Use `--secenv-dir <dir>` to read a `.secenv` somewhere other than the current directory, and `--no-secenv` to switch this off entirely.
+Use `--no-secenv` to switch this off entirely.
 
 ### Exit codes
 
@@ -282,7 +281,8 @@ Use `--secenv-dir <dir>` to read a `.secenv` somewhere other than the current di
 | `3`   | Configuration error - no usable connection string         |
 | `4`   | Not acquired, or not held                                 |
 | `5`   | Refused - another owner holds the lock, and was not named |
-| `127` | The wrapped program could not be started                  |
+| `126` | The wrapped program exists but could not be run           |
+| `127` | The wrapped program was not found                         |
 
 While wrapping a program, its exit status is returned instead.
 

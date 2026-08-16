@@ -58,7 +58,12 @@ export type LockResult = {
 };
 
 export type UnlockOutcome =
-  "unlocked" | "not-found" | "owned-by-another" | "contended";
+  | "unlocked"
+  | "not-found"
+  | "owned-by-another"
+  /** The id is held, but by a later acquisition than the caller's. */
+  | "superseded"
+  | "contended";
 
 export type UnlockResult = {
   unlocked: boolean;
@@ -76,6 +81,15 @@ export interface LockRequest {
   pollTimeoutMs: number;
   pollIntervalMs: number;
   owner?: string | null;
+  /**
+   * `created_at` of the acquisition being released, if the caller has one.
+   *
+   * A lock that lapsed and was taken over is a different holding under the
+   * same name; `created_at` is reset on takeover and never otherwise, so it
+   * distinguishes them. Supplying it makes a release refuse to delete
+   * somebody else's lock even when ownership cannot tell them apart.
+   */
+  fence?: string | null;
 }
 
 /** Connection details needed to talk to the lock store. */
@@ -90,7 +104,11 @@ export interface MutexInterface {
     reason: string,
     owner?: string | null,
   ): Promise<LockResult>;
-  releaseLock(name: string, owner?: string | null): Promise<UnlockResult>;
+  releaseLock(
+    name: string,
+    owner?: string | null,
+    fence?: string | null,
+  ): Promise<UnlockResult>;
 }
 
 /**
@@ -207,9 +225,17 @@ export async function tryUnlock(
   let result: UnlockResult = { unlocked: false, outcome: "contended" };
 
   for (;;) {
-    result = await mutex.releaseLock(request.identifier, request.owner ?? null);
+    result = await mutex.releaseLock(
+      request.identifier,
+      request.owner ?? null,
+      request.fence ?? null,
+    );
 
-    if (result.unlocked || result.outcome === "owned-by-another") {
+    if (
+      result.unlocked ||
+      result.outcome === "owned-by-another" ||
+      result.outcome === "superseded"
+    ) {
       break;
     }
 
@@ -226,8 +252,14 @@ export async function tryUnlock(
   if (result.unlocked) {
     log.info(`Lock '${request.identifier}' released.`);
     await events.onUnlocked?.(result);
-  } else if (result.outcome === "owned-by-another") {
-    const message = `Refusing to unlock '${request.identifier}': it is held by another owner.`;
+  } else if (
+    result.outcome === "owned-by-another" ||
+    result.outcome === "superseded"
+  ) {
+    const message =
+      result.outcome === "superseded"
+        ? `Refusing to unlock '${request.identifier}': it has since been taken by somebody else.`
+        : `Refusing to unlock '${request.identifier}': it is held by another owner.`;
     log.warning(message);
     await (events.onRefused
       ? events.onRefused(result)

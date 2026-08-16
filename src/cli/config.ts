@@ -61,11 +61,11 @@ export async function resolveConnectionString(
     );
   }
 
-  const file = findSecenvFile(options.secenvDir);
+  const file = findSecenvFile();
   if (!file) {
     throw new ConfigurationError(
-      `no connection string: ${options.envVar} is unset and ${options.secenvDir} has no .secenv`,
-      "Pass --database-url, or point --secenv-dir at the directory whose .secenv defines it.",
+      `no connection string: ${options.envVar} is unset and there is no .secenv here`,
+      `Pass --database-url, export ${options.envVar}, or run this from the directory whose .secenv defines it.`,
     );
   }
 
@@ -74,7 +74,6 @@ export async function resolveConnectionString(
   let resolved;
   try {
     resolved = await resolveEnvValue(options.envVar, {
-      cwd: options.secenvDir,
       binary: options.dotsecenvBin ?? undefined,
       config: options.dotsecenvConfig ?? undefined,
       log,

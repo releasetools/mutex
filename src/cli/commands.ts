@@ -31,6 +31,7 @@ import { ResolvedOptions } from "./args.js";
 import {
   EXIT_ERROR,
   EXIT_NO_PROGRAM,
+  EXIT_NOT_EXECUTABLE,
   EXIT_OK,
   EXIT_REFUSED,
   EXIT_UNAVAILABLE,
@@ -65,6 +66,15 @@ const CLEANUP_INTERVAL_MS = 250;
 
 /** Interrupts during the release before mutex stops waiting and gives up. */
 const IMPATIENT_SIGNALS = 3;
+
+/**
+ * Floor for the background renewal.
+ *
+ * Low on purpose. At the previous 1000 ms, a one-second lease renewed at the
+ * exact moment it expired - a coin flip on whether the lock survived - which
+ * quietly defeated renewal for the shortest leases instead of protecting them.
+ */
+const MIN_RENEWAL_INTERVAL_MS = 250;
 
 /**
  * `mutex lock` and `mutex try-lock`, which differ only in how long they wait -
@@ -336,9 +346,17 @@ async function runProgram(
   try {
     return await spawnProgram(program, signals);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    // Shell convention, which scripts branch on: 127 is "no such command",
+    // 126 is "there it is, but I cannot run it". Collapsing the second into a
+    // generic failure makes it indistinguishable from mutex itself breaking.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
       ctx.log.error(`${program[0]}: command not found`);
       return EXIT_NO_PROGRAM;
+    }
+    if (code === "EACCES" || code === "EPERM" || code === "EISDIR") {
+      ctx.log.error(`${program[0]}: not executable`);
+      return EXIT_NOT_EXECUTABLE;
     }
     throw error;
   } finally {
@@ -349,7 +367,7 @@ async function runProgram(
     try {
       // The lock must go back even when the program crashed, so a failure here
       // is reported rather than thrown - it must not mask the program's status.
-      await unlockQuietly(ctx, identifier);
+      await unlockQuietly(ctx, identifier, lock.record?.createdAt ?? null);
     } finally {
       signals.dispose();
     }
@@ -368,9 +386,12 @@ function startRenewal(
   identifier: string,
 ): { stop(): void } {
   // A third of the lease, so a renewal can fail twice before the lock lapses.
+  // The floor is only there to stop a pathological zero becoming a busy loop;
+  // it must stay well under the shortest usable lease, or it would schedule
+  // the renewal at or after the expiry it exists to prevent.
   const intervalMs = Math.max(
     Math.floor((ctx.options.expiration * 1000) / 3),
-    1000,
+    MIN_RENEWAL_INTERVAL_MS,
   );
 
   let inFlight = false;
@@ -413,6 +434,7 @@ function startRenewal(
 async function unlockQuietly(
   ctx: CommandContext,
   identifier: string,
+  fence: string | null,
 ): Promise<void> {
   const stranded = (detail: string) => {
     const owner = ctx.options.owner ? ` --owner '${ctx.options.owner}'` : "";
@@ -429,6 +451,7 @@ async function unlockQuietly(
         ...requestFor(ctx, identifier),
         pollTimeoutMs: CLEANUP_TIMEOUT_MS,
         pollIntervalMs: CLEANUP_INTERVAL_MS,
+        fence,
       },
       ctx.mutex,
       ctx.log,
@@ -436,6 +459,15 @@ async function unlockQuietly(
 
     if (result.unlocked) {
       ctx.log.info(`Unlocked '${identifier}'.`);
+      return;
+    }
+
+    if (result.outcome === "superseded") {
+      // Not stranded: the lease lapsed, somebody else holds it now, and
+      // deleting theirs would be the worse outcome by far.
+      ctx.log.error(
+        `'${identifier}' expired while the program ran and has been taken by somebody else; left alone.`,
+      );
       return;
     }
 

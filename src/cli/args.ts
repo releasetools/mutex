@@ -15,9 +15,15 @@
  *
  */
 
-import path from "node:path";
 import { parseArgs } from "node:util";
 import { LogLevel } from "../logger.js";
+import {
+  DEFAULT_EXPIRATION_SECONDS,
+  DEFAULT_MAX_WAIT_SECONDS,
+  DEFAULT_POLL_INTERVAL_SECONDS,
+  pollIntervalMs,
+  pollTimeoutMs,
+} from "../timing.js";
 import { UsageError } from "./exit-codes.js";
 
 /**
@@ -40,19 +46,15 @@ export type CommandName =
 /** Whether a command takes a lock id. */
 type IdentifierMode = "required" | "none";
 
-const LOCK_OPTIONS = [
-  "reason",
-  "expiration",
-  "max-wait",
-  "poll-interval",
-  "no-renew",
-  "owner",
-] as const;
+/** Shared by both acquiring commands. */
+const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"] as const;
+
+/** Only `lock` waits, so only `lock` takes the options that describe waiting. */
+const LOCK_OPTIONS = [...ACQUIRE_OPTIONS, "max-wait", "poll-interval"] as const;
 
 const CONNECTION_OPTIONS = [
   "database-url",
   "env-var",
-  "secenv-dir",
   "no-secenv",
   "dotsecenv-bin",
   "dotsecenv-config",
@@ -81,7 +83,7 @@ export const COMMANDS: Record<CommandName, CommandSpec> = {
     usage: "mutex try-lock <id> [options] [-- <program> [args...]]",
     identifier: "required",
     acceptsProgram: true,
-    options: [...LOCK_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
+    options: [...ACQUIRE_OPTIONS, ...CONNECTION_OPTIONS, ...GENERAL_OPTIONS],
   },
   unlock: {
     summary: "Release a lock",
@@ -150,7 +152,6 @@ const OPTION_CONFIG = {
   "dry-run": { type: "boolean" },
   "database-url": { type: "string" },
   "env-var": { type: "string" },
-  "secenv-dir": { type: "string" },
   "no-secenv": { type: "boolean" },
   "dotsecenv-bin": { type: "string" },
   "dotsecenv-config": { type: "string" },
@@ -160,7 +161,6 @@ const OPTION_CONFIG = {
   help: { type: "boolean", short: "h" },
 } as const;
 
-export const DEFAULT_EXPIRATION_SECONDS = 60;
 /**
  * `renew` leases longer than `lock` does, because the two answer different
  * questions: a lock says how long the work is expected to take, a renewal says
@@ -169,9 +169,6 @@ export const DEFAULT_EXPIRATION_SECONDS = 60;
  * running a while.
  */
 export const DEFAULT_RENEW_EXPIRATION_SECONDS = 3600;
-export const DEFAULT_POLL_INTERVAL_SECONDS = 10;
-/** -1 means "wait as long as the lock would have lasted", as in the Action. */
-export const DEFAULT_MAX_WAIT_SECONDS = -1;
 
 export interface ResolvedOptions {
   reason: string;
@@ -183,7 +180,6 @@ export interface ResolvedOptions {
   dryRun: boolean;
   databaseUrl: string | null;
   envVar: string;
-  secenvDir: string;
   useSecenv: boolean;
   dotsecenvBin: string | null;
   dotsecenvConfig: string | null;
@@ -305,24 +301,24 @@ function resolveOptions(
     throw new UsageError("--poll-interval cannot be negative");
   }
 
-  let maxWait = readNumber(
+  const maxWait = readNumber(
     values["max-wait"],
     "max-wait",
     DEFAULT_MAX_WAIT_SECONDS,
   );
-  if (maxWait < -1) {
-    maxWait = DEFAULT_MAX_WAIT_SECONDS;
+  if (maxWait < DEFAULT_MAX_WAIT_SECONDS) {
+    throw new UsageError(
+      `--max-wait cannot be below ${DEFAULT_MAX_WAIT_SECONDS}, which already means "as long as the lease"`,
+    );
   }
-
-  // try-lock is exactly one attempt: no waiting, whatever --max-wait says.
-  const pollTimeoutMs =
-    command === "try-lock" ? 0 : (maxWait === -1 ? expiration : maxWait) * 1000;
 
   return {
     reason: typeof values.reason === "string" ? values.reason : "",
     expiration,
-    pollTimeoutMs,
-    pollIntervalMs: pollInterval * 1000,
+    // try-lock is exactly one attempt: no waiting, whatever else was passed.
+    pollTimeoutMs:
+      command === "try-lock" ? 0 : pollTimeoutMs(expiration, maxWait),
+    pollIntervalMs: pollIntervalMs(pollInterval),
     autoRenew: values["no-renew"] !== true,
     owner: readOwner(values.owner),
     dryRun: values["dry-run"] === true,
@@ -334,11 +330,6 @@ function resolveOptions(
       typeof values["env-var"] === "string"
         ? values["env-var"]
         : "DATABASE_URL",
-    secenvDir: path.resolve(
-      typeof values["secenv-dir"] === "string"
-        ? values["secenv-dir"]
-        : process.cwd(),
-    ),
     useSecenv: values["no-secenv"] !== true,
     dotsecenvBin:
       typeof values["dotsecenv-bin"] === "string"
@@ -398,6 +389,9 @@ function rejectInapplicableOptions(
   }
 }
 
+/** A whole number of seconds, and nothing else pretending to be one. */
+const WHOLE_SECONDS = /^-?\d+$/;
+
 function readNumber(
   value: string | boolean | undefined,
   name: string,
@@ -407,9 +401,22 @@ function readNumber(
     return fallback;
   }
 
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
-    throw new UsageError(`--${name} must be a whole number of seconds`);
+  // `-e=45` is a habit worth tolerating: node's parseArgs keeps the '=' for
+  // short options, so the value arrives as "=45".
+  const text = value.startsWith("=") ? value.slice(1) : value;
+
+  // Number() alone is far too generous here: "" is 0, so `-e "$UNSET"` would
+  // silently mean zero; "0x3c" is 60; "1e21" is an integer that reaches
+  // Postgres as a syntax error. Only digits.
+  if (!WHOLE_SECONDS.test(text)) {
+    throw new UsageError(
+      `--${name} must be a whole number of seconds, not '${value}'`,
+    );
+  }
+
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new UsageError(`--${name} is out of range: '${value}'`);
   }
   return parsed;
 }
@@ -464,10 +471,12 @@ Lock options:
 Connection:
       --database-url <url>       PostgreSQL connection string
       --env-var <NAME>           Variable holding it (default: DATABASE_URL)
-      --secenv-dir <dir>         Where to start looking for .secenv (default: cwd)
-      --no-secenv                Do not read .secenv files
+      --no-secenv                Do not read ./.secenv
       --dotsecenv-bin <path>     The dotsecenv binary (default: $DOTSECENV_BIN or dotsecenv)
       --dotsecenv-config <path>  Passed to dotsecenv as -c
+
+prune:
+      --dry-run                  List what would be deleted, and delete nothing
 
 General:
       --json                     Machine-readable output
@@ -476,7 +485,7 @@ General:
   -h, --help                     Show help
 
 The connection string is taken from --database-url, then $DATABASE_URL, then
-the .secenv chain above --secenv-dir, resolved through the dotsecenv CLI.
+./.secenv in the working directory, resolved through the dotsecenv CLI.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.

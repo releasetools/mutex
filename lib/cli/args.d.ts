@@ -16,7 +16,6 @@ interface CommandSpec {
     options: readonly string[];
 }
 export declare const COMMANDS: Record<CommandName, CommandSpec>;
-export declare const DEFAULT_EXPIRATION_SECONDS = 60;
 /**
  * `renew` leases longer than `lock` does, because the two answer different
  * questions: a lock says how long the work is expected to take, a renewal says
@@ -25,9 +24,6 @@ export declare const DEFAULT_EXPIRATION_SECONDS = 60;
  * running a while.
  */
 export declare const DEFAULT_RENEW_EXPIRATION_SECONDS = 3600;
-export declare const DEFAULT_POLL_INTERVAL_SECONDS = 10;
-/** -1 means "wait as long as the lock would have lasted", as in the Action. */
-export declare const DEFAULT_MAX_WAIT_SECONDS = -1;
 export interface ResolvedOptions {
     reason: string;
     expiration: number;
@@ -38,7 +34,6 @@ export interface ResolvedOptions {
     dryRun: boolean;
     databaseUrl: string | null;
     envVar: string;
-    secenvDir: string;
     useSecenv: boolean;
     dotsecenvBin: string | null;
     dotsecenvConfig: string | null;

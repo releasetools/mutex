@@ -20,14 +20,12 @@ import { MutexSettings } from "./configuration.js";
 import {
   GitHubClient,
   setFailed,
-  setLockAcquired,
-  setLockReleased,
   setSkipped,
   setVersion,
   shouldRunAction,
 } from "./github.js";
+import { acquireAndAnnounce, releaseAndAnnounce } from "./action-steps.js";
 import { DatabaseMutex } from "./database.js";
-import { tryLock, tryUnlock } from "./mutex.js";
 import { Notifications } from "./notifications.js";
 import { ActionsLogger } from "./actions-logger.js";
 import { describeError } from "./helpers.js";
@@ -53,17 +51,7 @@ export async function run(): Promise<void> {
     const notifications = new Notifications(settings, gh);
 
     if (settings.command === "lock") {
-      await tryLock(settings, mutex, log, {
-        onLocked: async (result) => {
-          setLockAcquired();
-          await notifications.send(
-            `🔒 Lock \`${settings.identifier}\` acquired.\n` +
-              `Reason: \`${settings.reason || "N/A"}\`\n` +
-              `This lock will expire at \`${result.expires}\`.`,
-          );
-        },
-        onTimeout: (message) => setFailed(message),
-      });
+      await acquireAndAnnounce(settings, mutex, log, notifications);
     } else if (
       settings.command === "unlock" ||
       settings.command === "release"
@@ -76,19 +64,7 @@ export async function run(): Promise<void> {
         );
       }
 
-      await tryUnlock(settings, mutex, log, {
-        onUnlocked: async () => {
-          setLockReleased();
-          await notifications.send(
-            `🔓 Lock \`${settings.identifier}\` released.`,
-          );
-        },
-        onRefused: () =>
-          setFailed(
-            `🔒 Lock '${settings.identifier}' is held by another owner and was not released.`,
-          ),
-        onTimeout: (message) => setFailed(message),
-      });
+      await releaseAndAnnounce(settings, mutex, log, notifications);
     } else {
       throw new Error(`Unknown action: ${settings.command}`);
     }

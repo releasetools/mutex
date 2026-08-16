@@ -15,7 +15,9 @@ export type LockResult = {
     /** The row we wrote, or - when contended - the row standing in the way. */
     record?: LockRecord;
 };
-export type UnlockOutcome = "unlocked" | "not-found" | "owned-by-another" | "contended";
+export type UnlockOutcome = "unlocked" | "not-found" | "owned-by-another"
+/** The id is held, but by a later acquisition than the caller's. */
+ | "superseded" | "contended";
 export type UnlockResult = {
     unlocked: boolean;
     outcome: UnlockOutcome;
@@ -31,6 +33,15 @@ export interface LockRequest {
     pollTimeoutMs: number;
     pollIntervalMs: number;
     owner?: string | null;
+    /**
+     * `created_at` of the acquisition being released, if the caller has one.
+     *
+     * A lock that lapsed and was taken over is a different holding under the
+     * same name; `created_at` is reset on takeover and never otherwise, so it
+     * distinguishes them. Supplying it makes a release refuse to delete
+     * somebody else's lock even when ownership cannot tell them apart.
+     */
+    fence?: string | null;
 }
 /** Connection details needed to talk to the lock store. */
 export interface MutexConfig {
@@ -39,7 +50,7 @@ export interface MutexConfig {
 }
 export interface MutexInterface {
     acquireLock(name: string, reason: string, owner?: string | null): Promise<LockResult>;
-    releaseLock(name: string, owner?: string | null): Promise<UnlockResult>;
+    releaseLock(name: string, owner?: string | null, fence?: string | null): Promise<UnlockResult>;
 }
 /**
  * Side effects a caller wants attached to an outcome: the Action posts PR and

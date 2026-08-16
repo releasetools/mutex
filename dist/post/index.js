@@ -44169,7 +44169,7 @@ function setCommandEcho(enabled) {
  * When the action exits it will be with an exit code of 1
  * @param message add error issue message
  */
-function setFailed(message) {
+function core_setFailed(message) {
     process.exitCode = ExitCode.Failure;
     error(message);
 }
@@ -49110,7 +49110,7 @@ class GitHubClient {
     }
 }
 // Set lock state in GITHUB_STATE
-function setLockAcquired() {
+function github_setLockAcquired() {
     core.saveState("lockAcquired", "true");
     core.setOutput("status", "locked");
 }
@@ -49136,7 +49136,7 @@ function setSkipped() {
 }
 // Mark the action as skipped
 function github_setFailed(message) {
-    setFailed(message);
+    core_setFailed(message);
     setOutput("status", "failed");
 }
 // Determine if the action is allowed to run
@@ -49215,6 +49215,286 @@ function checkSkipInBody(pr) {
     return false;
 }
 //# sourceMappingURL=github.js.map
+;// CONCATENATED MODULE: ./lib/helpers.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+const helpers_sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function describeError(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+function errorStack(error) {
+    return error instanceof Error && error.stack ? error.stack : "N/A";
+}
+function prefixOf(description) {
+    return description ? `${description}: ` : "";
+}
+function logError(log, error, description) {
+    log.error(`${prefixOf(description)}${describeError(error)}`);
+    log.debug(`Stack trace: ${errorStack(error)}`);
+}
+function logWarning(log, error, description) {
+    log.warning(`${prefixOf(description)}${describeError(error)}`);
+    log.debug(`Stack trace: ${errorStack(error)}`);
+}
+//# sourceMappingURL=helpers.js.map
+;// CONCATENATED MODULE: ./lib/mutex.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+/**
+ * The two mutex operations, shared by the GitHub Action and the CLI.
+ *
+ * The CLI commands map onto them directly:
+ *   mutex lock      -> tryLock (polls until `max-wait` elapses)
+ *   mutex try-lock  -> tryLock with a zero timeout (a single attempt)
+ *   mutex unlock    -> tryUnlock
+ *
+ * `mutex renew` is not here: extending a lock is a single UPDATE with nothing
+ * to poll for, so it goes straight to `DatabaseMutex.renewLock`.
+ *
+ * Nothing here imports the Actions toolkit: callers supply a `Logger` for
+ * output and `LockEvents` for whatever side effects they need.
+ */
+/**
+ * Floor for the delay between attempts. A `poll-interval` of 0 would otherwise
+ * turn the wait loop into a hot loop hammering Postgres.
+ */
+const MIN_POLL_INTERVAL_MS = 100;
+function pollIntervalFor(request) {
+    return request.pollIntervalMs > 0
+        ? request.pollIntervalMs
+        : MIN_POLL_INTERVAL_MS;
+}
+/**
+ * The wait, in milliseconds, treating anything not a real number as zero.
+ *
+ * NaN arrives easily - `parseInt("")` on an unset workflow input - and every
+ * comparison against it is false, which in a loop that breaks on a comparison
+ * means it never breaks. Zero is the safe reading: try once, then give up.
+ */
+function pollTimeoutFor(request) {
+    return Number.isFinite(request.pollTimeoutMs)
+        ? Math.max(request.pollTimeoutMs, 0)
+        : 0;
+}
+/**
+ * Acquire the lock, retrying until `pollTimeoutMs` elapses.
+ *
+ * Always makes at least one attempt, so a zero timeout means "try once" rather
+ * than "do nothing" - that is what `mutex try-lock` relies on.
+ */
+async function mutex_tryLock(request, mutex, log, events = {}) {
+    const timeoutMs = pollTimeoutFor(request);
+    const intervalMs = pollIntervalFor(request);
+    const deadline = Date.now() + timeoutMs;
+    log.info(`Attempting to acquire lock '${request.identifier}'. Timeout: ${timeoutMs / 1000}s`);
+    let attempt = 0;
+    let result = { acquired: false, status: "No attempt was made" };
+    for (;;) {
+        attempt++;
+        result = await mutex.acquireLock(request.identifier, request.reason, request.owner ?? null);
+        if (result.acquired) {
+            log.info(`Lock '${request.identifier}' acquired on attempt ${attempt}.`);
+            await events.onLocked?.(result);
+            return result;
+        }
+        // Stop once there is no room left for another attempt before the deadline,
+        // rather than sleeping past it and reporting a stale failure.
+        if (Date.now() + intervalMs >= deadline) {
+            break;
+        }
+        await events.onContended?.(result, attempt);
+        log.info(`Waiting for lock '${request.identifier}' (${result.status}). Retrying in ${intervalMs / 1000}s...`);
+        await sleep(intervalMs);
+    }
+    await events.onTimeout?.(`⌛ Timed out waiting for lock '${request.identifier}' after ${timeoutMs / 1000} seconds.`);
+    return result;
+}
+/**
+ * Release the lock, retrying while the attempt is merely contended.
+ *
+ * Unlocking something that is not locked succeeds: unlock is idempotent. A
+ * refusal (`owned-by-another`) is a decision rather than a transient failure,
+ * so it short-circuits the retry loop.
+ */
+async function tryUnlock(request, mutex, log, events = {}) {
+    const timeoutMs = pollTimeoutFor(request);
+    const intervalMs = pollIntervalFor(request);
+    const deadline = Date.now() + timeoutMs;
+    log.info(`Attempting to unlock '${request.identifier}'.`);
+    let result = { unlocked: false, outcome: "contended" };
+    for (;;) {
+        result = await mutex.releaseLock(request.identifier, request.owner ?? null, request.fence ?? null);
+        if (result.unlocked ||
+            result.outcome === "owned-by-another" ||
+            result.outcome === "superseded") {
+            break;
+        }
+        if (Date.now() + intervalMs >= deadline) {
+            break;
+        }
+        log.info(`Could not unlock '${request.identifier}' yet (${result.outcome}). Retrying in ${intervalMs / 1000}s...`);
+        await helpers_sleep(intervalMs);
+    }
+    if (result.unlocked) {
+        log.info(`Lock '${request.identifier}' released.`);
+        await events.onUnlocked?.(result);
+    }
+    else if (result.outcome === "owned-by-another" ||
+        result.outcome === "superseded") {
+        const message = result.outcome === "superseded"
+            ? `Refusing to unlock '${request.identifier}': it has since been taken by somebody else.`
+            : `Refusing to unlock '${request.identifier}': it is held by another owner.`;
+        log.warning(message);
+        await (events.onRefused
+            ? events.onRefused(result)
+            : events.onTimeout?.(message));
+    }
+    else {
+        await events.onTimeout?.(`⌛ Timed out waiting to unlock '${request.identifier}' after ${timeoutMs / 1000} seconds.`);
+    }
+    return result;
+}
+//# sourceMappingURL=mutex.js.map
+;// CONCATENATED MODULE: ./lib/action-steps.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
+/**
+ * The Action's two steps.
+ *
+ * Both live here because `main.ts` and `post.ts` release identically - the
+ * post step is the same operation, just reached by a different route - and
+ * keeping one copy is what stops the two drifting apart. The CLI has no use
+ * for either: they record job state and post notifications.
+ */
+/** Take the lock, record it in job state, and announce it. */
+async function acquireAndAnnounce(settings, mutex, log, notifications) {
+    return tryLock(settings, mutex, log, {
+        onLocked: async (result) => {
+            setLockAcquired();
+            await notifications.send(`🔒 Lock \`${settings.identifier}\` acquired.\n` +
+                `Reason: \`${settings.reason || "N/A"}\`\n` +
+                `This lock will expire at \`${result.expires}\`.`);
+        },
+        onTimeout: (message) => setFailed(message),
+    });
+}
+/**
+ * Hand the lock back, clear the job state, and announce it.
+ *
+ * A refusal fails the step rather than passing quietly: the lock is still held
+ * by somebody, and a green step with `status` unset would let a downstream
+ * `if: steps.mutex.outputs.status == 'released'` skip without anyone noticing.
+ */
+async function releaseAndAnnounce(settings, mutex, log, notifications) {
+    return tryUnlock(settings, mutex, log, {
+        onUnlocked: async () => {
+            setLockReleased();
+            await notifications.send(`🔓 Lock \`${settings.identifier}\` released.`);
+        },
+        onRefused: () => github_setFailed(`🔒 Lock '${settings.identifier}' is held by another owner and was not released.`),
+        onTimeout: (message) => github_setFailed(message),
+    });
+}
+//# sourceMappingURL=action-steps.js.map
+;// CONCATENATED MODULE: ./lib/timing.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+/**
+ * How the lock durations relate to each other.
+ *
+ * Shared by the Action's inputs and the CLI's flags, which express the same
+ * three numbers and used to derive them separately - so a change to one could
+ * silently leave the other behind.
+ */
+const DEFAULT_EXPIRATION_SECONDS = 60;
+const DEFAULT_POLL_INTERVAL_SECONDS = 10;
+/** "Wait as long as the lease would have lasted." */
+const WAIT_FOR_THE_LEASE = -1;
+const DEFAULT_MAX_WAIT_SECONDS = (/* unused pure expression or super */ null && (WAIT_FOR_THE_LEASE));
+/** A whole number of seconds, or the fallback for anything else. */
+function seconds(value, fallback) {
+    return Number.isFinite(value) ? value : fallback;
+}
+/**
+ * How long to keep trying, in milliseconds.
+ *
+ * `maxWait` of -1 - the default - means "for as long as this lock would have
+ * lasted", which is the most useful thing to do when nobody says otherwise:
+ * waiting longer than the lease you are about to take is rarely what you want.
+ */
+function pollTimeoutMs(expiration, maxWait) {
+    const lease = Math.max(seconds(expiration, DEFAULT_EXPIRATION_SECONDS), 0);
+    let wait = seconds(maxWait, WAIT_FOR_THE_LEASE);
+    if (wait < WAIT_FOR_THE_LEASE) {
+        wait = WAIT_FOR_THE_LEASE;
+    }
+    return (wait === WAIT_FOR_THE_LEASE ? lease : wait) * 1000;
+}
+/** How long to wait between attempts, in milliseconds. */
+function pollIntervalMs(pollInterval) {
+    const interval = seconds(pollInterval, DEFAULT_POLL_INTERVAL_SECONDS);
+    return Math.max(interval, 0) * 1000;
+}
+//# sourceMappingURL=timing.js.map
 ;// CONCATENATED MODULE: ./lib/configuration.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -49234,8 +49514,7 @@ function checkSkipInBody(pr) {
  */
 
 
-/** Matches the `expiration` default declared in action.yaml. */
-const DEFAULT_EXPIRATION_SECONDS = 60;
+
 class MutexSettings {
     dbConnectionString;
     command;
@@ -49255,26 +49534,17 @@ class MutexSettings {
         this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");
         this.command = getInput("command", { required: true });
         this.identifier = getInput("id", { required: true });
-        // Guarded like max-wait and poll-interval below: an unset or non-numeric
-        // input yields NaN, which would otherwise flow into every timeout.
+        // An unset or non-numeric input parses to NaN, which would otherwise flow
+        // into every timeout - and NaN comparisons are all false, so a wait loop
+        // built on one never ends.
         this.expiration = parseInt(getInput("expiration"));
-        if (isNaN(this.expiration) || this.expiration <= 0) {
+        if (!Number.isFinite(this.expiration) || this.expiration <= 0) {
             this.expiration = DEFAULT_EXPIRATION_SECONDS;
         }
         this.reason = getInput("reason", { trimWhitespace: true });
         this.autoReleaseLock = getInput("auto-release") === "true";
-        // Calculate timeout
-        let maxWait = parseInt(getInput("max-wait"));
-        if (isNaN(maxWait) || maxWait <= -2) {
-            maxWait = -1;
-        }
-        this.pollTimeoutMs = (maxWait === -1 ? this.expiration : maxWait) * 1000;
-        // Calculate polling interval
-        let pollInterval = parseInt(getInput("poll-interval"));
-        if (isNaN(pollInterval) || pollInterval <= 0) {
-            pollInterval = 0;
-        }
-        this.pollIntervalMs = pollInterval * 1000;
+        this.pollTimeoutMs = pollTimeoutMs(this.expiration, parseInt(getInput("max-wait")));
+        this.pollIntervalMs = pollIntervalMs(parseInt(getInput("poll-interval")));
     }
 }
 //# sourceMappingURL=configuration.js.map
@@ -49364,42 +49634,6 @@ class SilentLogger {
     debug() { }
 }
 //# sourceMappingURL=logger.js.map
-;// CONCATENATED MODULE: ./lib/helpers.js
-/*
- * Copyright (c) 2025-2026 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-const helpers_sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-function describeError(error) {
-    return error instanceof Error ? error.message : String(error);
-}
-function errorStack(error) {
-    return error instanceof Error && error.stack ? error.stack : "N/A";
-}
-function prefixOf(description) {
-    return description ? `${description}: ` : "";
-}
-function logError(log, error, description) {
-    log.error(`${prefixOf(description)}${describeError(error)}`);
-    log.debug(`Stack trace: ${errorStack(error)}`);
-}
-function logWarning(log, error, description) {
-    log.warning(`${prefixOf(description)}${describeError(error)}`);
-    log.debug(`Stack trace: ${errorStack(error)}`);
-}
-//# sourceMappingURL=helpers.js.map
 // EXTERNAL MODULE: ./node_modules/pg-format/lib/index.js
 var pg_format_lib = __nccwpck_require__(8787);
 ;// CONCATENATED MODULE: ./lib/database.js
@@ -49457,8 +49691,8 @@ class DatabaseMutex {
     async acquireLock(name, reason, owner = null) {
         return this.withSchemaRetry(`Acquiring lock '${name}'`, () => this.acquireLockInternal(name, reason, owner));
     }
-    async releaseLock(name, owner = null) {
-        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, owner));
+    async releaseLock(name, owner = null, fence = null) {
+        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, owner, fence));
     }
     /**
      * Extends a lock that `owner` currently holds.
@@ -49577,7 +49811,7 @@ class DatabaseMutex {
             this.disconnect(client);
         }
     }
-    async releaseLockInternal(name, owner) {
+    async releaseLockInternal(name, owner, fence) {
         let client;
         try {
             client = await this.connect();
@@ -49596,6 +49830,13 @@ class DatabaseMutex {
             if (!mayModify(record, owner)) {
                 await client.query("COMMIT");
                 return { unlocked: false, outcome: "owned-by-another", record };
+            }
+            // The caller knows which acquisition it is releasing, and this is not
+            // it: the lock lapsed and somebody took it over. Ownership cannot catch
+            // this when neither side named an owner, which is the default.
+            if (fence !== null && record.createdAt !== fence) {
+                await client.query("COMMIT");
+                return { unlocked: false, outcome: "superseded", record };
             }
             await client.query(pg_format_lib(`DELETE FROM %I WHERE id = $1;`, TABLE_NAME), [
                 name,
@@ -49840,134 +50081,6 @@ function toIsoString(value) {
     return String(value);
 }
 //# sourceMappingURL=database.js.map
-;// CONCATENATED MODULE: ./lib/mutex.js
-/*
- * Copyright (c) 2025-2026 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-/**
- * The two mutex operations, shared by the GitHub Action and the CLI.
- *
- * The CLI commands map onto them directly:
- *   mutex lock      -> tryLock (polls until `max-wait` elapses)
- *   mutex try-lock  -> tryLock with a zero timeout (a single attempt)
- *   mutex unlock    -> tryUnlock
- *
- * `mutex renew` is not here: extending a lock is a single UPDATE with nothing
- * to poll for, so it goes straight to `DatabaseMutex.renewLock`.
- *
- * Nothing here imports the Actions toolkit: callers supply a `Logger` for
- * output and `LockEvents` for whatever side effects they need.
- */
-/**
- * Floor for the delay between attempts. A `poll-interval` of 0 would otherwise
- * turn the wait loop into a hot loop hammering Postgres.
- */
-const MIN_POLL_INTERVAL_MS = 100;
-function pollIntervalFor(request) {
-    return request.pollIntervalMs > 0
-        ? request.pollIntervalMs
-        : MIN_POLL_INTERVAL_MS;
-}
-/**
- * The wait, in milliseconds, treating anything not a real number as zero.
- *
- * NaN arrives easily - `parseInt("")` on an unset workflow input - and every
- * comparison against it is false, which in a loop that breaks on a comparison
- * means it never breaks. Zero is the safe reading: try once, then give up.
- */
-function pollTimeoutFor(request) {
-    return Number.isFinite(request.pollTimeoutMs)
-        ? Math.max(request.pollTimeoutMs, 0)
-        : 0;
-}
-/**
- * Acquire the lock, retrying until `pollTimeoutMs` elapses.
- *
- * Always makes at least one attempt, so a zero timeout means "try once" rather
- * than "do nothing" - that is what `mutex try-lock` relies on.
- */
-async function tryLock(request, mutex, log, events = {}) {
-    const timeoutMs = pollTimeoutFor(request);
-    const intervalMs = pollIntervalFor(request);
-    const deadline = Date.now() + timeoutMs;
-    log.info(`Attempting to acquire lock '${request.identifier}'. Timeout: ${timeoutMs / 1000}s`);
-    let attempt = 0;
-    let result = { acquired: false, status: "No attempt was made" };
-    for (;;) {
-        attempt++;
-        result = await mutex.acquireLock(request.identifier, request.reason, request.owner ?? null);
-        if (result.acquired) {
-            log.info(`Lock '${request.identifier}' acquired on attempt ${attempt}.`);
-            await events.onLocked?.(result);
-            return result;
-        }
-        // Stop once there is no room left for another attempt before the deadline,
-        // rather than sleeping past it and reporting a stale failure.
-        if (Date.now() + intervalMs >= deadline) {
-            break;
-        }
-        await events.onContended?.(result, attempt);
-        log.info(`Waiting for lock '${request.identifier}' (${result.status}). Retrying in ${intervalMs / 1000}s...`);
-        await sleep(intervalMs);
-    }
-    await events.onTimeout?.(`⌛ Timed out waiting for lock '${request.identifier}' after ${timeoutMs / 1000} seconds.`);
-    return result;
-}
-/**
- * Release the lock, retrying while the attempt is merely contended.
- *
- * Unlocking something that is not locked succeeds: unlock is idempotent. A
- * refusal (`owned-by-another`) is a decision rather than a transient failure,
- * so it short-circuits the retry loop.
- */
-async function tryUnlock(request, mutex, log, events = {}) {
-    const timeoutMs = pollTimeoutFor(request);
-    const intervalMs = pollIntervalFor(request);
-    const deadline = Date.now() + timeoutMs;
-    log.info(`Attempting to unlock '${request.identifier}'.`);
-    let result = { unlocked: false, outcome: "contended" };
-    for (;;) {
-        result = await mutex.releaseLock(request.identifier, request.owner ?? null);
-        if (result.unlocked || result.outcome === "owned-by-another") {
-            break;
-        }
-        if (Date.now() + intervalMs >= deadline) {
-            break;
-        }
-        log.info(`Could not unlock '${request.identifier}' yet (${result.outcome}). Retrying in ${intervalMs / 1000}s...`);
-        await helpers_sleep(intervalMs);
-    }
-    if (result.unlocked) {
-        log.info(`Lock '${request.identifier}' released.`);
-        await events.onUnlocked?.(result);
-    }
-    else if (result.outcome === "owned-by-another") {
-        const message = `Refusing to unlock '${request.identifier}': it is held by another owner.`;
-        log.warning(message);
-        await (events.onRefused
-            ? events.onRefused(result)
-            : events.onTimeout?.(message));
-    }
-    else {
-        await events.onTimeout?.(`⌛ Timed out waiting to unlock '${request.identifier}' after ${timeoutMs / 1000} seconds.`);
-    }
-    return result;
-}
-//# sourceMappingURL=mutex.js.map
 // EXTERNAL MODULE: ./node_modules/@slack/web-api/dist/index.js
 var web_api_dist = __nccwpck_require__(5105);
 ;// CONCATENATED MODULE: ./lib/actions-logger.js
@@ -50169,14 +50282,7 @@ async function post() {
         }
         mutex = new DatabaseMutex(settings, log);
         const notifications = new Notifications(settings, gh);
-        await tryUnlock(settings, mutex, log, {
-            onUnlocked: async () => {
-                setLockReleased();
-                await notifications.send(`🔓 Lock \`${settings.identifier}\` released.`);
-            },
-            onRefused: () => github_setFailed(`🔒 Lock '${settings.identifier}' is held by another owner and was not released.`),
-            onTimeout: (message) => github_setFailed(message),
-        });
+        await releaseAndAnnounce(settings, mutex, log, notifications);
     }
     catch (error) {
         github_setFailed(describeError(error));

@@ -30,6 +30,17 @@ import { SECRET_NAME_PATTERN } from "./secenv.js";
 
 export const DEFAULT_TIMEOUT_MS = 60_000;
 
+/**
+ * How long a timed-out child gets to exit on SIGTERM before SIGKILL.
+ *
+ * SIGTERM is a request, and the likeliest reason to be here is GPG sitting on
+ * a passphrase prompt that never comes - which can decline it. Since the
+ * promise only settles on `close`, a child that ignores SIGTERM hangs mutex
+ * for good, with stdout still buffering. SIGKILL cannot be declined, so the
+ * timeout keeps its promise.
+ */
+const KILL_GRACE_MS = 5_000;
+
 export interface DotsecenvCliOptions {
   /** Overrides the binary. Falls back to $DOTSECENV_BIN, then `dotsecenv`. */
   binary?: string;
@@ -185,11 +196,56 @@ function run(
 
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
+    let settled = false;
+    let killTimer: NodeJS.Timeout | undefined;
+
+    const stopTimers = () => {
+      clearTimeout(timer);
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+    };
+
+    /** Settles once, and lets the process exit afterwards. */
+    const settle = (finish: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      stopTimers();
+      finish();
+    };
+
+    const abandon = () => {
+      // Nothing else may keep mutex alive on this child's account.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref();
+
+      settle(() =>
+        reject(
+          new DotsecenvError(
+            `'${binary}' timed out after ${timeoutMs / 1000}s`,
+            {
+              kind: "timeout",
+              stderr,
+              hint: "GPG may be waiting for a passphrase that cannot be entered here.",
+            },
+          ),
+        ),
+      );
+    };
 
     const timer = setTimeout(() => {
-      timedOut = true;
       child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+        // Settling here rather than waiting for `close`: that event needs
+        // every holder of the pipes to let go, and a grandchild outliving the
+        // process we killed would keep it from ever firing.
+        abandon();
+      }, KILL_GRACE_MS);
+      killTimer.unref();
     }, timeoutMs);
     timer.unref();
 
@@ -204,45 +260,29 @@ function run(
     });
 
     child.on("error", (error: NodeJS.ErrnoException) => {
-      clearTimeout(timer);
+      settle(() => {
+        if (error.code === "ENOENT") {
+          reject(
+            new DotsecenvError(`the '${binary}' CLI was not found`, {
+              kind: "not-installed",
+              cause: error,
+              hint: "Install it from https://dotsecenv.com, or point DOTSECENV_BIN at the binary.",
+            }),
+          );
+          return;
+        }
 
-      if (error.code === "ENOENT") {
         reject(
-          new DotsecenvError(`the '${binary}' CLI was not found`, {
-            kind: "not-installed",
+          new DotsecenvError(`could not run '${binary}'`, {
+            kind: "general",
             cause: error,
-            hint: "Install it from https://dotsecenv.com, or point DOTSECENV_BIN at the binary.",
           }),
         );
-        return;
-      }
-
-      reject(
-        new DotsecenvError(`could not run '${binary}'`, {
-          kind: "general",
-          cause: error,
-        }),
-      );
+      });
     });
 
     child.on("close", (code, signal) => {
-      clearTimeout(timer);
-
-      if (timedOut) {
-        reject(
-          new DotsecenvError(
-            `'${binary}' timed out after ${timeoutMs / 1000}s`,
-            {
-              kind: "timeout",
-              stderr,
-              hint: "GPG may be waiting for a passphrase that cannot be entered here.",
-            },
-          ),
-        );
-        return;
-      }
-
-      resolve({ stdout, stderr, code: code ?? (signal ? 1 : 0) });
+      settle(() => resolve({ stdout, stderr, code: code ?? (signal ? 1 : 0) }));
     });
   });
 }
