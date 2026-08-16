@@ -1,15 +1,19 @@
 {
   "name": "mutex",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "Advisory lock service for CI/CD pipelines. Prevents race conditions by ensuring mutual exclusion: only one job can access shared resources concurrently.",
   "main": "lib/main.js",
+  "bin": {
+    "mutex": "./bin/mutex.js"
+  },
   "scripts": {
     "clean": "rm -rf lib dist",
     "lint": "prettier --ignore-unknown --write '**/*.{ts,js,json,md,yml,yaml}'",
     "build:watch": "tsc --watch",
-    "build": "tsc && npm run package",
-    "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
+    "build": "npm run clean && tsc && npm run package",
+    "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post && ncc build lib/cli/main.js -o dist/cli",
+    "mutex": "node ./bin/mutex.js",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "prepare": "husky"
   },

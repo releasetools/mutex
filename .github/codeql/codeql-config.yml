@@ -1,0 +1,14 @@
+name: "mutex CodeQL config"
+
+# `lib/` and `dist/` are build output, committed only because the Action runs
+# straight from `dist/`. Scanning them re-reports every source finding against
+# a webpack bundle, where the line numbers mean nothing and no fix can land.
+paths-ignore:
+  - dist
+  - lib
+  - node_modules
+
+# Matches the query suite the previous default setup ran, so switching to a
+# workflow does not quietly narrow what gets analysed.
+queries:
+  - uses: security-extended

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,15 @@
  */
 
 import * as core from "@actions/core";
-import { loadRequiredFromEnvOrGHAInput } from "./helpers.js";
+import { loadRequiredFromEnvOrGHAInput } from "./inputs.js";
+import { LockRequest, MutexConfig } from "./mutex.js";
+import {
+  DEFAULT_EXPIRATION_SECONDS,
+  pollIntervalMs,
+  pollTimeoutMs,
+} from "./timing.js";
 
-export class MutexSettings {
+export class MutexSettings implements MutexConfig, LockRequest {
   dbConnectionString: string;
   command: string;
   identifier: string;
@@ -28,26 +34,33 @@ export class MutexSettings {
   pollIntervalMs: number;
   autoReleaseLock: boolean;
 
+  /**
+   * The Action does not record an owner yet (see issue #67), so every lock it
+   * takes is unowned - releasable by itself, and by any caller that likewise
+   * names no owner.
+   */
+  readonly owner = null;
+
   constructor() {
     this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");
     this.command = core.getInput("command", { required: true });
     this.identifier = core.getInput("id", { required: true });
+    // An unset or non-numeric input parses to NaN, which would otherwise flow
+    // into every timeout - and NaN comparisons are all false, so a wait loop
+    // built on one never ends.
     this.expiration = parseInt(core.getInput("expiration"));
+    if (!Number.isFinite(this.expiration) || this.expiration <= 0) {
+      this.expiration = DEFAULT_EXPIRATION_SECONDS;
+    }
     this.reason = core.getInput("reason", { trimWhitespace: true });
     this.autoReleaseLock = core.getInput("auto-release") === "true";
 
-    // Calculate timeout
-    let maxWait = parseInt(core.getInput("max-wait"));
-    if (isNaN(maxWait) || maxWait <= -2) {
-      maxWait = -1;
-    }
-    this.pollTimeoutMs = (maxWait === -1 ? this.expiration : maxWait) * 1000;
-
-    // Calculate polling interval
-    let pollInterval = parseInt(core.getInput("poll-interval"));
-    if (isNaN(pollInterval) || pollInterval <= 0) {
-      pollInterval = 0;
-    }
-    this.pollIntervalMs = pollInterval * 1000;
+    this.pollTimeoutMs = pollTimeoutMs(
+      this.expiration,
+      parseInt(core.getInput("max-wait")),
+    );
+    this.pollIntervalMs = pollIntervalMs(
+      parseInt(core.getInput("poll-interval")),
+    );
   }
 }

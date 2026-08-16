@@ -14,7 +14,7 @@ inputs:
     description: "Database credentials for storing the locks."
     required: false
   command:
-    description: "The command to execute: 'lock' or 'release'."
+    description: "The command to execute: 'lock' or 'unlock'. DEPRECATED: 'release' is still accepted as a synonym for 'unlock' and will be removed in a future major version."
     required: true
   id:
     description: "An unique identifier for the lock."
@@ -53,6 +53,8 @@ inputs:
 outputs:
   status:
     description: "The status of the action: 'locked', 'released', 'failed', or 'skipped'."
+  version:
+    description: "The version of this action that ran. The release workflow asserts it against the tag being released, since 'uses: ...@v1' resolves through GitHub's caches and cannot otherwise be proven fresh."
 
 runs:
   using: "node24"

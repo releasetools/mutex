@@ -44171,7 +44171,7 @@ function setCommandEcho(enabled) {
  */
 function core_setFailed(message) {
     process.exitCode = ExitCode.Failure;
-    core_error(message);
+    error(message);
 }
 //-----------------------------------------------------------------------
 // Logging Commands
@@ -44194,7 +44194,7 @@ function core_debug(message) {
  * @param message error issue message. Errors will be converted to string via toString()
  * @param properties optional properties to add to the annotation.
  */
-function core_error(message, properties = {}) {
+function error(message, properties = {}) {
     command_issueCommand('error', utils_toCommandProperties(properties), message instanceof Error ? message.toString() : message);
 }
 /**
@@ -49006,9 +49006,29 @@ function getOctokit(token, options, ...additionalPlugins) {
     return new GitHubWithPlugins(getOctokitOptions(token, options));
 }
 //# sourceMappingURL=github.js.map
-;// CONCATENATED MODULE: ./lib/helpers.js
+;// CONCATENATED MODULE: ./lib/constants.js
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+const SKIP_LABEL = "SKIP_MUTEX";
+const TABLE_NAME = "releasetools_mutex";
+//# sourceMappingURL=constants.js.map
+;// CONCATENATED MODULE: ./lib/inputs.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49024,7 +49044,12 @@ function getOctokit(token, options, ...additionalPlugins) {
  *
  */
 
-const helpers_sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * Readers for GitHub Actions inputs.
+ *
+ * Kept separate from `helpers.ts` so the mutex core (and therefore the CLI)
+ * never has to import the Actions toolkit.
+ */
 function loadRequiredNonEmptyFromGHAInput(name) {
     const data = getInput(name);
     if (data && data.trim().length > 0) {
@@ -49047,20 +49072,10 @@ function loadFromEnvOrGHAInput(name) {
     warning(`⚠️ ${name} not found.`);
     return null;
 }
-function printError(error, description) {
-    const message = error instanceof Error ? error.message : String(error);
-    core_error(`${description + ": " || 0}${message}`);
-    core_debug(`Stack trace: ${error instanceof Error ? error.stack : "N/A"}`);
-}
-function printWarning(error, description) {
-    const message = error instanceof Error ? error.message : String(error);
-    warning(`${description + ": " || 0}${message}`);
-    core_debug(`Stack trace: ${error instanceof Error ? error.stack : "N/A"}`);
-}
-//# sourceMappingURL=helpers.js.map
+//# sourceMappingURL=inputs.js.map
 ;// CONCATENATED MODULE: ./lib/github.js
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49075,6 +49090,7 @@ function printWarning(error, description) {
  * limitations under the License.
  *
  */
+
 
 
 
@@ -49093,10 +49109,6 @@ class GitHubClient {
         this.repo = github_context.repo.repo;
     }
 }
-// Retrieve lock state from GITHUB_STATE
-function isLockAcquired() {
-    return core.getState("lockAcquired") === "true";
-}
 // Set lock state in GITHUB_STATE
 function github_setLockAcquired() {
     core.saveState("lockAcquired", "true");
@@ -49107,6 +49119,17 @@ function setLockReleased() {
     saveState("lockAcquired", null);
     setOutput("status", "released");
 }
+/**
+ * Publishes which build of the action actually ran.
+ *
+ * The release workflow asserts this against the tag being released: `uses:
+ * releasetools/mutex@v1` resolves through GitHub's own caches, so waiting for
+ * the tag to move cannot prove the runner was handed the new code. This can.
+ */
+function setVersion(version) {
+    core.setOutput("version", version);
+    core.info(`releasetools/mutex ${version}`);
+}
 // Mark the action as skipped
 function setSkipped() {
     setOutput("status", "skipped");
@@ -49115,375 +49138,6 @@ function setSkipped() {
 function github_setFailed(message) {
     core_setFailed(message);
     setOutput("status", "failed");
-}
-//# sourceMappingURL=github.js.map
-;// CONCATENATED MODULE: ./lib/configuration.js
-/*
- * Copyright (c) 2025 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-
-class MutexSettings {
-    dbConnectionString;
-    command;
-    identifier;
-    expiration;
-    reason;
-    pollTimeoutMs;
-    pollIntervalMs;
-    autoReleaseLock;
-    constructor() {
-        this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");
-        this.command = getInput("command", { required: true });
-        this.identifier = getInput("id", { required: true });
-        this.expiration = parseInt(getInput("expiration"));
-        this.reason = getInput("reason", { trimWhitespace: true });
-        this.autoReleaseLock = getInput("auto-release") === "true";
-        // Calculate timeout
-        let maxWait = parseInt(getInput("max-wait"));
-        if (isNaN(maxWait) || maxWait <= -2) {
-            maxWait = -1;
-        }
-        this.pollTimeoutMs = (maxWait === -1 ? this.expiration : maxWait) * 1000;
-        // Calculate polling interval
-        let pollInterval = parseInt(getInput("poll-interval"));
-        if (isNaN(pollInterval) || pollInterval <= 0) {
-            pollInterval = 0;
-        }
-        this.pollIntervalMs = pollInterval * 1000;
-    }
-}
-//# sourceMappingURL=configuration.js.map
-// EXTERNAL MODULE: ./node_modules/pg/lib/index.js
-var pg_lib = __nccwpck_require__(3273);
-;// CONCATENATED MODULE: ./node_modules/pg/esm/index.mjs
-// ESM wrapper for pg
-
-
-// Re-export all the properties
-const Client = pg_lib.Client
-const Pool = pg_lib.Pool
-const Connection = pg_lib.Connection
-const types = pg_lib.types
-const Query = pg_lib.Query
-const DatabaseError = pg_lib.DatabaseError
-const escapeIdentifier = pg_lib.escapeIdentifier
-const escapeLiteral = pg_lib.escapeLiteral
-const Result = pg_lib.Result
-const TypeOverrides = pg_lib.TypeOverrides
-
-// Also export the defaults
-const esm_defaults = pg_lib.defaults
-
-// Re-export the default
-/* harmony default export */ const esm = ((/* unused pure expression or super */ null && (pg)));
-
-;// CONCATENATED MODULE: ./lib/constants.js
-/*
- * Copyright (c) 2025 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-const SKIP_LABEL = "SKIP_MUTEX";
-const TABLE_NAME = "releasetools_mutex";
-//# sourceMappingURL=constants.js.map
-// EXTERNAL MODULE: ./node_modules/pg-format/lib/index.js
-var pg_format_lib = __nccwpck_require__(8787);
-;// CONCATENATED MODULE: ./lib/database.js
-/*
- * Copyright (c) 2025 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-
-
-
-
-class DatabaseMutex {
-    settings;
-    connection_string;
-    pool;
-    constructor(settings) {
-        this.settings = settings;
-        this.connection_string = settings.dbConnectionString;
-        // Database configuration using connection string
-        this.pool = new Pool({
-            connectionString: this.connection_string,
-        });
-    }
-    async acquireLock(name, reason) {
-        try {
-            return await this.acquireLockInternal(name, reason);
-        }
-        catch (error) {
-            // If we encounter an error, it might be due to the table not existing.
-            // Attempt to create the table
-            this.initializeTable();
-            // And retry acquiring the lock once.
-            return await this.acquireLockInternal(name, reason);
-        }
-    }
-    async acquireLockInternal(name, reason) {
-        let client;
-        try {
-            info("Attempting to connect to the database.");
-            client = await this.pool.connect();
-            info("Successfully connected to the database.");
-            await client.query("BEGIN");
-            // Get an advisory lock to ensure no other process is
-            // trying to acquire or release this same lock concurrently.
-            let lockAcquired = await this.dbAdvisoryLockUnsafe(client, name);
-            if (!lockAcquired) {
-                // Protect against concurrency issues by waiting a short moment
-                await helpers_sleep(1);
-                // And then retrying to acquire the advisory lock
-                lockAcquired = await this.dbAdvisoryLockUnsafe(client, name);
-            }
-            // If we still couldn't get the advisory lock, bail out.
-            if (!lockAcquired) {
-                await client.query("ROLLBACK");
-                return {
-                    acquired: false,
-                    status: "Lock held by another transaction",
-                };
-            }
-            // If the advisory lock was acquired, proceed to insert or update the mutex row.
-            // If a lock with the same name exists (ON CONFLICT), it tries to UPDATE it.
-            // The UPDATE only succeeds if the existing lock has expired (expires_at < NOW()).
-            const upsertQuery = pg_format_lib(`INSERT INTO %I (id, reason, expires_at)
-        VALUES ($1, $2, NOW() + ($3 || ' seconds')::INTERVAL)
-        ON CONFLICT (id) DO UPDATE
-        SET
-            expires_at = EXCLUDED.expires_at,
-            reason = EXCLUDED.reason,
-            created_at = (NOW() AT TIME ZONE 'UTC')
-        WHERE
-            %I.expires_at < (NOW() AT TIME ZONE 'UTC')
-        RETURNING id, reason, expires_at;`, TABLE_NAME, TABLE_NAME);
-            const result = await client.query(upsertQuery, [
-                name,
-                reason,
-                this.settings.expiration,
-            ]);
-            // If rowCount is 0, it means a valid, unexpired lock row already existed.
-            if (result.rowCount === 0) {
-                info(`Lock for "${name}" exists and has not expired.`);
-                await client.query("ROLLBACK");
-                return {
-                    acquired: false,
-                    status: "Lock taken by another process (try again later)",
-                };
-            }
-            // The lock was successfully written to the table.
-            await client.query("COMMIT");
-            info(`Lock '${name}' acquired successfully.`);
-            const approxExpiry = new Date(Date.now() + this.settings.expiration * 1000).toISOString();
-            const expires = new Date(result?.rows[0]?.expires_at).toISOString() ||
-                `approximately ${approxExpiry}`;
-            return { acquired: true, status: "Lock acquired", expires: expires };
-        }
-        catch (error) {
-            printWarning(error, `An error occurred while acquiring a lock for '${name}'; rolling back and retrying`);
-            await client?.query("ROLLBACK");
-            throw error;
-        }
-        finally {
-            // Ensure the database connection is returned to the pool, whether an error occurred or not
-            await client?.release();
-            info(`Database connection released.`);
-        }
-    }
-    async releaseLock(name) {
-        try {
-            return await this.releaseLockInternal(name);
-        }
-        catch (error) {
-            // If we encounter an error, retry acquiring the lock once.
-            return await this.releaseLockInternal(name);
-        }
-    }
-    async releaseLockInternal(name) {
-        let client;
-        try {
-            info("Attempting to connect to the database.");
-            client = await this.pool.connect();
-            info("Successfully connected to the database.");
-            await client.query("BEGIN");
-            // Get an advisory lock to ensure no other process is
-            // trying to acquire or release this same lock concurrently.
-            let lockAcquired = await this.dbAdvisoryLockUnsafe(client, name);
-            if (!lockAcquired) {
-                // Protect against concurrency issues by waiting a short moment
-                await helpers_sleep(1);
-                // And then retrying to acquire the advisory lock
-                lockAcquired = await this.dbAdvisoryLockUnsafe(client, name);
-            }
-            // If we still couldn't get the advisory lock, bail out.
-            if (!lockAcquired) {
-                await client.query("ROLLBACK");
-                return false;
-            }
-            // Once the advisory lock is held, we can safely delete the row.
-            const deleteQuery = `DELETE FROM ${TABLE_NAME} WHERE id = $1;`;
-            const result = await client.query(deleteQuery, [name]);
-            await client.query("COMMIT");
-            if (result.rowCount && result.rowCount > 0) {
-                info(`Lock '${name}' released successfully.`);
-            }
-            else {
-                warning(`Lock '${name}' was not found. No release was necessary.`);
-            }
-            return true;
-        }
-        catch (error) {
-            printWarning(error, `An error occurred while releasing a lock for '${name}'; rolling back and retrying`);
-            await client?.query("ROLLBACK");
-            throw error;
-        }
-        finally {
-            // Ensure the database connection is returned to the pool, whether an error occurred or not
-            await client?.release();
-            info(`Database connection released.`);
-        }
-    }
-    // Acquire an advisory lock to ensure no other process is
-    // trying to acquire or release this same lock concurrently.
-    // This function leaves all aspects such as client/transaction management
-    // to the caller.
-    async dbAdvisoryLockUnsafe(client, name) {
-        const advisoryLockResult = await client.query("SELECT pg_try_advisory_xact_lock(hashtext($1)) as acquired", [name]);
-        const lockAcquired = advisoryLockResult.rows[0].acquired;
-        if (!lockAcquired) {
-            console.log(`Could not acquire advisory lock '${name}'.`);
-            return false;
-        }
-        return true;
-    }
-    /**
-     * Connects to the PostgreSQL database and creates the table
-     * if it does not already exist.
-     */
-    async initializeTable() {
-        let client;
-        try {
-            info("Attempting to connect to the database.");
-            client = await this.pool.connect();
-            info("Successfully connected to the database.");
-            // Define the SQL query for creating the table.
-            const createTableQuery = `
-        CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
-          id VARCHAR(255) PRIMARY KEY,
-          reason TEXT,
-          created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC') NOT NULL,
-          expires_at TIMESTAMP WITHOUT TIME ZONE
-        );
-      `;
-            // Execute the table creation query
-            await client.query(createTableQuery);
-            info(`Table ${TABLE_NAME} has been created successfully (or already exists).`);
-        }
-        catch (error) {
-            printWarning(error, `An error occurred while creating the table ${TABLE_NAME}`);
-            throw error;
-        }
-        finally {
-            // Ensure the database connection is returned to the pool, whether an error occurred or not
-            await client?.release();
-            info(`Database connection released.`);
-        }
-    }
-}
-//# sourceMappingURL=database.js.map
-;// CONCATENATED MODULE: ./lib/mutex.js
-/*
- * Copyright (c) 2025 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-
-
-
-
-async function tryLock(settings, gh, mutex, notifications) {
-    core.info(`Attempting to acquire lock. Timeout: ${settings.pollTimeoutMs / 1000}s`);
-    const startTime = Date.now();
-    while (Date.now() - startTime < settings.pollTimeoutMs) {
-        core.info(`Acquiring lock '${settings.identifier}'...`);
-        const { acquired, status, expires } = await mutex.acquireLock(settings.identifier, settings.reason);
-        if (acquired) {
-            setLockAcquired();
-            const commentBody = `🔒 Lock \`${settings.identifier}\` acquired.\nReason: \`${settings.reason || "N/A"}\`\nThis lock will expire at \`${expires}\`.`;
-            notifications.send(commentBody);
-            return;
-        }
-        core.info(`Waiting for existing lock _${settings.identifier}_ to expire.\nStatus: ${status || "N/A"})\n\nRetrying in ${settings.pollIntervalMs / 1000}s}...`);
-        await sleep(settings.pollIntervalMs);
-    }
-    setFailed(`⌛ Timed out waiting for lock after ${settings.pollTimeoutMs / 1000} seconds.`);
-}
-async function tryRelease(settings, gh, mutex, notifications) {
-    info(`Attempting to release lock. Timeout: ${settings.pollTimeoutMs / 1000}s`);
-    const startTime = Date.now();
-    while (Date.now() - startTime < settings.pollTimeoutMs) {
-        info(`Releasing lock '${settings.identifier}'...`);
-        const released = await mutex.releaseLock(settings.identifier);
-        if (released) {
-            setLockReleased();
-            const commentBody = `🔓 Lock \`${settings.identifier}\` released.`;
-            notifications.send(commentBody);
-            return;
-        }
-        info(`Retrying to release lock '${settings.identifier}' in ${settings.pollIntervalMs / 1000}s}...`);
-        await helpers_sleep(settings.pollIntervalMs);
-    }
-    github_setFailed(`⌛ Timed out waiting to release lock after ${settings.pollTimeoutMs / 1000} seconds.`);
 }
 // Determine if the action is allowed to run
 async function shouldRunAction(gh) {
@@ -49560,12 +49214,10 @@ function checkSkipInBody(pr) {
     }
     return false;
 }
-//# sourceMappingURL=mutex.js.map
-// EXTERNAL MODULE: ./node_modules/@slack/web-api/dist/index.js
-var web_api_dist = __nccwpck_require__(5105);
-;// CONCATENATED MODULE: ./lib/slack.js
+//# sourceMappingURL=github.js.map
+;// CONCATENATED MODULE: ./lib/helpers.js
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49580,6 +49232,915 @@ var web_api_dist = __nccwpck_require__(5105);
  * limitations under the License.
  *
  */
+const helpers_sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function describeError(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+function errorStack(error) {
+    return error instanceof Error && error.stack ? error.stack : "N/A";
+}
+function prefixOf(description) {
+    return description ? `${description}: ` : "";
+}
+function logError(log, error, description) {
+    log.error(`${prefixOf(description)}${describeError(error)}`);
+    log.debug(`Stack trace: ${errorStack(error)}`);
+}
+function logWarning(log, error, description) {
+    log.warning(`${prefixOf(description)}${describeError(error)}`);
+    log.debug(`Stack trace: ${errorStack(error)}`);
+}
+//# sourceMappingURL=helpers.js.map
+;// CONCATENATED MODULE: ./lib/mutex.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+/**
+ * The two mutex operations, shared by the GitHub Action and the CLI.
+ *
+ * The CLI commands map onto them directly:
+ *   mutex lock      -> tryLock (polls until `max-wait` elapses)
+ *   mutex try-lock  -> tryLock with a zero timeout (a single attempt)
+ *   mutex unlock    -> tryUnlock
+ *
+ * `mutex renew` is not here: extending a lock is a single UPDATE with nothing
+ * to poll for, so it goes straight to `DatabaseMutex.renewLock`.
+ *
+ * Nothing here imports the Actions toolkit: callers supply a `Logger` for
+ * output and `LockEvents` for whatever side effects they need.
+ */
+/**
+ * Floor for the delay between attempts. A `poll-interval` of 0 would otherwise
+ * turn the wait loop into a hot loop hammering Postgres.
+ */
+const MIN_POLL_INTERVAL_MS = 100;
+function pollIntervalFor(request) {
+    return request.pollIntervalMs > 0
+        ? request.pollIntervalMs
+        : MIN_POLL_INTERVAL_MS;
+}
+/**
+ * The wait, in milliseconds, treating anything not a real number as zero.
+ *
+ * NaN arrives easily - `parseInt("")` on an unset workflow input - and every
+ * comparison against it is false, which in a loop that breaks on a comparison
+ * means it never breaks. Zero is the safe reading: try once, then give up.
+ */
+function pollTimeoutFor(request) {
+    return Number.isFinite(request.pollTimeoutMs)
+        ? Math.max(request.pollTimeoutMs, 0)
+        : 0;
+}
+/**
+ * Acquire the lock, retrying until `pollTimeoutMs` elapses.
+ *
+ * Always makes at least one attempt, so a zero timeout means "try once" rather
+ * than "do nothing" - that is what `mutex try-lock` relies on.
+ */
+async function mutex_tryLock(request, mutex, log, events = {}) {
+    const timeoutMs = pollTimeoutFor(request);
+    const intervalMs = pollIntervalFor(request);
+    const deadline = Date.now() + timeoutMs;
+    log.info(`Attempting to acquire lock '${request.identifier}'. Timeout: ${timeoutMs / 1000}s`);
+    let attempt = 0;
+    let result = { acquired: false, status: "No attempt was made" };
+    for (;;) {
+        attempt++;
+        result = await mutex.acquireLock(request.identifier, request.reason, request.owner ?? null);
+        if (result.acquired) {
+            log.info(`Lock '${request.identifier}' acquired on attempt ${attempt}.`);
+            await events.onLocked?.(result);
+            return result;
+        }
+        // Stop once there is no room left for another attempt before the deadline,
+        // rather than sleeping past it and reporting a stale failure.
+        if (Date.now() + intervalMs >= deadline) {
+            break;
+        }
+        await events.onContended?.(result, attempt);
+        log.info(`Waiting for lock '${request.identifier}' (${result.status}). Retrying in ${intervalMs / 1000}s...`);
+        await sleep(intervalMs);
+    }
+    await events.onTimeout?.(`⌛ Timed out waiting for lock '${request.identifier}' after ${timeoutMs / 1000} seconds.`);
+    return result;
+}
+/**
+ * Release the lock, retrying while the attempt is merely contended.
+ *
+ * Unlocking something that is not locked succeeds: unlock is idempotent. A
+ * refusal (`owned-by-another`) is a decision rather than a transient failure,
+ * so it short-circuits the retry loop.
+ */
+async function tryUnlock(request, mutex, log, events = {}) {
+    const timeoutMs = pollTimeoutFor(request);
+    const intervalMs = pollIntervalFor(request);
+    const deadline = Date.now() + timeoutMs;
+    log.info(`Attempting to unlock '${request.identifier}'.`);
+    let result = { unlocked: false, outcome: "contended" };
+    for (;;) {
+        result = await mutex.releaseLock(request.identifier, request.owner ?? null, request.fence ?? null);
+        if (result.unlocked ||
+            result.outcome === "owned-by-another" ||
+            result.outcome === "superseded") {
+            break;
+        }
+        if (Date.now() + intervalMs >= deadline) {
+            break;
+        }
+        log.info(`Could not unlock '${request.identifier}' yet (${result.outcome}). Retrying in ${intervalMs / 1000}s...`);
+        await helpers_sleep(intervalMs);
+    }
+    if (result.unlocked) {
+        log.info(`Lock '${request.identifier}' released.`);
+        await events.onUnlocked?.(result);
+    }
+    else if (result.outcome === "owned-by-another" ||
+        result.outcome === "superseded") {
+        const message = result.outcome === "superseded"
+            ? `Refusing to unlock '${request.identifier}': it has since been taken by somebody else.`
+            : `Refusing to unlock '${request.identifier}': it is held by another owner.`;
+        log.warning(message);
+        await (events.onRefused
+            ? events.onRefused(result)
+            : events.onTimeout?.(message));
+    }
+    else {
+        await events.onTimeout?.(`⌛ Timed out waiting to unlock '${request.identifier}' after ${timeoutMs / 1000} seconds.`);
+    }
+    return result;
+}
+//# sourceMappingURL=mutex.js.map
+;// CONCATENATED MODULE: ./lib/action-steps.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
+/**
+ * The Action's two steps.
+ *
+ * Both live here because `main.ts` and `post.ts` release identically - the
+ * post step is the same operation, just reached by a different route - and
+ * keeping one copy is what stops the two drifting apart. The CLI has no use
+ * for either: they record job state and post notifications.
+ */
+/** Take the lock, record it in job state, and announce it. */
+async function acquireAndAnnounce(settings, mutex, log, notifications) {
+    return tryLock(settings, mutex, log, {
+        onLocked: async (result) => {
+            setLockAcquired();
+            await notifications.send(`🔒 Lock \`${settings.identifier}\` acquired.\n` +
+                `Reason: \`${settings.reason || "N/A"}\`\n` +
+                `This lock will expire at \`${result.expires}\`.`);
+        },
+        onTimeout: (message) => setFailed(message),
+    });
+}
+/**
+ * Hand the lock back, clear the job state, and announce it.
+ *
+ * A refusal fails the step rather than passing quietly: the lock is still held
+ * by somebody, and a green step with `status` unset would let a downstream
+ * `if: steps.mutex.outputs.status == 'released'` skip without anyone noticing.
+ */
+async function releaseAndAnnounce(settings, mutex, log, notifications) {
+    return tryUnlock(settings, mutex, log, {
+        onUnlocked: async () => {
+            setLockReleased();
+            await notifications.send(`🔓 Lock \`${settings.identifier}\` released.`);
+        },
+        onRefused: () => github_setFailed(`🔒 Lock '${settings.identifier}' is held by another owner and was not released.`),
+        onTimeout: (message) => github_setFailed(message),
+    });
+}
+//# sourceMappingURL=action-steps.js.map
+;// CONCATENATED MODULE: ./lib/timing.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+/**
+ * How the lock durations relate to each other.
+ *
+ * Shared by the Action's inputs and the CLI's flags, which express the same
+ * three numbers and used to derive them separately - so a change to one could
+ * silently leave the other behind.
+ */
+const DEFAULT_EXPIRATION_SECONDS = 60;
+const DEFAULT_POLL_INTERVAL_SECONDS = 10;
+/** "Wait as long as the lease would have lasted." */
+const WAIT_FOR_THE_LEASE = -1;
+const DEFAULT_MAX_WAIT_SECONDS = (/* unused pure expression or super */ null && (WAIT_FOR_THE_LEASE));
+/** A whole number of seconds, or the fallback for anything else. */
+function seconds(value, fallback) {
+    return Number.isFinite(value) ? value : fallback;
+}
+/**
+ * How long to keep trying, in milliseconds.
+ *
+ * `maxWait` of -1 - the default - means "for as long as this lock would have
+ * lasted", which is the most useful thing to do when nobody says otherwise:
+ * waiting longer than the lease you are about to take is rarely what you want.
+ */
+function pollTimeoutMs(expiration, maxWait) {
+    const lease = Math.max(seconds(expiration, DEFAULT_EXPIRATION_SECONDS), 0);
+    let wait = seconds(maxWait, WAIT_FOR_THE_LEASE);
+    if (wait < WAIT_FOR_THE_LEASE) {
+        wait = WAIT_FOR_THE_LEASE;
+    }
+    return (wait === WAIT_FOR_THE_LEASE ? lease : wait) * 1000;
+}
+/** How long to wait between attempts, in milliseconds. */
+function pollIntervalMs(pollInterval) {
+    const interval = seconds(pollInterval, DEFAULT_POLL_INTERVAL_SECONDS);
+    return Math.max(interval, 0) * 1000;
+}
+//# sourceMappingURL=timing.js.map
+;// CONCATENATED MODULE: ./lib/configuration.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
+
+class MutexSettings {
+    dbConnectionString;
+    command;
+    identifier;
+    expiration;
+    reason;
+    pollTimeoutMs;
+    pollIntervalMs;
+    autoReleaseLock;
+    /**
+     * The Action does not record an owner yet (see issue #67), so every lock it
+     * takes is unowned - releasable by itself, and by any caller that likewise
+     * names no owner.
+     */
+    owner = null;
+    constructor() {
+        this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");
+        this.command = getInput("command", { required: true });
+        this.identifier = getInput("id", { required: true });
+        // An unset or non-numeric input parses to NaN, which would otherwise flow
+        // into every timeout - and NaN comparisons are all false, so a wait loop
+        // built on one never ends.
+        this.expiration = parseInt(getInput("expiration"));
+        if (!Number.isFinite(this.expiration) || this.expiration <= 0) {
+            this.expiration = DEFAULT_EXPIRATION_SECONDS;
+        }
+        this.reason = getInput("reason", { trimWhitespace: true });
+        this.autoReleaseLock = getInput("auto-release") === "true";
+        this.pollTimeoutMs = pollTimeoutMs(this.expiration, parseInt(getInput("max-wait")));
+        this.pollIntervalMs = pollIntervalMs(parseInt(getInput("poll-interval")));
+    }
+}
+//# sourceMappingURL=configuration.js.map
+// EXTERNAL MODULE: ./node_modules/pg/lib/index.js
+var pg_lib = __nccwpck_require__(3273);
+;// CONCATENATED MODULE: ./node_modules/pg/esm/index.mjs
+// ESM wrapper for pg
+
+
+// Re-export all the properties
+const Client = pg_lib.Client
+const Pool = pg_lib.Pool
+const Connection = pg_lib.Connection
+const types = pg_lib.types
+const Query = pg_lib.Query
+const DatabaseError = pg_lib.DatabaseError
+const escapeIdentifier = pg_lib.escapeIdentifier
+const escapeLiteral = pg_lib.escapeLiteral
+const Result = pg_lib.Result
+const TypeOverrides = pg_lib.TypeOverrides
+
+// Also export the defaults
+const esm_defaults = pg_lib.defaults
+
+// Re-export the default
+/* harmony default export */ const esm = ((/* unused pure expression or super */ null && (pg)));
+
+;// CONCATENATED MODULE: ./lib/logger.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+const THRESHOLDS = {
+    silent: 0,
+    error: 1,
+    warning: 2,
+    info: 3,
+    debug: 4,
+};
+/**
+ * Writes every message to stderr.
+ *
+ * stdout is deliberately left alone: it carries command results (and, while
+ * `mutex lock ... -- <command>` runs, the wrapped process' own output), so
+ * diagnostics must never be mixed into it.
+ */
+class ConsoleLogger {
+    threshold;
+    constructor(level = "info") {
+        this.threshold = THRESHOLDS[level];
+    }
+    info(message) {
+        this.write(THRESHOLDS.info, message);
+    }
+    warning(message) {
+        this.write(THRESHOLDS.warning, `warning: ${message}`);
+    }
+    error(message) {
+        this.write(THRESHOLDS.error, `error: ${message}`);
+    }
+    debug(message) {
+        this.write(THRESHOLDS.debug, `debug: ${message}`);
+    }
+    write(level, message) {
+        if (level <= this.threshold) {
+            process.stderr.write(`${message}\n`);
+        }
+    }
+}
+/** Discards everything. Useful in tests and for `--quiet`-style callers. */
+class SilentLogger {
+    info() { }
+    warning() { }
+    error() { }
+    debug() { }
+}
+//# sourceMappingURL=logger.js.map
+// EXTERNAL MODULE: ./node_modules/pg-format/lib/index.js
+var pg_format_lib = __nccwpck_require__(8787);
+;// CONCATENATED MODULE: ./lib/database.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
+
+
+
+/**
+ * The columns every read returns.
+ *
+ * `created_at`/`expires_at` are `TIMESTAMP WITHOUT TIME ZONE` holding UTC wall
+ * time. `AT TIME ZONE 'UTC'` re-labels them as `timestamptz`, so node-postgres
+ * parses them into correct `Date`s no matter what time zone the client or the
+ * database session happens to run in.
+ */
+const LOCK_COLUMNS = `id, reason, owner,
+        created_at AT TIME ZONE 'UTC' AS created_at,
+        expires_at AT TIME ZONE 'UTC' AS expires_at,
+        (expires_at IS NOT NULL AND expires_at < (NOW() AT TIME ZONE 'UTC')) AS expired`;
+class DatabaseMutex {
+    config;
+    log;
+    pool;
+    closed = false;
+    /** Schema creation is tried at most once per instance. */
+    schemaAttempted = false;
+    constructor(config, log = new SilentLogger()) {
+        this.config = config;
+        this.log = log;
+        // Database configuration using connection string
+        this.pool = new Pool({ connectionString: config.dbConnectionString });
+        // Without a listener, an error on an idle client is an unhandled 'error'
+        // event and takes the whole process down.
+        this.pool.on("error", (error) => {
+            logWarning(this.log, error, "Idle database client error");
+        });
+    }
+    async acquireLock(name, reason, owner = null) {
+        return this.withSchemaRetry(`Acquiring lock '${name}'`, () => this.acquireLockInternal(name, reason, owner));
+    }
+    async releaseLock(name, owner = null, fence = null) {
+        return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, owner, fence));
+    }
+    /**
+     * Extends a lock that `owner` currently holds.
+     *
+     * Strictly an UPDATE: it never inserts, so renewing something that is not
+     * held fails rather than quietly taking a new lock. Both the id and the
+     * owner have to match, and an expired lock is refused - by then somebody
+     * else may already have taken it over.
+     *
+     * The new expiry is whichever is later, now + `expiration` or the expiry the
+     * lock already had, so renewing can only ever buy more time. Asking for less
+     * than the lock already has is a no-op rather than a silent shortening.
+     */
+    async renewLock(name, expiration, owner = null) {
+        return this.withSchemaRetry(`Renewing lock '${name}'`, () => this.renewLockInternal(name, expiration, owner));
+    }
+    /** Returns the lock's current row, or null when nothing holds it. */
+    async inspectLock(name) {
+        return this.withSchemaRetry(`Inspecting lock '${name}'`, async () => {
+            const result = await this.pool.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME), [name]);
+            return result.rows.length > 0 ? toLockRecord(result.rows[0]) : null;
+        });
+    }
+    /** Returns every lock in the table, expired ones included. */
+    async listLocks() {
+        return this.withSchemaRetry("Listing locks", async () => {
+            const result = await this.pool.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I ORDER BY id;`, TABLE_NAME));
+            return result.rows.map(toLockRecord);
+        });
+    }
+    /**
+     * Deletes every expired lock. Expired rows are already dead - acquiring
+     * overwrites them - so this is only housekeeping and needs no advisory lock.
+     */
+    async pruneExpired(dryRun = false) {
+        return this.withSchemaRetry("Pruning expired locks", async () => {
+            const predicate = `WHERE expires_at IS NOT NULL AND expires_at < (NOW() AT TIME ZONE 'UTC')`;
+            const query = dryRun
+                ? pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I ${predicate};`, TABLE_NAME)
+                : pg_format_lib(`DELETE FROM %I ${predicate} RETURNING ${LOCK_COLUMNS};`, TABLE_NAME);
+            const result = await this.pool.query(query);
+            return result.rows.map(toLockRecord);
+        });
+    }
+    /** Releases the connection pool. Required for a CLI process to exit. */
+    async close() {
+        if (this.closed) {
+            return;
+        }
+        this.closed = true;
+        await this.pool.end();
+    }
+    async acquireLockInternal(name, reason, owner) {
+        let client;
+        try {
+            client = await this.connect();
+            await client.query("BEGIN");
+            if (!(await this.holdAdvisoryLock(client, name))) {
+                await client.query("ROLLBACK");
+                return {
+                    acquired: false,
+                    status: "Lock held by another transaction",
+                };
+            }
+            // Insert the lock, or take it over when the existing one has expired.
+            // A row whose expires_at is NULL is never taken over: an unknown
+            // expiry is treated as "still held". Acquiring never extends a lock the
+            // caller already holds - that is `renewLock`'s job.
+            const upsertQuery = pg_format_lib(`INSERT INTO %I (id, reason, owner, expires_at)
+        VALUES ($1, $2, $3, (NOW() AT TIME ZONE 'UTC') + ($4 || ' seconds')::INTERVAL)
+        ON CONFLICT (id) DO UPDATE
+        SET
+            expires_at = EXCLUDED.expires_at,
+            reason = EXCLUDED.reason,
+            owner = EXCLUDED.owner,
+            created_at = (NOW() AT TIME ZONE 'UTC')
+        WHERE
+            %I.expires_at < (NOW() AT TIME ZONE 'UTC')
+        RETURNING ${LOCK_COLUMNS};`, TABLE_NAME, TABLE_NAME);
+            const result = await client.query(upsertQuery, [
+                name,
+                reason,
+                owner,
+                this.config.expiration,
+            ]);
+            // No row means a valid, unexpired lock already existed.
+            if (result.rowCount === 0) {
+                const holder = await client.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME), [name]);
+                await client.query("ROLLBACK");
+                this.log.info(`Lock for "${name}" exists and has not expired.`);
+                return {
+                    acquired: false,
+                    status: "Lock taken by another process (try again later)",
+                    record: holder.rows.length > 0 ? toLockRecord(holder.rows[0]) : undefined,
+                };
+            }
+            await client.query("COMMIT");
+            this.log.info(`Lock '${name}' acquired successfully.`);
+            const record = toLockRecord(result.rows[0]);
+            const approximate = new Date(Date.now() + this.config.expiration * 1000).toISOString();
+            return {
+                acquired: true,
+                status: "Lock acquired",
+                expires: record.expiresAt ?? `approximately ${approximate}`,
+                record,
+            };
+        }
+        catch (error) {
+            // Not reported here: `withSchemaRetry` either succeeds on the retry, in
+            // which case this was not a problem, or rethrows for the caller to report.
+            this.log.debug(`An error occurred while acquiring a lock for '${name}'; rolling back: ${describeError(error)}`);
+            await rollback(client, this.log);
+            throw error;
+        }
+        finally {
+            this.disconnect(client);
+        }
+    }
+    async releaseLockInternal(name, owner, fence) {
+        let client;
+        try {
+            client = await this.connect();
+            await client.query("BEGIN");
+            if (!(await this.holdAdvisoryLock(client, name))) {
+                await client.query("ROLLBACK");
+                return { unlocked: false, outcome: "contended" };
+            }
+            const existing = await client.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME), [name]);
+            if (existing.rows.length === 0) {
+                await client.query("COMMIT");
+                this.log.warning(`Lock '${name}' was not found. No release was necessary.`);
+                return { unlocked: true, outcome: "not-found" };
+            }
+            const record = toLockRecord(existing.rows[0]);
+            if (!mayModify(record, owner)) {
+                await client.query("COMMIT");
+                return { unlocked: false, outcome: "owned-by-another", record };
+            }
+            // The caller knows which acquisition it is releasing, and this is not
+            // it: the lock lapsed and somebody took it over. Ownership cannot catch
+            // this when neither side named an owner, which is the default.
+            if (fence !== null && record.createdAt !== fence) {
+                await client.query("COMMIT");
+                return { unlocked: false, outcome: "superseded", record };
+            }
+            await client.query(pg_format_lib(`DELETE FROM %I WHERE id = $1;`, TABLE_NAME), [
+                name,
+            ]);
+            await client.query("COMMIT");
+            this.log.info(`Lock '${name}' released successfully.`);
+            return { unlocked: true, outcome: "unlocked", record };
+        }
+        catch (error) {
+            // Not reported here: `withSchemaRetry` either succeeds on the retry, in
+            // which case this was not a problem, or rethrows for the caller to report.
+            this.log.debug(`An error occurred while releasing a lock for '${name}'; rolling back: ${describeError(error)}`);
+            await rollback(client, this.log);
+            throw error;
+        }
+        finally {
+            this.disconnect(client);
+        }
+    }
+    async renewLockInternal(name, expiration, owner) {
+        let client;
+        try {
+            client = await this.connect();
+            await client.query("BEGIN");
+            if (!(await this.holdAdvisoryLock(client, name))) {
+                await client.query("ROLLBACK");
+                return { renewed: false, outcome: "contended" };
+            }
+            const existing = await client.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME), [name]);
+            if (existing.rows.length === 0) {
+                await client.query("COMMIT");
+                return { renewed: false, outcome: "not-found" };
+            }
+            const record = toLockRecord(existing.rows[0]);
+            // An unowned lock has nobody to wrong, so it stays open - which is what
+            // keeps Action-written locks manageable from the CLI.
+            if (!mayModify(record, owner)) {
+                await client.query("COMMIT");
+                return { renewed: false, outcome: "owned-by-another", record };
+            }
+            // An expired lock may already have been taken over by someone else, so
+            // pushing its expiry forward would re-take it behind their back.
+            if (record.expired) {
+                await client.query("COMMIT");
+                return { renewed: false, outcome: "expired", record };
+            }
+            // UPDATE, never an upsert: a lock that vanished between the read and
+            // here stays gone rather than being recreated.
+            // GREATEST, so a renewal can only push the expiry outwards. Postgres
+            // ignores NULLs here, so a row with no recorded expiry still takes the
+            // computed one rather than staying NULL.
+            const renewed = await client.query(pg_format_lib(`UPDATE %I
+          SET expires_at = GREATEST(
+              (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL,
+              expires_at
+          )
+          WHERE id = $1
+          RETURNING ${LOCK_COLUMNS};`, TABLE_NAME), [name, expiration]);
+            if (renewed.rows.length === 0) {
+                await client.query("COMMIT");
+                return { renewed: false, outcome: "not-found" };
+            }
+            await client.query("COMMIT");
+            const updated = toLockRecord(renewed.rows[0]);
+            const extended = updated.expiresAt !== record.expiresAt;
+            this.log.info(extended
+                ? `Lock '${name}' renewed for ${expiration}s.`
+                : `Lock '${name}' already ran past ${expiration}s; left as it was.`);
+            return {
+                renewed: true,
+                outcome: "renewed",
+                extended,
+                record: updated,
+            };
+        }
+        catch (error) {
+            // Not reported here: `withSchemaRetry` either succeeds on the retry, in
+            // which case this was not a problem, or rethrows for the caller to report.
+            this.log.debug(`An error occurred while renewing a lock for '${name}'; rolling back: ${describeError(error)}`);
+            await rollback(client, this.log);
+            throw error;
+        }
+        finally {
+            this.disconnect(client);
+        }
+    }
+    /**
+     * Takes a transaction-scoped advisory lock on the mutex id, so no other
+     * process can acquire or release the same lock concurrently. Retries once,
+     * since contention here is almost always momentary.
+     */
+    async holdAdvisoryLock(client, name) {
+        if (await this.tryAdvisoryLock(client, name)) {
+            return true;
+        }
+        await helpers_sleep(1);
+        return this.tryAdvisoryLock(client, name);
+    }
+    async tryAdvisoryLock(client, name) {
+        const result = await client.query("SELECT pg_try_advisory_xact_lock(hashtext($1)) as acquired", [name]);
+        if (!result.rows[0].acquired) {
+            this.log.debug(`Could not acquire advisory lock '${name}'.`);
+            return false;
+        }
+        return true;
+    }
+    /**
+     * Runs an operation and, if it fails, makes sure the schema exists before
+     * trying once more - the usual cause is a database that has never seen this
+     * action before.
+     */
+    async withSchemaRetry(operation, run) {
+        try {
+            return await run();
+        }
+        catch (error) {
+            // Creating the table is a guess at the cause, worth making once. After
+            // that the schema is not what is wrong, so later failures go straight
+            // back to the caller instead of re-running DDL on every operation.
+            if (this.schemaAttempted) {
+                throw error;
+            }
+            this.schemaAttempted = true;
+            // Expected the first time a database is used, so this is not worth a
+            // warning: if the retry fails too, the original error is thrown.
+            this.log.debug(`${operation} failed; ensuring the schema exists and retrying once: ${describeError(error)}`);
+            try {
+                await this.initializeTable();
+            }
+            catch (schemaError) {
+                // The original error is the more useful one, so it is what gets
+                // thrown - but if the schema really was the problem and we could not
+                // fix it, say so plainly and give the statement to run by hand.
+                // Otherwise the only symptom is a missing column, and the actual
+                // cause - no rights to add it - is invisible.
+                if (isMissingSchema(error)) {
+                    this.log.error(`The ${TABLE_NAME} table is missing a column this version needs, and it could not be added: ${describeError(schemaError)}\n` +
+                        `  Ask someone with DDL rights to run:\n` +
+                        `    ALTER TABLE ${TABLE_NAME} ADD COLUMN IF NOT EXISTS owner TEXT;`);
+                }
+                throw error;
+            }
+            return run();
+        }
+    }
+    /**
+     * Creates the lock table when missing, and adds the `owner` column to tables
+     * created by earlier versions. Both statements are idempotent.
+     */
+    async initializeTable() {
+        let client;
+        try {
+            client = await this.connect();
+            await client.query(pg_format_lib(`CREATE TABLE IF NOT EXISTS %I (
+            id VARCHAR(255) PRIMARY KEY,
+            reason TEXT,
+            owner TEXT,
+            created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC') NOT NULL,
+            expires_at TIMESTAMP WITHOUT TIME ZONE
+          );`, TABLE_NAME));
+            await client.query(pg_format_lib(`ALTER TABLE %I ADD COLUMN IF NOT EXISTS owner TEXT;`, TABLE_NAME));
+            this.log.debug(`Table ${TABLE_NAME} is present and up to date.`);
+        }
+        catch (error) {
+            // Reported by whoever asked for the schema; `withSchemaRetry` prefers to
+            // surface the original failure instead.
+            this.log.debug(`Could not create the table ${TABLE_NAME}: ${describeError(error)}`);
+            throw error;
+        }
+        finally {
+            this.disconnect(client);
+        }
+    }
+    async connect() {
+        this.log.debug("Attempting to connect to the database.");
+        const client = await this.pool.connect();
+        this.log.debug("Successfully connected to the database.");
+        return client;
+    }
+    disconnect(client) {
+        // Return the connection to the pool, whether an error occurred or not
+        client?.release();
+        if (client) {
+            this.log.debug("Database connection released.");
+        }
+    }
+}
+/**
+ * True when Postgres is telling us the table or a column is not there:
+ * undefined_column (42703) or undefined_table (42P01).
+ */
+function isMissingSchema(error) {
+    const code = error?.code;
+    return code === "42703" || code === "42P01";
+}
+/**
+ * Who may unlock or renew a lock: its owner, or anyone at all when it has none.
+ *
+ * Ownership is what confers protection, so a lock nobody claimed is nobody's to
+ * defend - which is also what lets the CLI manage the unowned locks the Action
+ * writes today. Naming an owner is the act that makes a lock yours.
+ *
+ * There is no override. Breaking somebody else's lock means naming them, which
+ * makes it a deliberate act rather than a flag appended to a failing command.
+ *
+ * Exported for tests: the matrix is small, security-relevant, and worth pinning.
+ */
+function mayModify(record, owner) {
+    if (record.owner === null) {
+        return true;
+    }
+    return record.owner === owner;
+}
+async function rollback(client, log) {
+    if (!client) {
+        return;
+    }
+    try {
+        await client.query("ROLLBACK");
+    }
+    catch (error) {
+        logWarning(log, error, "Failed to roll back the transaction");
+    }
+}
+function toLockRecord(row) {
+    return {
+        id: String(row.id),
+        reason: row.reason ?? null,
+        owner: row.owner ?? null,
+        createdAt: toIsoString(row.created_at),
+        expiresAt: toIsoString(row.expires_at),
+        expired: row.expired === true,
+    };
+}
+function toIsoString(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    if (value instanceof Date) {
+        return value.toISOString();
+    }
+    return String(value);
+}
+//# sourceMappingURL=database.js.map
+// EXTERNAL MODULE: ./node_modules/@slack/web-api/dist/index.js
+var web_api_dist = __nccwpck_require__(5105);
+;// CONCATENATED MODULE: ./lib/actions-logger.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+/**
+ * Routes the mutex core's log output through the GitHub Actions toolkit, so
+ * warnings and errors still surface as workflow annotations.
+ *
+ * This lives in its own module so the CLI never pulls `@actions/core` in.
+ */
+class ActionsLogger {
+    info(message) {
+        info(message);
+    }
+    warning(message) {
+        warning(message);
+    }
+    error(message) {
+        error(message);
+    }
+    debug(message) {
+        core_debug(message);
+    }
+}
+//# sourceMappingURL=actions-logger.js.map
+;// CONCATENATED MODULE: ./lib/slack.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
 
 
 
@@ -49616,7 +50177,7 @@ class SlackClient {
             return true;
         }
         catch (error) {
-            printError(error, `Failed posting Slack message to ${this.channel}`);
+            logError(new ActionsLogger(), error, `Failed posting Slack message to ${this.channel}`);
         }
         return false;
     }
@@ -49624,7 +50185,7 @@ class SlackClient {
 //# sourceMappingURL=slack.js.map
 ;// CONCATENATED MODULE: ./lib/notifications.js
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49676,7 +50237,7 @@ class Notifications {
 //# sourceMappingURL=notifications.js.map
 ;// CONCATENATED MODULE: ./lib/post.js
 /*
- * Copyright (c) 2025 Mihai Bojin
+ * Copyright (c) 2025-2026 Mihai Bojin
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49697,7 +50258,11 @@ class Notifications {
 
 
 
+
+
 async function post() {
+    const log = new ActionsLogger();
+    let mutex;
     try {
         info("Running post-job cleanup step.");
         const gh = new GitHubClient();
@@ -49715,13 +50280,15 @@ async function post() {
             warning(`⚠️ Auto-releasing is disabled. Lock '${settings.identifier}' will not be released.`);
             return;
         }
-        const mutex = new DatabaseMutex(settings);
+        mutex = new DatabaseMutex(settings, log);
         const notifications = new Notifications(settings, gh);
-        await tryRelease(settings, gh, mutex, notifications);
+        await releaseAndAnnounce(settings, mutex, log, notifications);
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        github_setFailed(message);
+        github_setFailed(describeError(error));
+    }
+    finally {
+        await mutex?.close();
     }
 }
 post();
