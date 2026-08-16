@@ -244,11 +244,12 @@ The wrapper is careful about which lock it gives back: it remembers the `created
 
 In order of precedence:
 
-1. `--database-url <url>`
-2. `$DATABASE_URL` (rename with `--env-var`)
-3. the `.secenv` chain, decrypted through the dotsecenv CLI
+1. `$DATABASE_URL` (rename with `--env-var`)
+2. `./.secenv`, decrypted through the dotsecenv CLI
 
-The third is the interesting one. Given a project like this:
+**There is deliberately no `--database-url` flag.** A connection string on the command line lands in shell history, and in `ps` output that every user on the machine can read for as long as mutex runs. An environment variable does neither.
+
+The second is the interesting one. Given a project like this:
 
 ```
 my-project/

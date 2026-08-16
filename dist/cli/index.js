@@ -7739,7 +7739,6 @@ const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"];
 /** Only `lock` waits, so only `lock` takes the options that describe waiting. */
 const LOCK_OPTIONS = [...ACQUIRE_OPTIONS, "max-wait", "poll-interval"];
 const CONNECTION_OPTIONS = [
-    "database-url",
     "env-var",
     "no-secenv",
     "dotsecenv-bin",
@@ -7825,7 +7824,6 @@ const OPTION_CONFIG = {
     "no-renew": { type: "boolean" },
     owner: { type: "string", short: "o" },
     "dry-run": { type: "boolean" },
-    "database-url": { type: "string" },
     "env-var": { type: "string" },
     "no-secenv": { type: "boolean" },
     "dotsecenv-bin": { type: "string" },
@@ -7935,9 +7933,6 @@ function resolveOptions(command, values) {
         autoRenew: values["no-renew"] !== true,
         owner: readOwner(values.owner),
         dryRun: values["dry-run"] === true,
-        databaseUrl: typeof values["database-url"] === "string"
-            ? values["database-url"]
-            : null,
         envVar: typeof values["env-var"] === "string"
             ? values["env-var"]
             : "DATABASE_URL",
@@ -8053,7 +8048,6 @@ Lock options:
   -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
 
 Connection:
-      --database-url <url>       PostgreSQL connection string
       --env-var <NAME>           Variable holding it (default: DATABASE_URL)
       --no-secenv                Do not read ./.secenv
       --dotsecenv-bin <path>     The dotsecenv binary (default: $DOTSECENV_BIN or dotsecenv)
@@ -8068,8 +8062,10 @@ General:
       --verbose                  Include debug output
   -h, --help                     Show help
 
-The connection string is taken from --database-url, then $DATABASE_URL, then
-./.secenv in the working directory, resolved through the dotsecenv CLI.
+The connection string is taken from $DATABASE_URL, then ./.secenv in the
+working directory, resolved through the dotsecenv CLI. There is deliberately no
+flag for it: a connection string on the command line is visible in shell
+history, and in "ps" to every user on the machine for as long as mutex runs.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.
@@ -9496,17 +9492,19 @@ class VaultCache {
 /**
  * Works out the PostgreSQL connection string, in order of precedence:
  *
- *   1. --database-url
- *   2. the environment (DATABASE_URL by default)
- *   3. the .secenv chain, decrypted through the dotsecenv CLI
+ *   1. the environment (DATABASE_URL by default)
+ *   2. ./.secenv, decrypted through the dotsecenv CLI
  *
- * The explicit sources come first so a one-off override never has to fight
- * with whatever the project's `.secenv` says.
+ * The environment comes first, so a one-off override never has to fight with
+ * whatever the project's `.secenv` says - and when it is set there is nothing
+ * to resolve, so no vault is opened and no GPG prompt can appear for a value
+ * that was already to hand.
+ *
+ * There is no flag. A connection string passed on the command line lands in
+ * shell history, and in `ps` for every user on the machine to read for as long
+ * as the process runs; an environment variable does neither.
  */
 async function resolveConnectionString(options, log) {
-    if (options.databaseUrl) {
-        return { value: options.databaseUrl, source: "--database-url" };
-    }
     const fromEnvironment = process.env[options.envVar];
     if (fromEnvironment) {
         return {
@@ -9515,11 +9513,11 @@ async function resolveConnectionString(options, log) {
         };
     }
     if (!options.useSecenv) {
-        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and --no-secenv was given`, `Pass --database-url, or export ${options.envVar}.`);
+        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and --no-secenv was given`, `Export ${options.envVar}.`);
     }
     const file = findSecenvFile();
     if (!file) {
-        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and there is no .secenv here`, `Pass --database-url, export ${options.envVar}, or run this from the directory whose .secenv defines it.`);
+        throw new ConfigurationError(`no connection string: ${options.envVar} is unset and there is no .secenv here`, `Export ${options.envVar}, or run this from the directory whose .secenv defines it.`);
     }
     log.debug(`Reading ${file}`);
     let resolved;
@@ -9537,7 +9535,7 @@ async function resolveConnectionString(options, log) {
         throw error;
     }
     if (!resolved) {
-        throw new ConfigurationError(`no connection string: ${file} does not define ${options.envVar}`, "Add it there, pass --database-url, or point --secenv-dir elsewhere.");
+        throw new ConfigurationError(`no connection string: ${file} does not define ${options.envVar}`, `Add it there, or export ${options.envVar}.`);
     }
     const origin = resolved.kind === "secret"
         ? `${resolved.file} (secret '${resolved.secret}' in ${resolved.vault ?? "a configured vault"})`

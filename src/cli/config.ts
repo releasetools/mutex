@@ -31,21 +31,22 @@ export interface Connection {
 /**
  * Works out the PostgreSQL connection string, in order of precedence:
  *
- *   1. --database-url
- *   2. the environment (DATABASE_URL by default)
- *   3. the .secenv chain, decrypted through the dotsecenv CLI
+ *   1. the environment (DATABASE_URL by default)
+ *   2. ./.secenv, decrypted through the dotsecenv CLI
  *
- * The explicit sources come first so a one-off override never has to fight
- * with whatever the project's `.secenv` says.
+ * The environment comes first, so a one-off override never has to fight with
+ * whatever the project's `.secenv` says - and when it is set there is nothing
+ * to resolve, so no vault is opened and no GPG prompt can appear for a value
+ * that was already to hand.
+ *
+ * There is no flag. A connection string passed on the command line lands in
+ * shell history, and in `ps` for every user on the machine to read for as long
+ * as the process runs; an environment variable does neither.
  */
 export async function resolveConnectionString(
   options: ResolvedOptions,
   log: Logger,
 ): Promise<Connection> {
-  if (options.databaseUrl) {
-    return { value: options.databaseUrl, source: "--database-url" };
-  }
-
   const fromEnvironment = process.env[options.envVar];
   if (fromEnvironment) {
     return {
@@ -57,7 +58,7 @@ export async function resolveConnectionString(
   if (!options.useSecenv) {
     throw new ConfigurationError(
       `no connection string: ${options.envVar} is unset and --no-secenv was given`,
-      `Pass --database-url, or export ${options.envVar}.`,
+      `Export ${options.envVar}.`,
     );
   }
 
@@ -65,7 +66,7 @@ export async function resolveConnectionString(
   if (!file) {
     throw new ConfigurationError(
       `no connection string: ${options.envVar} is unset and there is no .secenv here`,
-      `Pass --database-url, export ${options.envVar}, or run this from the directory whose .secenv defines it.`,
+      `Export ${options.envVar}, or run this from the directory whose .secenv defines it.`,
     );
   }
 
@@ -90,7 +91,7 @@ export async function resolveConnectionString(
   if (!resolved) {
     throw new ConfigurationError(
       `no connection string: ${file} does not define ${options.envVar}`,
-      "Add it there, pass --database-url, or point --secenv-dir elsewhere.",
+      `Add it there, or export ${options.envVar}.`,
     );
   }
 

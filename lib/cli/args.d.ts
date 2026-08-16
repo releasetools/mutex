@@ -32,7 +32,6 @@ export interface ResolvedOptions {
     autoRenew: boolean;
     owner: string | null;
     dryRun: boolean;
-    databaseUrl: string | null;
     envVar: string;
     useSecenv: boolean;
     dotsecenvBin: string | null;

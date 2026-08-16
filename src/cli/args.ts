@@ -53,7 +53,6 @@ const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"] as const;
 const LOCK_OPTIONS = [...ACQUIRE_OPTIONS, "max-wait", "poll-interval"] as const;
 
 const CONNECTION_OPTIONS = [
-  "database-url",
   "env-var",
   "no-secenv",
   "dotsecenv-bin",
@@ -150,7 +149,6 @@ const OPTION_CONFIG = {
   "no-renew": { type: "boolean" },
   owner: { type: "string", short: "o" },
   "dry-run": { type: "boolean" },
-  "database-url": { type: "string" },
   "env-var": { type: "string" },
   "no-secenv": { type: "boolean" },
   "dotsecenv-bin": { type: "string" },
@@ -178,7 +176,6 @@ export interface ResolvedOptions {
   autoRenew: boolean;
   owner: string | null;
   dryRun: boolean;
-  databaseUrl: string | null;
   envVar: string;
   useSecenv: boolean;
   dotsecenvBin: string | null;
@@ -322,10 +319,6 @@ function resolveOptions(
     autoRenew: values["no-renew"] !== true,
     owner: readOwner(values.owner),
     dryRun: values["dry-run"] === true,
-    databaseUrl:
-      typeof values["database-url"] === "string"
-        ? values["database-url"]
-        : null,
     envVar:
       typeof values["env-var"] === "string"
         ? values["env-var"]
@@ -469,7 +462,6 @@ Lock options:
   -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
 
 Connection:
-      --database-url <url>       PostgreSQL connection string
       --env-var <NAME>           Variable holding it (default: DATABASE_URL)
       --no-secenv                Do not read ./.secenv
       --dotsecenv-bin <path>     The dotsecenv binary (default: $DOTSECENV_BIN or dotsecenv)
@@ -484,8 +476,10 @@ General:
       --verbose                  Include debug output
   -h, --help                     Show help
 
-The connection string is taken from --database-url, then $DATABASE_URL, then
-./.secenv in the working directory, resolved through the dotsecenv CLI.
+The connection string is taken from $DATABASE_URL, then ./.secenv in the
+working directory, resolved through the dotsecenv CLI. There is deliberately no
+flag for it: a connection string on the command line is visible in shell
+history, and in "ps" to every user on the machine for as long as mutex runs.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.
