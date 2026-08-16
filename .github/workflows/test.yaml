@@ -123,12 +123,10 @@ jobs:
           npm ci
           npm run build
 
-      # Deliberately the deprecated name, which every workflow written against
-      # v1 passes: this job is what proves it still takes a lock, and warns.
       - name: 🔒 Acquire Lock (and auto-release on completion)
         uses: ./
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           command: "lock"

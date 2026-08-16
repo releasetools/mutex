@@ -16,10 +16,7 @@
  */
 
 import { parseArgs } from "node:util";
-import {
-  CONNECTION_ENV_VAR,
-  DEPRECATED_CONNECTION_ENV_VAR,
-} from "../connection.js";
+import { CONNECTION_ENV_VAR } from "../constants.js";
 import { LogLevel } from "../logger.js";
 import {
   DEFAULT_EXPIRATION_SECONDS,
@@ -447,9 +444,10 @@ secret can put it in the environment for one command, for example:
 
     ${CONNECTION_ENV_VAR}="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
 
-$${DEPRECATED_CONNECTION_ENV_VAR} is still read when $${CONNECTION_ENV_VAR} is not set, and warns when
-it is. It is deprecated because almost everything else sets that name too, and
-usually to an application's own database rather than the one holding locks.
+A connection string kept under another name needs an assignment, not an
+option:
+
+    ${CONNECTION_ENV_VAR}="$LOCKS_URL" mutex lock x
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.

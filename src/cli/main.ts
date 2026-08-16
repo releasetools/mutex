@@ -16,6 +16,7 @@
  *
  */
 
+import { CONNECTION_ENV_VAR } from "../constants.js";
 import { DatabaseMutex } from "../database.js";
 import { logError } from "../helpers.js";
 import { ConsoleLogger } from "../logger.js";
@@ -84,14 +85,12 @@ export async function main(argv: string[]): Promise<number> {
 
   let mutex: DatabaseMutex | undefined;
   try {
-    const connection = resolveConnectionString(log);
-    log.debug(
-      `Using the connection string from the ${connection.name} environment variable.`,
-    );
+    const connection = resolveConnectionString();
+    log.debug(`Using the connection string from $${CONNECTION_ENV_VAR}.`);
 
     mutex = new DatabaseMutex(
       {
-        dbConnectionString: connection.value,
+        dbConnectionString: connection,
         expiration: options.expiration,
       },
       log,
