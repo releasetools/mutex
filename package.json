@@ -1,45 +1,6 @@
 {
   "name": "mutex",
   "version": "1.2.0",
-  "private": true,
   "description": "Advisory lock service for CI/CD pipelines. Prevents race conditions by ensuring mutual exclusion: only one job can access shared resources concurrently.",
-  "main": "lib/main.js",
-  "bin": {
-    "mutex": "./bin/mutex.js"
-  },
-  "scripts": {
-    "clean": "rm -rf lib dist",
-    "lint": "prettier --ignore-unknown --write '**/*.{ts,js,json,md,yml,yaml}'",
-    "build:watch": "tsc --watch",
-    "build": "npm run clean && tsc && npm run package",
-    "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
-    "package:action": "npm run build && node scripts/package-action.mjs",
-    "mutex": "node ./bin/mutex.js",
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-    "prepare": "husky"
-  },
-  "engines": {
-    "node": ">=24.0.0"
-  },
-  "dependencies": {
-    "@actions/core": "^3.0.0",
-    "@actions/github": "^9.1.1",
-    "@slack/web-api": "^8.0.0",
-    "@types/pg": "^8.15.5",
-    "pg": "^8.16.3",
-    "pg-format": "^1.0.4",
-    "ts-node": "^10.9.2"
-  },
-  "devDependencies": {
-    "@types/jest": "^30.0.0",
-    "@types/node": "^24.0.0",
-    "@types/pg-format": "^1.0.5",
-    "@vercel/ncc": "^0.45.0",
-    "husky": "^9.1.7",
-    "jest": "^30.0.0",
-    "prettier": "^3.6.2",
-    "ts-jest": "^29.1.5",
-    "typescript": "^6.0.0"
-  },
-  "type": "module"
+  "private": true
 }
