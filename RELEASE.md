@@ -2,7 +2,7 @@
 
 Newest first. One line per change.
 
-## 1.3.0
+## 1.2.2
 
 - The connection string now comes from `MUTEX_DATABASE_URL`, in both the Action and the CLI. `DATABASE_URL` is set by almost every framework, ORM and PaaS, and points at the application's database rather than the one holding locks - so mutex asks for a name of its own.
 - `DATABASE_URL` still works and still takes locks, but warns when it is what was used. It will be removed in a future major version.
