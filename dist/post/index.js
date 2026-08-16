@@ -49716,6 +49716,64 @@ async function releaseAndAnnounce(settings, mutex, log, notifications) {
     });
 }
 //# sourceMappingURL=action-steps.js.map
+;// CONCATENATED MODULE: ./lib/connection.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+/**
+ * Where the connection string comes from.
+ *
+ * Prefixed on purpose. `DATABASE_URL` is the most reused name in the
+ * ecosystem - frameworks, ORMs, PaaS providers and CI systems all set it, and
+ * it points at the *application's* database far more often than at the one
+ * holding locks. A repository that sets it for its app and then adds mutex
+ * gets its locks in the app database, and is never told.
+ */
+const CONNECTION_ENV_VAR = "MUTEX_DATABASE_URL";
+/**
+ * Still read, because it is what every workflow written against v1 passes.
+ * Using it warns; removal is tracked in issue #70.
+ */
+const DEPRECATED_CONNECTION_ENV_VAR = "DATABASE_URL";
+/**
+ * The precedence, in one place, for both front ends.
+ *
+ * `read` answers with what a name is worth where the caller stands: the CLI
+ * reads the environment, the Action reads the environment and then its own
+ * `with:` inputs. What they must agree on is the order the two names are
+ * tried in and the warning the old one earns, which is why that lives here
+ * rather than in each of them.
+ *
+ * Warns once, since each front end resolves the connection string once.
+ */
+function findConnectionString(read, log) {
+    const preferred = read(CONNECTION_ENV_VAR);
+    if (preferred) {
+        return { value: preferred, name: CONNECTION_ENV_VAR };
+    }
+    const deprecated = read(DEPRECATED_CONNECTION_ENV_VAR);
+    if (deprecated) {
+        log.warning(`${DEPRECATED_CONNECTION_ENV_VAR} is deprecated; rename it to ${CONNECTION_ENV_VAR}. ` +
+            "Almost everything sets that name, and usually to the application's " +
+            "own database rather than the one holding locks.");
+        return { value: deprecated, name: DEPRECATED_CONNECTION_ENV_VAR };
+    }
+    return null;
+}
+//# sourceMappingURL=connection.js.map
 ;// CONCATENATED MODULE: ./lib/timing.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -49790,6 +49848,7 @@ function pollIntervalMs(pollInterval) {
 
 
 
+
 class MutexSettings {
     dbConnectionString;
     command;
@@ -49799,14 +49858,15 @@ class MutexSettings {
     pollTimeoutMs;
     pollIntervalMs;
     autoReleaseLock;
-    /**
-     * The Action does not record an owner yet (see issue #67), so every lock it
-     * takes is unowned - releasable by itself, and by any caller that likewise
-     * names no owner.
-     */
-    owner = null;
-    constructor() {
-        this.dbConnectionString = loadRequiredFromEnvOrGHAInput("DATABASE_URL");
+    owner;
+    constructor(log) {
+        // Either name works as an environment variable or as a `with:` input; the
+        // order they are tried in is shared with the CLI, in connection.ts.
+        const connection = findConnectionString(loadFromEnvOrGHAInput, log);
+        if (!connection) {
+            throw new Error(`🚨 ${CONNECTION_ENV_VAR} not found. Cannot continue...`);
+        }
+        this.dbConnectionString = connection.value;
         this.command = getInput("command", { required: true });
         this.identifier = getInput("id", { required: true });
         // An unset or non-numeric input parses to NaN, which would otherwise flow
@@ -49817,6 +49877,8 @@ class MutexSettings {
             this.expiration = DEFAULT_EXPIRATION_SECONDS;
         }
         this.reason = getInput("reason", { trimWhitespace: true });
+        this.owner =
+            getInput("owner", { trimWhitespace: true }).trim() || null;
         this.autoReleaseLock = getInput("auto-release") === "true";
         this.pollTimeoutMs = pollTimeoutMs(this.expiration, parseInt(getInput("max-wait")));
         this.pollIntervalMs = pollIntervalMs(parseInt(getInput("poll-interval")));
@@ -50311,8 +50373,8 @@ function isMissingSchema(error) {
  * Who may unlock or renew a lock: its owner, or anyone at all when it has none.
  *
  * Ownership is what confers protection, so a lock nobody claimed is nobody's to
- * defend - which is also what lets the CLI manage the unowned locks the Action
- * writes today. Naming an owner is the act that makes a lock yours.
+ * defend - which is also what lets either front end manage the unowned locks
+ * both write by default. Naming an owner is the act that makes a lock yours.
  *
  * There is no override. Breaking somebody else's lock means naming them, which
  * makes it a deliberate act rather than a flag appended to a failing command.
@@ -50556,7 +50618,7 @@ async function post() {
             warning(`No lock was acquired in the main step. Nothing to release.`);
             return;
         }
-        const settings = new MutexSettings();
+        const settings = new MutexSettings(log);
         if (settings.autoReleaseLock !== true) {
             warning(`⚠️ Auto-releasing is disabled. Lock '${settings.identifier}' will not be released.`);
             return;

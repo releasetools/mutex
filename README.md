@@ -20,7 +20,7 @@ permissions:
 steps:
   - uses: releasetools/mutex@v1
     env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      MUTEX_DATABASE_URL: ${{ secrets.MUTEX_DATABASE_URL }}
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     with:
       command: "lock"
@@ -36,7 +36,7 @@ npm install
 npm run build   # the CLI is built, not committed
 npm link        # puts `mutex` on your PATH
 
-DATABASE_URL="postgres://..." mutex lock staging -- ./deploy.sh
+MUTEX_DATABASE_URL="postgres://..." mutex lock staging -- ./deploy.sh
 ```
 
 The lock is held for exactly as long as `deploy.sh` runs, and released however it exits. Without `npm link`, run `node ./bin/mutex.js` or `npm run mutex -- <args>`.
@@ -50,6 +50,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `command`            | _required_ | `lock` or `unlock`                                                    |
 | `id`                 | _required_ | Name of the lock                                                      |
 | `reason`             | `""`       | Why it is being taken. Shows up in PR comments and `mutex status`     |
+| `owner`              | `""`       | Who owns it. Only the same owner may unlock or renew a named lock     |
 | `expiration`         | `60`       | Seconds the lock lasts                                                |
 | `max-wait`           | `-1`       | Seconds to wait for it. `-1` waits for as long as `expiration`        |
 | `poll-interval`      | `10`       | Seconds between attempts                                              |
@@ -57,9 +58,11 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `disable-pr-updates` | `false`    | Stop commenting on the pull request                                   |
 | `slack-channel`      |            | Channel ID to post to, such as `C12345678`. Setting it turns Slack on |
 
-`DATABASE_URL`, `GITHUB_TOKEN` and `SLACK_BOT_TOKEN` are accepted as inputs too, if you would rather pass them under `with:` than as environment variables. See Slack's [chat.postMessage docs](https://docs.slack.dev/reference/methods/chat.postMessage/#channels) for the channel ID formats it accepts.
+`MUTEX_DATABASE_URL`, `GITHUB_TOKEN` and `SLACK_BOT_TOKEN` are accepted as inputs too, if you would rather pass them under `with:` than as environment variables. See Slack's [chat.postMessage docs](https://docs.slack.dev/reference/methods/chat.postMessage/#channels) for the channel ID formats it accepts.
 
 > [!WARNING]
+> **`DATABASE_URL` is deprecated.** It is still read when `MUTEX_DATABASE_URL` is unset, and warns when it is, so existing workflows keep running. Rename it: everything from ORMs to PaaS providers sets `DATABASE_URL`, usually to the application's own database, and a lock taken in the wrong database excludes nobody. It goes away in a future major version.
+>
 > **`release` is deprecated.** It still works as a synonym for `unlock`, and logs a warning when used, so workflows written against earlier versions keep running. It goes away in a future major version.
 
 ### Action outputs
@@ -71,13 +74,14 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 
 ### Environment variables
 
-| Variable          |                                                                                                                                                         |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`    | The connection string. Required by both front ends                                                                                                      |
-| `GITHUB_TOKEN`    | Needed by the Action for PR comments                                                                                                                    |
-| `SLACK_BOT_TOKEN` | Read only when `slack-channel` is set. Requires `chat:write`, and the bot has to be a member of the channel or posting fails                            |
-| `SKIP_MUTEX`      | Present in the environment at all, whatever the value, and the Action skips locking. Also works as a PR label, or a word in a PR description or comment |
-| `MUTEX_OWNER`     | CLI only. Supplies `--owner` when the flag is left off                                                                                                  |
+| Variable             |                                                                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MUTEX_DATABASE_URL` | The connection string. Required by both front ends                                                                                                      |
+| `DATABASE_URL`       | Deprecated. Read when `MUTEX_DATABASE_URL` is unset, and warns                                                                                          |
+| `GITHUB_TOKEN`       | Needed by the Action for PR comments                                                                                                                    |
+| `SLACK_BOT_TOKEN`    | Read only when `slack-channel` is set. Requires `chat:write`, and the bot has to be a member of the channel or posting fails                            |
+| `SKIP_MUTEX`         | Present in the environment at all, whatever the value, and the Action skips locking. Also works as a PR label, or a word in a PR description or comment |
+| `MUTEX_OWNER`        | CLI only. Supplies `--owner` when the flag is left off                                                                                                  |
 
 ### CLI commands
 
@@ -104,7 +108,6 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `-i`, `--poll-interval <secs>` | `10`                       | Delay between attempts                             |
 | `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock                             |
 | `--no-renew`                   |                            | Do not renew while a wrapped program runs          |
-| `--env-var <NAME>`             | `DATABASE_URL`             | Which variable holds the connection string         |
 | `--dry-run`                    |                            | `prune` only. List what would go, delete nothing   |
 | `--json`                       |                            | Machine-readable output                            |
 | `-q`, `--quiet`                |                            | Errors only                                        |
@@ -159,7 +162,17 @@ Acquiring depends on expiry alone: while a lock is held nobody gets it, includin
 | same name | same name   | yes      | yes     |
 | named     | anyone else | refused  | refused |
 
-Only a named lock is protected. An unowned one is open to anyone, which is what lets the CLI manage the Action's locks while [#67](https://github.com/releasetools/mutex/issues/67) is open.
+Only a named lock is protected. An unowned one is open to anyone. Both the Action's `owner` input and the CLI's `--owner` option are unset by default, so existing workflows keep creating unowned locks unless they opt in.
+
+The Action reuses `owner` for explicit unlock steps and post-job auto-release. A workflow can therefore identify its lock without preventing its own cleanup:
+
+```yaml
+- uses: releasetools/mutex@v1
+  with:
+    command: "lock"
+    id: "deploy"
+    owner: "${{ github.repository }}@${{ github.run_id }}"
+```
 
 There is no `--force`. To break somebody else's lock you name them, and the refusal says how:
 
@@ -194,25 +207,33 @@ Kept lock 'deploy'
 
 Otherwise it is strict. The id and the owner must both match, and it never takes a lock rather than renewing one. An expired lock is refused too, since somebody else may already have taken it over. Exit code `4` means gone or expired, `5` means held by another owner.
 
-Locks taken by the GitHub Action are unowned, so a CLI caller that names no owner can renew them.
+Locks taken by the GitHub Action without an `owner` are unowned, so a CLI caller that names no owner can renew them. When the Action names one, the CLI must pass that same value with `--owner`.
 
 ### Where the connection string comes from
 
-`$DATABASE_URL`, and nowhere else. Rename it with `--env-var` if something already owns that name.
+`$MUTEX_DATABASE_URL`, and from the environment only.
 
 There is no flag for it. An argument lands in shell history and in `ps`, where every user on the machine can read it for as long as mutex runs:
 
 ```shell
-DATABASE_URL="postgres://..." mutex lock deploy
+MUTEX_DATABASE_URL="postgres://..." mutex lock deploy
 ```
 
 mutex does not read secret stores. Whatever holds the secret can put it in the environment for one command, with [dotsecenv](https://dotsecenv.com) for example:
 
 ```shell
-DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock deploy
+MUTEX_DATABASE_URL="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock deploy
 ```
 
 Interactively there is nothing to pass, because [dotsecenv's shell plugin](https://dotsecenv.com/guides/shell-plugins/) exports it when you `cd` into the project.
+
+There is no option for reading some other variable, because a value already living under another name needs an assignment rather than an option:
+
+```shell
+MUTEX_DATABASE_URL="$LOCKS_URL" mutex lock deploy
+```
+
+`$DATABASE_URL` is still read when `$MUTEX_DATABASE_URL` is unset, and warns when it is. The prefix is the point: frameworks, ORMs, PaaS providers and CI systems all set `DATABASE_URL`, and they set it to the application's own database. A repository that has one and then adds mutex would keep its locks in the app's database without ever being told, and locks in the wrong database exclude nobody.
 
 ### Scripting
 
