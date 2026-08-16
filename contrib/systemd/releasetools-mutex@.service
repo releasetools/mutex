@@ -1,0 +1,24 @@
+[Unit]
+Description=ReleaseTools mutex server (%i profile)
+Documentation=https://github.com/releasetools/mutex
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mutex
+Group=mutex
+WorkingDirectory=/var/lib/releasetools-mutex
+Environment=XDG_CONFIG_HOME=/etc
+EnvironmentFile=/etc/releasetools-mutex/%i.env
+ExecStart=/usr/local/bin/mutex server run -p %i
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/releasetools-mutex
+
+[Install]
+WantedBy=multi-user.target

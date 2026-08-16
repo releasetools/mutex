@@ -31,15 +31,34 @@ Any other job using `id: staging` now waits. The lock goes back when the job end
 
 ### On the command line
 
-```shell
-npm install
-npm run build   # the CLI is built, not committed
-npm link        # puts `mutex` on your PATH
+Install a released version directly from this repository. Node.js 24 or newer
+is required:
 
+```shell
+npm install --global "git+https://github.com/releasetools/mutex.git#v1.3.0"
+mutex version
+```
+
+Use an exact version as above for a repeatable install, or use `#v1` to follow
+the latest compatible v1 release at installation time. npm does not update a
+global Git installation automatically. Re-run the install command to update:
+
+```shell
+# Move an exact installation to a specific newer release.
+npm install --global "git+https://github.com/releasetools/mutex.git#v1.3.1"
+
+# Refresh an installation that follows the latest v1 release.
+npm install --global "git+https://github.com/releasetools/mutex.git#v1"
+```
+
+npm writes the command to its configured global prefix; a Node version manager
+or user-owned npm prefix keeps the whole installation rootless.
+
+```shell
 MUTEX_DATABASE_URL="postgres://..." mutex lock staging -- ./deploy.sh
 ```
 
-The lock is held for exactly as long as `deploy.sh` runs, and released however it exits. Without `npm link`, run `node ./bin/mutex.js` or `npm run mutex -- <args>`.
+The lock is held for exactly as long as `deploy.sh` runs, and released however it exits.
 
 ## Reference
 
@@ -74,7 +93,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 
 | Variable             |                                                                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MUTEX_DATABASE_URL` | The connection string. Required by both front ends                                                                                                      |
+| `MUTEX_DATABASE_URL` | The connection string. Required by the Action, a direct CLI command, or the server process                                                              |
 | `GITHUB_TOKEN`       | Needed by the Action for PR comments                                                                                                                    |
 | `SLACK_BOT_TOKEN`    | Read only when `slack-channel` is set. Requires `chat:write`, and the bot has to be a member of the channel or posting fails                            |
 | `SKIP_MUTEX`         | Present in the environment at all, whatever the value, and the Action skips locking. Also works as a PR label, or a word in a PR description or comment |
@@ -82,18 +101,23 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 
 ### CLI commands
 
-| Command                        |                                            |
-| ------------------------------ | ------------------------------------------ |
-| `mutex lock <id>`              | Acquire a lock, waiting up to `--max-wait` |
-| `mutex lock <id> -- <program>` | Acquire it, run the program, release it    |
-| `mutex try-lock <id>`          | Acquire it in a single attempt             |
-| `mutex unlock <id>`            | Release it                                 |
-| `mutex renew <id>`             | Extend a lock you already hold             |
-| `mutex status <id>`            | Show who holds it                          |
-| `mutex list`                   | List every lock, expired ones included     |
-| `mutex prune`                  | Delete locks that have already expired     |
-| `mutex help [command]`         | Show help                                  |
-| `mutex version`                | Print the version                          |
+| Command                        |                                               |
+| ------------------------------ | --------------------------------------------- |
+| `mutex lock <id>`              | Acquire a lock, waiting up to `--max-wait`    |
+| `mutex lock <id> -- <program>` | Acquire it, run the program, release it       |
+| `mutex try-lock <id>`          | Acquire it in a single attempt                |
+| `mutex unlock <id>`            | Release it                                    |
+| `mutex renew <id>`             | Extend a lock you already hold                |
+| `mutex status <id>`            | Show who holds it                             |
+| `mutex list`                   | List every lock, expired ones included        |
+| `mutex prune`                  | Delete locks that have already expired        |
+| `mutex profile [name]`         | List/select profiles, or enable one by name   |
+| `mutex server start`           | Start the selected server in the background   |
+| `mutex server run`             | Run it in the foreground for service managers |
+| `mutex server status`          | Show server, protocol, log and pool status    |
+| `mutex server stop`            | Gracefully stop it                            |
+| `mutex help [command]`         | Show help                                     |
+| `mutex version`                | Print the version                             |
 
 ### CLI options
 
@@ -106,6 +130,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock                             |
 | `--no-renew`                   |                            | Do not renew while a wrapped program runs          |
 | `--dry-run`                    |                            | `prune` only. List what would go, delete nothing   |
+| `-p`, `--profile <name>`       | Enabled profile            | Use a profile for this command without enabling it |
 | `--json`                       |                            | Machine-readable output                            |
 | `-q`, `--quiet`                |                            | Errors only                                        |
 | `--verbose`                    |                            | Include debug output                               |
@@ -133,6 +158,102 @@ Taking a lock inserts a row, or takes over an expired one, inside a transaction 
 mutex creates the `releasetools_mutex` table on first use and keeps its schema current. If the role in the connection string cannot create or alter tables, create it yourself first from the definition in [database.ts](./src/database.ts).
 
 The command names map onto [mutex.ts](./src/mutex.ts): `lock` and `try-lock` both call `tryLock`, `unlock` calls `tryUnlock`.
+
+### Profiles and the pooled server
+
+Direct mode opens PostgreSQL from each CLI process. It remains the simplest option for scripts and occasional use: if no profiles file exists and `MUTEX_DATABASE_URL` is set, mutex uses it directly without prompting, writing configuration, or probing a TCP port.
+
+The server is useful when the database is remote. It keeps a PostgreSQL connection pool warm, so each short CLI invocation talks over local TCP instead of establishing another database and TLS connection. The existing CLI commands, polling, wrapped programs, renewals, output and exit codes are the same in both modes.
+
+Run this once to configure it:
+
+```shell
+mutex profile
+```
+
+On a terminal, mutex asks for a working directory and suggests `${XDG_CONFIG_HOME:-$HOME/.config}/releasetools-mutex`. It creates that directory and `${XDG_CONFIG_HOME:-$HOME/.config}/releasetools-mutex/profiles.toml`, prints the generated file and its path to stderr, then lets you choose between profiles with the arrow keys. It never asks for a port; the generated server listens on `localhost:5625`.
+
+```toml
+[server]
+mode = "server"
+enabled = true
+bind_address = "localhost:5625"
+working_dir = "/home/alice/.config/releasetools-mutex"
+
+[direct]
+mode = "direct"
+enabled = false
+```
+
+Exactly one profile is enabled. Custom names are allowed. `mutex profile direct` enables an existing profile and disables the others atomically; an unknown name fails and lists the defined names. `mutex profile` shows the list instead of opening the arrow-key selector when stdin is not a terminal.
+
+Use `-p` to override the enabled profile for one command without waiting for a failed connection or changing the file:
+
+```shell
+mutex status deploy -p direct
+mutex server status -p server
+```
+
+Selection is explicit. A direct profile never probes the server, and a server profile never falls back to PostgreSQL. Once a profiles file exists, a direct command must select its direct profile and still needs `MUTEX_DATABASE_URL` in that command's environment.
+
+Start the server after making `MUTEX_DATABASE_URL` visible to it:
+
+```shell
+mutex server start
+mutex server status
+```
+
+`start` detaches and waits for both PostgreSQL and local TCP to be ready. `run` stays in the foreground, which is the right form under systemd or launchd. The process changes to the profile's `working_dir` before opening the database. mutex does not read secret files or invoke a secret manager: exported variables, service-manager environments, and environment tools all work as long as the mutex process can read `MUTEX_DATABASE_URL`. The value never belongs in the profiles file or on the command line.
+
+Every server-side lock operation appends one line to `<working_dir>/mutex-<profile>.log`:
+
+```text
+|2026-08-16T14:32:09.417Z|lock|deploy|alice|127.0.0.1|workstation.local|
+```
+
+Fields are UTC timestamp, operation, lock ID, owner, client IP, and client hostname. Missing values are `-`; separators, newlines and control characters are escaped. Poll attempts each get a line, while health checks and direct operations do not. The server never truncates the file or logs the database URL.
+
+The TCP protocol is versioned and newline-delimited JSON. It has no application authentication or TLS; the default is localhost, and deployments that widen the bind address are responsible for IP ACLs.
+
+#### systemd
+
+[`contrib/systemd/releasetools-mutex@.service`](./contrib/systemd/releasetools-mutex@.service) is an instance unit: the instance name is the profile. Review its `User`, `Group`, `WorkingDirectory`, executable path, and hardening paths, then install it:
+
+```shell
+sudo install -m 0644 contrib/systemd/releasetools-mutex@.service /etc/systemd/system/
+sudo install -d -m 0750 -o mutex -g mutex /var/lib/releasetools-mutex
+sudo install -d -m 0750 /etc/releasetools-mutex
+sudo install -m 0644 profiles.toml /etc/releasetools-mutex/profiles.toml
+sudo install -m 0600 server.env /etc/releasetools-mutex/server.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now releasetools-mutex@server.service
+```
+
+`server.env` contains `MUTEX_DATABASE_URL=...` and is read by systemd, not passed in argv. The unit sets `XDG_CONFIG_HOME=/etc`, so mutex reads `/etc/releasetools-mutex/profiles.toml`. The configured `working_dir` must match the unit's writable working directory.
+
+#### macOS LaunchAgent (current user)
+
+[`contrib/launchd/com.releasetools.mutex.plist`](./contrib/launchd/com.releasetools.mutex.plist) is a per-user LaunchAgent. It runs as the logged-in user, so it has no `UserName` or `GroupName` and needs no root installation. Run `mutex profile` as that user first; accepting the suggested working directory creates `~/.config/releasetools-mutex` with user ownership.
+
+The plist contains no database URL. Its user-owned wrapper changes to the working directory, retrieves `MUTEX_DATABASE_URL` from dotsecenv at startup, exports it only to the mutex process, and replaces itself with `mutex server run`. Neither the value nor a command containing it reaches the plist, a file, or process arguments.
+
+Copy both templates, then replace `YOUR_USERNAME`, the executable paths if `mutex` or `dotsecenv` is installed elsewhere, `YOUR_NAMESPACE::MUTEX_DATABASE_URL`, and the profile if it is not named `server`. launchd needs literal absolute paths in the plist: it does not run a shell to expand `~`, `$HOME`, or command substitutions.
+
+```shell
+install -d -m 0700 "$HOME/Library/LaunchAgents"
+install -m 0700 contrib/launchd/run-mutex-server.zsh "$HOME/.config/releasetools-mutex/run-mutex-server.zsh"
+install -m 0600 contrib/launchd/com.releasetools.mutex.plist "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+${EDITOR:-vi} "$HOME/.config/releasetools-mutex/run-mutex-server.zsh"
+${EDITOR:-vi} "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+plutil -lint "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+```
+
+Keep the plist mode `0600` and the wrapper mode `0700`; both stay owned by the current user. The wrapper uses dotsecenv's normal vault and identity access from the configured working directory, and launchd owns the resulting mutex process and restarts only failures. Stop or replace it without root:
+
+```shell
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.releasetools.mutex.plist"
+```
 
 ### Wrapping a program
 
@@ -208,7 +329,7 @@ Locks taken by the GitHub Action without an `owner` are unowned, so a CLI caller
 
 ### Where the connection string comes from
 
-`$MUTEX_DATABASE_URL`, and from the environment only.
+`$MUTEX_DATABASE_URL`, and from the environment only. A direct CLI command reads it itself; in server mode only the server process needs it.
 
 There is no flag for it. An argument lands in shell history and in `ps`, where every user on the machine can read it for as long as mutex runs:
 
@@ -248,11 +369,54 @@ fi
 
 Contributions are welcome.
 
+### Local CLI development
+
+Node.js 24 or newer is required. Clone the source and create a global npm link
+once:
+
 ```shell
 git clone https://github.com/releasetools/mutex.git
 cd mutex
-npm install
-npm run prepare   # pre-commit hooks
+npm ci
+npm run cli:link  # build, then put this checkout's `mutex` on PATH
+```
+
+The link points at the checkout, so it does not need to be recreated after each
+edit. The command reads compiled files from `lib/`; either rebuild explicitly
+or leave the compiler running while developing:
+
+```shell
+npm run build
+
+# Or keep lib/ current as source files change.
+npm run build:watch
+```
+
+Run the linked command normally from another terminal:
+
+```shell
+mutex
+mutex status deploy
+```
+
+Without the global link, run the same compiled CLI through npm:
+
+```shell
+npm run mutex -- status deploy
+```
+
+Run the tests alone with `npm test`. Before committing, use the full shorthand:
+
+```shell
+npm run check
+```
+
+`check` formats the source, builds the CLI and Action, and runs every test. The
+pre-commit hook runs the relevant formatting, tests, and build again before a
+commit is accepted. Remove the development link with:
+
+```shell
+npm unlink --global mutex
 ```
 
 | Path              | What lives there                                                          |
@@ -297,7 +461,7 @@ They are separate on purpose. Replacing a release and releasing out of order are
 | Check           | Rejects a malformed version, one already released, or one below the highest released                                                                                                            |
 | Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                                                                           |
 | Build           | `npm ci`, lint, test                                                                                                                                                                            |
-| Package         | `npm run package:action` assembles `publish/`: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a `package.json` carrying the version                                                         |
+| Package         | `npm run package:action` assembles `publish/`: the Action bundle, compiled CLI, runtime manifest, README, and license                                                                           |
 | Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.3.0` and the floating `v1` at it |
 | Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
 | Verify          | Uses `releasetools/mutex@v1` for real and checks the version it reports                                                                                                                         |

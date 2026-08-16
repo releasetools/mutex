@@ -17,13 +17,13 @@
 
 import os from "node:os";
 import { ChildProcess, spawn } from "node:child_process";
-import { DatabaseMutex } from "../database.js";
 import { describeError, logWarning } from "../helpers.js";
 import { Logger } from "../logger.js";
 import {
   LockRecord,
   LockRequest,
   LockResult,
+  LockStore,
   tryLock,
   tryUnlock,
 } from "../mutex.js";
@@ -45,7 +45,7 @@ import {
 } from "./output.js";
 
 export interface CommandContext {
-  mutex: DatabaseMutex;
+  mutex: LockStore;
   options: ResolvedOptions;
   log: Logger;
   out: Output;
@@ -90,7 +90,7 @@ export async function commandLock(
   command: "lock" | "try-lock" = "lock",
 ): Promise<number> {
   const result = await tryLock(
-    requestFor(ctx, identifier),
+    requestFor(ctx, identifier, command),
     ctx.mutex,
     ctx.log,
     {
@@ -308,13 +308,19 @@ export async function commandPrune(ctx: CommandContext): Promise<number> {
   return EXIT_OK;
 }
 
-function requestFor(ctx: CommandContext, identifier: string): LockRequest {
+function requestFor(
+  ctx: CommandContext,
+  identifier: string,
+  operation?: "lock" | "try-lock",
+): LockRequest {
   return {
     identifier,
     reason: ctx.options.reason,
     pollTimeoutMs: ctx.options.pollTimeoutMs,
     pollIntervalMs: ctx.options.pollIntervalMs,
     owner: ctx.options.owner,
+    expiration: ctx.options.expiration,
+    operation,
   };
 }
 

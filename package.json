@@ -10,10 +10,12 @@
   "scripts": {
     "clean": "rm -rf lib dist",
     "lint": "prettier --ignore-unknown --write '**/*.{ts,js,json,md,yml,yaml}'",
+    "check": "npm run lint && npm run build && npm test",
     "build:watch": "tsc --watch",
     "build": "npm run clean && tsc && npm run package",
     "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
     "package:action": "npm run build && node scripts/package-action.mjs",
+    "cli:link": "npm run build && npm link",
     "mutex": "node ./bin/mutex.js",
     "test": "npm run typecheck && NODE_OPTIONS=--experimental-vm-modules jest",
     "prepare": "husky",
@@ -42,5 +44,6 @@
     "prettier": "^3.6.2",
     "typescript": "^7.0.0"
   },
+  "license": "Apache-2.0",
   "type": "module"
 }
