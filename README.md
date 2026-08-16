@@ -74,7 +74,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 
 | Variable             |                                                                                                                                                         |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MUTEX_DATABASE_URL` | The connection string. Required by both front ends                                                                                                      |
+| `MUTEX_DATABASE_URL` | The connection string. Required by the Action, a direct CLI command, or the server process                                                              |
 | `GITHUB_TOKEN`       | Needed by the Action for PR comments                                                                                                                    |
 | `SLACK_BOT_TOKEN`    | Read only when `slack-channel` is set. Requires `chat:write`, and the bot has to be a member of the channel or posting fails                            |
 | `SKIP_MUTEX`         | Present in the environment at all, whatever the value, and the Action skips locking. Also works as a PR label, or a word in a PR description or comment |
@@ -82,18 +82,23 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 
 ### CLI commands
 
-| Command                        |                                            |
-| ------------------------------ | ------------------------------------------ |
-| `mutex lock <id>`              | Acquire a lock, waiting up to `--max-wait` |
-| `mutex lock <id> -- <program>` | Acquire it, run the program, release it    |
-| `mutex try-lock <id>`          | Acquire it in a single attempt             |
-| `mutex unlock <id>`            | Release it                                 |
-| `mutex renew <id>`             | Extend a lock you already hold             |
-| `mutex status <id>`            | Show who holds it                          |
-| `mutex list`                   | List every lock, expired ones included     |
-| `mutex prune`                  | Delete locks that have already expired     |
-| `mutex help [command]`         | Show help                                  |
-| `mutex version`                | Print the version                          |
+| Command                        |                                               |
+| ------------------------------ | --------------------------------------------- |
+| `mutex lock <id>`              | Acquire a lock, waiting up to `--max-wait`    |
+| `mutex lock <id> -- <program>` | Acquire it, run the program, release it       |
+| `mutex try-lock <id>`          | Acquire it in a single attempt                |
+| `mutex unlock <id>`            | Release it                                    |
+| `mutex renew <id>`             | Extend a lock you already hold                |
+| `mutex status <id>`            | Show who holds it                             |
+| `mutex list`                   | List every lock, expired ones included        |
+| `mutex prune`                  | Delete locks that have already expired        |
+| `mutex profile [name]`         | List/select profiles, or enable one by name   |
+| `mutex server start`           | Start the selected server in the background   |
+| `mutex server run`             | Run it in the foreground for service managers |
+| `mutex server status`          | Show server, protocol, log and pool status    |
+| `mutex server stop`            | Gracefully stop it                            |
+| `mutex help [command]`         | Show help                                     |
+| `mutex version`                | Print the version                             |
 
 ### CLI options
 
@@ -106,6 +111,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock                             |
 | `--no-renew`                   |                            | Do not renew while a wrapped program runs          |
 | `--dry-run`                    |                            | `prune` only. List what would go, delete nothing   |
+| `-p`, `--profile <name>`       | Enabled profile            | Use a profile for this command without enabling it |
 | `--json`                       |                            | Machine-readable output                            |
 | `-q`, `--quiet`                |                            | Errors only                                        |
 | `--verbose`                    |                            | Include debug output                               |
@@ -133,6 +139,89 @@ Taking a lock inserts a row, or takes over an expired one, inside a transaction 
 mutex creates the `releasetools_mutex` table on first use and keeps its schema current. If the role in the connection string cannot create or alter tables, create it yourself first from the definition in [database.ts](./src/database.ts).
 
 The command names map onto [mutex.ts](./src/mutex.ts): `lock` and `try-lock` both call `tryLock`, `unlock` calls `tryUnlock`.
+
+### Profiles and the pooled server
+
+Direct mode opens PostgreSQL from each CLI process. It remains the simplest option for scripts and occasional use: if no profiles file exists and `MUTEX_DATABASE_URL` is set, mutex uses it directly without prompting, writing configuration, or probing a TCP port.
+
+The server is useful when the database is remote. It keeps a PostgreSQL connection pool warm, so each short CLI invocation talks over local TCP instead of establishing another database and TLS connection. The existing CLI commands, polling, wrapped programs, renewals, output and exit codes are the same in both modes.
+
+Run this once to configure it:
+
+```shell
+mutex profile
+```
+
+On a terminal, mutex asks for a working directory and suggests `${XDG_CONFIG_HOME:-$HOME/.config}/releasetools-mutex`. It creates that directory and `${XDG_CONFIG_HOME:-$HOME/.config}/releasetools-mutex/profiles.toml`, prints the generated file and its path to stderr, then lets you choose between profiles with the arrow keys. It never asks for a port; the generated server listens on `localhost:5625`.
+
+```toml
+[server]
+mode = "server"
+enabled = true
+bind_address = "localhost:5625"
+working_dir = "/home/alice/.config/releasetools-mutex"
+
+[direct]
+mode = "direct"
+enabled = false
+```
+
+Exactly one profile is enabled. Custom names are allowed. `mutex profile direct` enables an existing profile and disables the others atomically; an unknown name fails and lists the defined names. `mutex profile` shows the list instead of opening the arrow-key selector when stdin is not a terminal.
+
+Use `-p` to override the enabled profile for one command without waiting for a failed connection or changing the file:
+
+```shell
+mutex status deploy -p direct
+mutex server status -p server
+```
+
+Selection is explicit. A direct profile never probes the server, and a server profile never falls back to PostgreSQL. Once a profiles file exists, a direct command must select its direct profile and still needs `MUTEX_DATABASE_URL` in that command's environment.
+
+Start the server after making `MUTEX_DATABASE_URL` visible to it:
+
+```shell
+mutex server start
+mutex server status
+```
+
+`start` detaches and waits for both PostgreSQL and local TCP to be ready. `run` stays in the foreground, which is the right form under systemd or launchd. The process changes to the profile's `working_dir` before opening the database. mutex does not read secret files or invoke a secret manager: exported variables, service-manager environments, and environment tools all work as long as the mutex process can read `MUTEX_DATABASE_URL`. The value never belongs in the profiles file or on the command line.
+
+Every server-side lock operation appends one line to `<working_dir>/mutex-<profile>.log`:
+
+```text
+|2026-08-16T14:32:09.417Z|lock|deploy|alice|127.0.0.1|workstation.local|
+```
+
+Fields are UTC timestamp, operation, lock ID, owner, client IP, and client hostname. Missing values are `-`; separators, newlines and control characters are escaped. Poll attempts each get a line, while health checks and direct operations do not. The server never truncates the file or logs the database URL.
+
+The TCP protocol is versioned and newline-delimited JSON. It has no application authentication or TLS; the default is localhost, and deployments that widen the bind address are responsible for IP ACLs.
+
+#### systemd
+
+[`contrib/systemd/releasetools-mutex@.service`](./contrib/systemd/releasetools-mutex@.service) is an instance unit: the instance name is the profile. Review its `User`, `Group`, `WorkingDirectory`, executable path, and hardening paths, then install it:
+
+```shell
+sudo install -m 0644 contrib/systemd/releasetools-mutex@.service /etc/systemd/system/
+sudo install -d -m 0750 -o mutex -g mutex /var/lib/releasetools-mutex
+sudo install -d -m 0750 /etc/releasetools-mutex
+sudo install -m 0644 profiles.toml /etc/releasetools-mutex/profiles.toml
+sudo install -m 0600 server.env /etc/releasetools-mutex/server.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now releasetools-mutex@server.service
+```
+
+`server.env` contains `MUTEX_DATABASE_URL=...` and is read by systemd, not passed in argv. The unit sets `XDG_CONFIG_HOME=/etc`, so mutex reads `/etc/releasetools-mutex/profiles.toml`. The configured `working_dir` must match the unit's writable working directory.
+
+#### macOS LaunchDaemon
+
+Review [`contrib/launchd/com.releasetools.mutex.plist`](./contrib/launchd/com.releasetools.mutex.plist) and replace its executable, profile, user, group, working directory, XDG directory, and database URL placeholders. The plist uses `mutex server run -p server`, so launchd owns the process:
+
+```shell
+sudo install -m 0600 contrib/launchd/com.releasetools.mutex.plist /Library/LaunchDaemons/com.releasetools.mutex.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.releasetools.mutex.plist
+```
+
+Keep the plist root-owned because launchd stores its environment there. Put `profiles.toml` below the configured `XDG_CONFIG_HOME` and make the working directory writable by `UserName`. To stop or replace a managed daemon, use `launchctl bootout`; `KeepAlive` restarts only failures.
 
 ### Wrapping a program
 
@@ -208,7 +297,7 @@ Locks taken by the GitHub Action without an `owner` are unowned, so a CLI caller
 
 ### Where the connection string comes from
 
-`$MUTEX_DATABASE_URL`, and from the environment only.
+`$MUTEX_DATABASE_URL`, and from the environment only. A direct CLI command reads it itself; in server mode only the server process needs it.
 
 There is no flag for it. An argument lands in shell history and in `ps`, where every user on the machine can read it for as long as mutex runs:
 

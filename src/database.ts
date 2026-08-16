@@ -19,8 +19,9 @@ import { Pool, PoolClient } from "pg";
 import {
   LockRecord,
   LockResult,
+  LockStore,
   MutexConfig,
-  MutexInterface,
+  RenewResult,
   UnlockResult,
 } from "./mutex.js";
 import { TABLE_NAME } from "./constants.js";
@@ -41,18 +42,7 @@ const LOCK_COLUMNS = `id, reason, owner,
         expires_at AT TIME ZONE 'UTC' AS expires_at,
         (expires_at IS NOT NULL AND expires_at < (NOW() AT TIME ZONE 'UTC')) AS expired`;
 
-export type RenewOutcome =
-  "renewed" | "not-found" | "owned-by-another" | "expired" | "contended";
-
-export type RenewResult = {
-  renewed: boolean;
-  outcome: RenewOutcome;
-  /** False when the lock already ran later than the requested expiry. */
-  extended?: boolean;
-  record?: LockRecord;
-};
-
-export class DatabaseMutex implements MutexInterface {
+export class DatabaseMutex implements LockStore {
   private readonly config: MutexConfig;
   private readonly log: Logger;
   private readonly pool: Pool;
@@ -65,7 +55,10 @@ export class DatabaseMutex implements MutexInterface {
     this.log = log;
 
     // Database configuration using connection string
-    this.pool = new Pool({ connectionString: config.dbConnectionString });
+    this.pool = new Pool({
+      connectionString: config.dbConnectionString,
+      connectionTimeoutMillis: config.connectionTimeoutMillis,
+    });
 
     // Without a listener, an error on an idle client is an unhandled 'error'
     // event and takes the whole process down.
@@ -78,9 +71,11 @@ export class DatabaseMutex implements MutexInterface {
     name: string,
     reason: string,
     owner: string | null = null,
+    expiration = this.config.expiration ?? 60,
+    _operation: "lock" | "try-lock" = "lock",
   ): Promise<LockResult> {
     return this.withSchemaRetry(`Acquiring lock '${name}'`, () =>
-      this.acquireLockInternal(name, reason, owner),
+      this.acquireLockInternal(name, reason, owner, expiration),
     );
   }
 
@@ -165,10 +160,29 @@ export class DatabaseMutex implements MutexInterface {
     await this.pool.end();
   }
 
+  /** Opens one connection during server startup so the first lock is warm. */
+  async warm(): Promise<void> {
+    const client = await this.connect();
+    try {
+      await client.query("SELECT 1");
+    } finally {
+      this.disconnect(client);
+    }
+  }
+
+  poolStatus(): { total: number; idle: number; waiting: number } {
+    return {
+      total: this.pool.totalCount,
+      idle: this.pool.idleCount,
+      waiting: this.pool.waitingCount,
+    };
+  }
+
   private async acquireLockInternal(
     name: string,
     reason: string,
     owner: string | null,
+    expiration: number,
   ): Promise<LockResult> {
     let client: PoolClient | undefined;
     try {
@@ -207,7 +221,7 @@ export class DatabaseMutex implements MutexInterface {
         name,
         reason,
         owner,
-        this.config.expiration,
+        expiration,
       ]);
 
       // No row means a valid, unexpired lock already existed.
@@ -232,7 +246,7 @@ export class DatabaseMutex implements MutexInterface {
 
       const record = toLockRecord(result.rows[0]);
       const approximate = new Date(
-        Date.now() + this.config.expiration * 1000,
+        Date.now() + expiration * 1000,
       ).toISOString();
       return {
         acquired: true,

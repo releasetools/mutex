@@ -41,11 +41,13 @@ export type CommandName =
   | "status"
   | "list"
   | "prune"
+  | "profile"
+  | "server"
   | "help"
   | "version";
 
 /** Whether a command takes a lock id. */
-type IdentifierMode = "required" | "none";
+type IdentifierMode = "required" | "optional" | "none";
 
 /** Shared by both acquiring commands. */
 const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"] as const;
@@ -53,7 +55,13 @@ const ACQUIRE_OPTIONS = ["reason", "expiration", "no-renew", "owner"] as const;
 /** Only `lock` waits, so only `lock` takes the options that describe waiting. */
 const LOCK_OPTIONS = [...ACQUIRE_OPTIONS, "max-wait", "poll-interval"] as const;
 
-const GENERAL_OPTIONS = ["json", "quiet", "verbose", "help"] as const;
+const GENERAL_OPTIONS = [
+  "profile",
+  "json",
+  "quiet",
+  "verbose",
+  "help",
+] as const;
 
 interface CommandSpec {
   summary: string;
@@ -113,6 +121,20 @@ export const COMMANDS: Record<CommandName, CommandSpec> = {
     acceptsProgram: false,
     options: ["dry-run", ...GENERAL_OPTIONS],
   },
+  profile: {
+    summary: "Choose the profile used by default",
+    usage: "mutex profile [name]",
+    identifier: "optional",
+    acceptsProgram: false,
+    options: ["help"],
+  },
+  server: {
+    summary: "Start, run, inspect, or stop a local mutex server",
+    usage: "mutex server <start|run|status|stop> [-p <name>]",
+    identifier: "optional",
+    acceptsProgram: false,
+    options: [...GENERAL_OPTIONS],
+  },
   help: {
     summary: "Show this help, or help for one command",
     usage: "mutex help [command]",
@@ -137,6 +159,7 @@ const OPTION_CONFIG = {
   "no-renew": { type: "boolean" },
   owner: { type: "string", short: "o" },
   "dry-run": { type: "boolean" },
+  profile: { type: "string", short: "p" },
   json: { type: "boolean" },
   quiet: { type: "boolean", short: "q" },
   verbose: { type: "boolean" },
@@ -162,6 +185,8 @@ export interface ResolvedOptions {
   dryRun: boolean;
   json: boolean;
   logLevel: LogLevel;
+  /** A temporary profile override; it never changes profiles.toml. */
+  profile: string | null;
 }
 
 export interface CommandLine {
@@ -232,6 +257,15 @@ export function parseCommandLine(argv: string[]): CommandLine {
         `unexpected argument '${positionals[expected]}'\n  ${spec.usage}`,
       );
     }
+  }
+
+  if (
+    command === "server" &&
+    !["start", "run", "status", "stop"].includes(identifier)
+  ) {
+    throw new UsageError(
+      `'server' needs one of start, run, status, or stop\n  ${spec.usage}`,
+    );
   }
 
   if (program.length > 0 && !spec.acceptsProgram) {
@@ -306,6 +340,10 @@ function resolveOptions(
         : values.verbose === true
           ? "debug"
           : "info",
+    profile:
+      typeof values.profile === "string" && values.profile.trim()
+        ? values.profile.trim()
+        : null,
   };
 }
 
@@ -410,7 +448,7 @@ export function helpText(topic: CommandName | null): string {
 
   return `mutex - an advisory lock service for CI/CD pipelines, backed by PostgreSQL
 
-Usage: mutex <command> <id> [options] [-- <program> [args...]]
+Usage: mutex <command> [<id>] [options] [-- <program> [args...]]
 
 Commands:
 ${commands}
@@ -432,22 +470,20 @@ prune:
       --dry-run                  List what would be deleted, and delete nothing
 
 General:
+  -p, --profile <name>           Use this profile for one command
       --json                     Machine-readable output
   -q, --quiet                    Errors only
       --verbose                  Include debug output
   -h, --help                     Show help
 
-The connection string comes from $${CONNECTION_ENV_VAR}, and from the environment
-only. Not from a flag: an argument is visible in shell history, and in "ps" to
-every user on the machine for as long as mutex runs. Anything holding the
-secret can put it in the environment for one command, for example:
+Profiles select explicit server or direct access. Run "mutex profile" to set
+one up or choose it, or pass -p <name> for one command. With no profiles file,
+a valid $${CONNECTION_ENV_VAR} keeps direct access zero-configuration.
 
-    ${CONNECTION_ENV_VAR}="$(dotsecenv secret get myapp::DATABASE_URL)" mutex lock x
-
-A connection string kept under another name needs an assignment, not an
-option:
-
-    ${CONNECTION_ENV_VAR}="$LOCKS_URL" mutex lock x
+Direct commands and the server process read the connection string from
+$${CONNECTION_ENV_VAR}. It is never accepted as an argument or stored in the
+profiles file. Whatever manages the secret only needs to make it visible in
+the process environment.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 configuration, 4 not acquired / not held,
 5 refused (owned by another). While wrapping a program, its status is returned.

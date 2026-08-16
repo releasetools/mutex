@@ -1,0 +1,210 @@
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ */
+
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { SilentLogger } from "../src/logger.js";
+import {
+  LockRecord,
+  LockResult,
+  RenewResult,
+  UnlockResult,
+} from "../src/mutex.js";
+import { MutexProfile } from "../src/cli/profiles.js";
+import {
+  runServer,
+  ServerDatabase,
+  serverPaths,
+} from "../src/server/server.js";
+import { TcpMutexStore } from "../src/server/tcp-store.js";
+
+class FakeDatabase implements ServerDatabase {
+  acquisitions: Array<{ name: string; expiration: number }> = [];
+  closed = false;
+  warmCount = 0;
+
+  async acquireLock(
+    name: string,
+    _reason: string,
+    owner: string | null = null,
+    expiration = 60,
+  ): Promise<LockResult> {
+    this.acquisitions.push({ name, expiration });
+    return {
+      acquired: true,
+      status: "Lock acquired",
+      record: record(name, owner),
+    };
+  }
+
+  async releaseLock(name: string): Promise<UnlockResult> {
+    return { unlocked: true, outcome: "unlocked", record: record(name) };
+  }
+
+  async renewLock(name: string): Promise<RenewResult> {
+    return { renewed: true, outcome: "renewed", record: record(name) };
+  }
+
+  async inspectLock(name: string): Promise<LockRecord | null> {
+    return record(name);
+  }
+
+  async listLocks(): Promise<LockRecord[]> {
+    return [record("listed")];
+  }
+
+  async pruneExpired(): Promise<LockRecord[]> {
+    return [];
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+
+  async warm(): Promise<void> {
+    this.warmCount++;
+  }
+
+  poolStatus() {
+    return { total: 1, idle: 1, waiting: 0 };
+  }
+}
+
+describe("mutex TCP server", () => {
+  let temporary: string;
+
+  beforeEach(async () => {
+    temporary = await mkdtemp(path.join(os.tmpdir(), "mutex-server-"));
+  });
+
+  afterEach(async () => {
+    await rm(temporary, { recursive: true, force: true });
+  });
+
+  it("serves every operation through one warm store and writes exact logs", async () => {
+    const port = await unusedPort();
+    const profile: MutexProfile = {
+      name: "pooled",
+      mode: "server",
+      enabled: true,
+      bindAddress: `127.0.0.1:${port}`,
+      workingDir: temporary,
+    };
+    const database = new FakeDatabase();
+    const running = runServer(
+      profile,
+      "not-used-by-the-fake",
+      new SilentLogger(),
+      () => database,
+    );
+    const client = new TcpMutexStore(
+      profile.bindAddress!,
+      500,
+      "host|name\nline",
+      "pooled",
+    );
+
+    await waitForServer(client);
+    await expect(
+      new TcpMutexStore(
+        profile.bindAddress!,
+        500,
+        "wrong-host",
+        "another-profile",
+      ).health(),
+    ).rejects.toThrow(/reached server profile 'pooled'/);
+    const acquired = await client.acquireLock(
+      "deploy|prod\nnow",
+      "reason",
+      "alice",
+      17,
+    );
+    expect(acquired.acquired).toBe(true);
+    await client.acquireLock("once", "reason", null, 9, "try-lock");
+    expect(database.acquisitions).toEqual([
+      { name: "deploy|prod\nnow", expiration: 17 },
+      { name: "once", expiration: 9 },
+    ]);
+    expect((await client.releaseLock("once")).unlocked).toBe(true);
+    expect((await client.renewLock("deploy", 30, "alice")).renewed).toBe(true);
+    expect((await client.inspectLock("deploy"))?.id).toBe("deploy");
+    expect((await client.listLocks())[0].id).toBe("listed");
+    expect(await client.pruneExpired(true)).toEqual([]);
+
+    const health = await client.health();
+    expect(health).toMatchObject({
+      profile: "pooled",
+      bindAddress: profile.bindAddress,
+      protocolVersion: 1,
+      pool: { healthy: true, total: 1 },
+    });
+    await client.stop();
+    await running;
+
+    expect(database.closed).toBe(true);
+    expect(database.warmCount).toBeGreaterThan(1);
+    const lines = (await readFile(serverPaths(profile).logPath, "utf8"))
+      .trimEnd()
+      .split("\n");
+    expect(lines).toHaveLength(7);
+    expect(lines[0]).toMatch(
+      /^\|\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\|lock\|deploy%7Cprod%0Anow\|alice\|127\.0\.0\.1\|host%7Cname%0Aline\|$/,
+    );
+    expect(lines[1]).toMatch(
+      /^\|\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\|try-lock\|once\|-\|127\.0\.0\.1\|host%7Cname%0Aline\|$/,
+    );
+    expect(lines[2]).toContain("|unlock|once|-|127.0.0.1|");
+    expect(lines[3]).toContain("|renew|deploy|alice|127.0.0.1|");
+    expect(lines[4]).toContain("|status|deploy|-|127.0.0.1|");
+    expect(lines[5]).toMatch(
+      /^\|\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\|list\|-\|-\|127\.0\.0\.1\|host%7Cname%0Aline\|$/,
+    );
+    expect(lines[6]).toContain("|prune|-|-|127.0.0.1|");
+  });
+});
+
+async function waitForServer(client: TcpMutexStore): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    try {
+      await client.health();
+      return;
+    } catch {
+      await delay(10);
+    }
+  }
+  throw new Error("test server did not start");
+}
+
+async function unusedPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("no TCP address");
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return address.port;
+}
+
+function record(id: string, owner: string | null = null): LockRecord {
+  return {
+    id,
+    reason: null,
+    owner,
+    createdAt: "2026-08-16T00:00:00.000Z",
+    expiresAt: "2026-08-16T00:01:00.000Z",
+    expired: false,
+  };
+}

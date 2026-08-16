@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.releasetools.mutex</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/mutex</string>
+    <string>server</string>
+    <string>run</string>
+    <string>-p</string>
+    <string>server</string>
+  </array>
+
+  <key>UserName</key>
+  <string>mutex</string>
+  <key>GroupName</key>
+  <string>mutex</string>
+  <key>WorkingDirectory</key>
+  <string>/usr/local/var/releasetools-mutex</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MUTEX_DATABASE_URL</key>
+    <string>REPLACE_WITH_DATABASE_URL</string>
+    <key>XDG_CONFIG_HOME</key>
+    <string>/usr/local/etc</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

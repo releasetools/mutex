@@ -16,6 +16,7 @@ Newest first. One line per change.
 > variable to set. The Action's `DATABASE_URL` input is gone with it.
 
 - Removed `DATABASE_URL`. `MUTEX_DATABASE_URL` is the only name mutex reads, in the Action and the CLI, so a lock can no longer land in whatever database something else set that name to.
+- Added explicit direct and server profiles, including a background TCP server that keeps PostgreSQL connections warm for faster CLI lock operations and service-manager templates for Linux and macOS.
 
 ## 1.2.2
 

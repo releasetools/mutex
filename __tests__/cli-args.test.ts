@@ -115,6 +115,22 @@ describe("parseCommandLine", () => {
     expect(parseCommandLine(["prune", "--dry-run"]).options.dryRun).toBe(true);
   });
 
+  it("parses temporary profile selection without enabling it", () => {
+    const parsed = parseCommandLine(["lock", "id", "-p", "direct"]);
+    expect(parsed.options.profile).toBe("direct");
+  });
+
+  it("parses profile and server lifecycle commands", () => {
+    expect(parseCommandLine(["profile"]).identifier).toBe("");
+    expect(parseCommandLine(["profile", "direct"]).identifier).toBe("direct");
+    expect(parseCommandLine(["server", "run", "-p", "server"]).identifier).toBe(
+      "run",
+    );
+    expect(() => parseCommandLine(["server", "restart"])).toThrow(
+      /start, run, status, or stop/,
+    );
+  });
+
   it("routes --help to the help command", () => {
     expect(parseCommandLine(["--help"]).command).toBe("help");
     expect(parseCommandLine(["lock", "--help"]).command).toBe("help");

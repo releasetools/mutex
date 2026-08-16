@@ -81,6 +81,10 @@ export interface LockRequest {
   pollTimeoutMs: number;
   pollIntervalMs: number;
   owner?: string | null;
+  /** Lease length for this acquisition. Store clients may share one process. */
+  expiration?: number;
+  /** Preserves the CLI spelling in server operation logs. */
+  operation?: "lock" | "try-lock";
   /**
    * `created_at` of the acquisition being released, if the caller has one.
    *
@@ -95,7 +99,10 @@ export interface LockRequest {
 /** Connection details needed to talk to the lock store. */
 export interface MutexConfig {
   dbConnectionString: string;
-  expiration: number;
+  /** Default used by the Action and older callers that do not pass a lease. */
+  expiration?: number;
+  /** Optional pool connection deadline, primarily for the long-lived server. */
+  connectionTimeoutMillis?: number;
 }
 
 export interface MutexInterface {
@@ -103,12 +110,38 @@ export interface MutexInterface {
     name: string,
     reason: string,
     owner?: string | null,
+    expiration?: number,
+    operation?: "lock" | "try-lock",
   ): Promise<LockResult>;
   releaseLock(
     name: string,
     owner?: string | null,
     fence?: string | null,
   ): Promise<UnlockResult>;
+}
+
+export type RenewOutcome =
+  "renewed" | "not-found" | "owned-by-another" | "expired" | "contended";
+
+export type RenewResult = {
+  renewed: boolean;
+  outcome: RenewOutcome;
+  /** False when the lock already ran later than the requested expiry. */
+  extended?: boolean;
+  record?: LockRecord;
+};
+
+/** Every primitive operation used by the CLI, independent of its transport. */
+export interface LockStore extends MutexInterface {
+  renewLock(
+    name: string,
+    expiration: number,
+    owner?: string | null,
+  ): Promise<RenewResult>;
+  inspectLock(name: string): Promise<LockRecord | null>;
+  listLocks(): Promise<LockRecord[]>;
+  pruneExpired(dryRun?: boolean): Promise<LockRecord[]>;
+  close(): Promise<void>;
 }
 
 /**
@@ -177,6 +210,8 @@ export async function tryLock(
       request.identifier,
       request.reason,
       request.owner ?? null,
+      request.expiration,
+      request.operation,
     );
 
     if (result.acquired) {
