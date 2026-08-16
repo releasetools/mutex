@@ -280,7 +280,7 @@ describe("parseCommandLine", () => {
   });
 
   it("leaves the owner unset when none is passed", () => {
-    // Unowned by default, matching what the Action writes, so an unowned
+    // Unowned by default, matching the Action's default, so an unowned
     // caller can unlock and renew an unowned lock.
     delete process.env.MUTEX_OWNER;
     expect(parseCommandLine(["renew", "deploy"]).options.owner).toBeNull();

@@ -50,6 +50,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `command`            | _required_ | `lock` or `unlock`                                                    |
 | `id`                 | _required_ | Name of the lock                                                      |
 | `reason`             | `""`       | Why it is being taken. Shows up in PR comments and `mutex status`     |
+| `owner`              | `""`       | Who owns it. Only the same owner may unlock or renew a named lock     |
 | `expiration`         | `60`       | Seconds the lock lasts                                                |
 | `max-wait`           | `-1`       | Seconds to wait for it. `-1` waits for as long as `expiration`        |
 | `poll-interval`      | `10`       | Seconds between attempts                                              |
@@ -159,7 +160,17 @@ Acquiring depends on expiry alone: while a lock is held nobody gets it, includin
 | same name | same name   | yes      | yes     |
 | named     | anyone else | refused  | refused |
 
-Only a named lock is protected. An unowned one is open to anyone, which is what lets the CLI manage the Action's locks while [#67](https://github.com/releasetools/mutex/issues/67) is open.
+Only a named lock is protected. An unowned one is open to anyone. Both the Action's `owner` input and the CLI's `--owner` option are unset by default, so existing workflows keep creating unowned locks unless they opt in.
+
+The Action reuses `owner` for explicit unlock steps and post-job auto-release. A workflow can therefore identify its lock without preventing its own cleanup:
+
+```yaml
+- uses: releasetools/mutex@v1
+  with:
+    command: "lock"
+    id: "deploy"
+    owner: "${{ github.repository }}@${{ github.run_id }}"
+```
 
 There is no `--force`. To break somebody else's lock you name them, and the refusal says how:
 
@@ -194,7 +205,7 @@ Kept lock 'deploy'
 
 Otherwise it is strict. The id and the owner must both match, and it never takes a lock rather than renewing one. An expired lock is refused too, since somebody else may already have taken it over. Exit code `4` means gone or expired, `5` means held by another owner.
 
-Locks taken by the GitHub Action are unowned, so a CLI caller that names no owner can renew them.
+Locks taken by the GitHub Action without an `owner` are unowned, so a CLI caller that names no owner can renew them. When the Action names one, the CLI must pass that same value with `--owner`.
 
 ### Where the connection string comes from
 
