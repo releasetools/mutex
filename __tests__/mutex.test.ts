@@ -90,7 +90,7 @@ describe("tryLock", () => {
 
   it("retries while there is time, then gives up", async () => {
     const { mutex, calls } = stub();
-    const timedOut = jest.fn();
+    const timedOut = jest.fn<(message: string) => void>();
 
     await tryLock(
       request({ pollTimeoutMs: 300, pollIntervalMs: 100 }),
@@ -105,7 +105,7 @@ describe("tryLock", () => {
 
   it("reports an acquisition once", async () => {
     const { mutex, calls } = stub({ acquired: true, status: "ok" });
-    const locked = jest.fn();
+    const locked = jest.fn<(result: LockResult) => void>();
 
     await tryLock(request(), mutex, log, { onLocked: locked });
 
@@ -117,7 +117,7 @@ describe("tryLock", () => {
 describe("tryUnlock", () => {
   it("reports a release", async () => {
     const { mutex } = stub({}, { unlocked: true, outcome: "unlocked" });
-    const unlocked = jest.fn();
+    const unlocked = jest.fn<(result: UnlockResult) => void>();
 
     await tryUnlock(request(), mutex, log, { onUnlocked: unlocked });
 
@@ -133,8 +133,8 @@ describe("tryUnlock", () => {
       {},
       { unlocked: false, outcome: "owned-by-another" },
     );
-    const refused = jest.fn();
-    const unlocked = jest.fn();
+    const refused = jest.fn<(result: UnlockResult) => void>();
+    const unlocked = jest.fn<(result: UnlockResult) => void>();
 
     await tryUnlock(
       request({ pollTimeoutMs: 500, pollIntervalMs: 100 }),
@@ -154,7 +154,7 @@ describe("tryUnlock", () => {
       {},
       { unlocked: false, outcome: "owned-by-another" },
     );
-    const timedOut = jest.fn();
+    const timedOut = jest.fn<(message: string) => void>();
 
     await tryUnlock(request(), mutex, log, { onTimeout: timedOut });
 
