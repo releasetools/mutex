@@ -308,17 +308,16 @@ They are separate on purpose. Replacing a release and releasing out of order are
 
 ### What it does
 
-| Step            |                                                                                                                                                |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `check-e2e-pin` | Refuses to publish a major the verify step cannot test                                                                                         |
-| Check           | Rejects a malformed version, one already released, or one below the highest released                                                           |
-| Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                          |
-| Build           | `npm ci`, lint, test                                                                                                                           |
-| Package         | `npm run package:action` assembles `publish/`: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a `package.json` carrying the version        |
-| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub |
-| Tag             | Points `v1.3.0` and the floating `v1` at that commit                                                                                           |
-| Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                          |
-| Verify          | Uses `releasetools/mutex@v1` for real and checks the version it reports                                                                        |
+| Step            |                                                                                                                                                                                                 |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-e2e-pin` | Refuses to publish a major the verify step cannot test                                                                                                                                          |
+| Check           | Rejects a malformed version, one already released, or one below the highest released                                                                                                            |
+| Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                                                                           |
+| Build           | `npm ci`, lint, test                                                                                                                                                                            |
+| Package         | `npm run package:action` assembles `publish/`: `action.yml`, `dist/`, `README.md`, `LICENSE`, and a `package.json` carrying the version                                                         |
+| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.3.0` and the floating `v1` at it |
+| Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
+| Verify          | Uses `releasetools/mutex@v1` for real and checks the version it reports                                                                                                                         |
 
 The first release on a new major seeds `release/<major>` from `main` automatically.
 
