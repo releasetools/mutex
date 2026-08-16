@@ -44,18 +44,41 @@ export class Output {
     private readonly quiet = false,
   ) {}
 
+  /** The ordinary outcome. Silenced by `--quiet`, which the exit code covers. */
   result(payload: unknown, human: string | string[]): void {
+    this.write(payload, human, this.quiet, this.humanStream);
+  }
+
+  /**
+   * An outcome that is not what was asked for: a lock not acquired, a release
+   * refused, a renewal declined.
+   *
+   * Printed even under `--quiet`, and always to stderr. Quiet means "do not
+   * narrate the ordinary", not "say nothing when something is wrong" - and
+   * these are the cases where the exit code alone leaves someone guessing
+   * which of several reasons applied.
+   */
+  problem(payload: unknown, human: string | string[]): void {
+    this.write(payload, human, false, process.stderr);
+  }
+
+  private write(
+    payload: unknown,
+    human: string | string[],
+    silenced: boolean,
+    stream: NodeJS.WritableStream,
+  ): void {
     if (this.json) {
       this.jsonStream.write(`${JSON.stringify(payload, null, 2)}\n`);
       return;
     }
 
-    if (this.quiet) {
+    if (silenced) {
       return;
     }
 
     for (const line of Array.isArray(human) ? human : [human]) {
-      this.humanStream.write(`${line}\n`);
+      stream.write(`${line}\n`);
     }
   }
 }

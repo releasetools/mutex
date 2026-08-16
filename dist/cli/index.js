@@ -8261,16 +8261,32 @@ class Output {
         this.json = json;
         this.quiet = quiet;
     }
+    /** The ordinary outcome. Silenced by `--quiet`, which the exit code covers. */
     result(payload, human) {
+        this.write(payload, human, this.quiet, this.humanStream);
+    }
+    /**
+     * An outcome that is not what was asked for: a lock not acquired, a release
+     * refused, a renewal declined.
+     *
+     * Printed even under `--quiet`, and always to stderr. Quiet means "do not
+     * narrate the ordinary", not "say nothing when something is wrong" - and
+     * these are the cases where the exit code alone leaves someone guessing
+     * which of several reasons applied.
+     */
+    problem(payload, human) {
+        this.write(payload, human, false, process.stderr);
+    }
+    write(payload, human, silenced, stream) {
         if (this.json) {
             this.jsonStream.write(`${JSON.stringify(payload, null, 2)}\n`);
             return;
         }
-        if (this.quiet) {
+        if (silenced) {
             return;
         }
         for (const line of Array.isArray(human) ? human : [human]) {
-            this.humanStream.write(`${line}\n`);
+            stream.write(`${line}\n`);
         }
     }
 }
@@ -8407,7 +8423,7 @@ async function commandLock(ctx, identifier, program, command = "lock") {
         },
     });
     if (!result.acquired) {
-        ctx.out.result({
+        ctx.out.problem({
             command,
             ok: false,
             id: identifier,
@@ -8436,7 +8452,7 @@ async function commandLock(ctx, identifier, program, command = "lock") {
 async function commandUnlock(ctx, identifier) {
     const result = await tryUnlock(requestFor(ctx, identifier), ctx.mutex, ctx.log);
     if (result.outcome === "owned-by-another") {
-        ctx.out.result({
+        ctx.out.problem({
             command: "unlock",
             ok: false,
             id: identifier,
@@ -8446,7 +8462,7 @@ async function commandUnlock(ctx, identifier) {
         return EXIT_REFUSED;
     }
     if (!result.unlocked) {
-        ctx.out.result({ command: "unlock", ok: false, id: identifier, outcome: result.outcome }, `Could not unlock '${identifier}' (${result.outcome}).`);
+        ctx.out.problem({ command: "unlock", ok: false, id: identifier, outcome: result.outcome }, `Could not unlock '${identifier}' (${result.outcome}).`);
         return EXIT_ERROR;
     }
     ctx.out.result({
@@ -8487,7 +8503,7 @@ async function commandRenew(ctx, identifier) {
         expired: `'${identifier}' expired at ${result.record?.expiresAt}; it may already have been taken over.`,
         contended: `'${identifier}' is being changed by another process; try again.`,
     };
-    ctx.out.result({
+    ctx.out.problem({
         command: "renew",
         ok: false,
         id: identifier,

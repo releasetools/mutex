@@ -294,7 +294,7 @@ if mutex status deploy-staging --quiet; then
 fi
 ```
 
-`--quiet` silences the report and leaves the exit code to answer. `--json` is unaffected by it.
+`--quiet` silences the ordinary report and leaves the exit code to answer. It does not silence a _deviation_ - a lock not acquired, a release refused, a lock left held - which is printed to stderr whatever the verbosity, since those are the cases where an exit code alone leaves you guessing which of several reasons applied. `--json` is unaffected by either.
 
 ### The dotsecenv client
 

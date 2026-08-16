@@ -103,7 +103,7 @@ export async function commandLock(
   );
 
   if (!result.acquired) {
-    ctx.out.result(
+    ctx.out.problem(
       {
         command,
         ok: false,
@@ -149,7 +149,7 @@ export async function commandUnlock(
   );
 
   if (result.outcome === "owned-by-another") {
-    ctx.out.result(
+    ctx.out.problem(
       {
         command: "unlock",
         ok: false,
@@ -168,7 +168,7 @@ export async function commandUnlock(
   }
 
   if (!result.unlocked) {
-    ctx.out.result(
+    ctx.out.problem(
       { command: "unlock", ok: false, id: identifier, outcome: result.outcome },
       `Could not unlock '${identifier}' (${result.outcome}).`,
     );
@@ -239,7 +239,7 @@ export async function commandRenew(
     contended: `'${identifier}' is being changed by another process; try again.`,
   };
 
-  ctx.out.result(
+  ctx.out.problem(
     {
       command: "renew",
       ok: false,

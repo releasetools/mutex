@@ -26,7 +26,7 @@ Newest first. One line per change.
 - Fixed `renew` silently cutting a long lease short. It now only ever moves an expiry further out, and defaults to an hour rather than a minute.
 - Fixed a secret key being passable to the dotsecenv CLI as an option: a key shaped like `--config=...` was read as a flag rather than as the secret to fetch.
 - The Action now reports a `version` output, so the release workflow can prove the build it tested is the one just released rather than a cached older one.
-- `--quiet` now suppresses command output as well as logs, so the exit code can be used on its own.
+- `--quiet` now suppresses the ordinary report as well as logs, so the exit code can be used on its own. Refusals and failures are still printed.
 - A lock left held after a wrapped program is now an error naming the command to release it, rather than a warning `--quiet` hid.
 - Deprecated `command: release` in the Action; use `command: unlock`.
 

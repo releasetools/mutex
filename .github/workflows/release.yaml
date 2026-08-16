@@ -27,10 +27,28 @@ jobs:
   # 'uses:' is resolved during "Set up job", before the first step runs, so a
   # sleep step inside e2e-test would be too late — the action is already
   # downloaded. The wait has to be its own job that e2e-test depends on.
-  # `uses:` cannot take an expression, so the end-to-end job can only name one
-  # major tag - v1. It is therefore skipped for a v2+ release, which needs its
-  # own job rather than a silently wrong one. build-and-test still runs for
-  # every version.
+  # `uses:` cannot take an expression - it is one of the few keys that does not
+  # accept contexts - so the end-to-end job can only name one major tag, and it
+  # names v1. This job exists to make that hardcoding fail loudly the day it
+  # stops matching, rather than letting a v2 release quietly skip the only
+  # check that proves the published action works.
+  check-e2e-pin:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: The end-to-end job must test the release being cut
+        env:
+          TAG: ${{ github.ref_name }}
+          # Keep in step with the `uses:` in e2e-test below.
+          PINNED: v1
+        run: |
+          major="${TAG%%.*}"
+          if [ "$major" != "$PINNED" ]; then
+            echo "::error::This release is $TAG, but e2e-test still pins releasetools/mutex@$PINNED, so nothing verifies the published $major action. Add a $major end-to-end job (uses: cannot take an expression, so it has to be written out), then update PINNED here."
+            exit 1
+          fi
+          echo "e2e-test pins @$PINNED and this release is $TAG"
+
   await-v1:
     if: startsWith(github.ref_name, 'v1.')
     runs-on: ubuntu-latest
