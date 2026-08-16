@@ -15,6 +15,10 @@
  *
  */
 
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 // @ts-expect-error - build tooling, deliberately plain JS with no types
 import {
   checkReleaseVersion,
@@ -244,5 +248,83 @@ describe("checkReleaseVersion", () => {
     expect(
       checkReleaseVersion({ version: "v2.0.0", tags: RELEASED }).major,
     ).toBe("v2");
+  });
+});
+
+/**
+ * Run as the release runs it, because what reaches $GITHUB_OUTPUT is not
+ * visible from the exported functions.
+ */
+describe("the script as the workflow runs it", () => {
+  const run = (args: string[], env: Record<string, string> = {}) => {
+    const outputFile = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "gho-")),
+      "output",
+    );
+    fs.writeFileSync(outputFile, "");
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(process.cwd(), "scripts", "check-release-version.mjs"),
+        ...args,
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_OUTPUT: outputFile,
+          GITHUB_REPOSITORY: "",
+          GITHUB_TOKEN: "",
+          GH_TOKEN: "",
+          ...env,
+        },
+      },
+    );
+
+    return { ...result, output: fs.readFileSync(outputFile, "utf8") };
+  };
+
+  /**
+   * Tag names come off the network now, and a step output carrying a newline
+   * would let whoever pushed that tag declare any other output it liked. So
+   * only the major goes to $GITHUB_OUTPUT, and it comes from --version.
+   * (CodeQL js/http-to-file-access, alert 13.)
+   */
+  it("writes only the major to $GITHUB_OUTPUT", () => {
+    const { output } = run([
+      "--version",
+      "v1.3.0",
+      "--tags",
+      "v1.0.0 v1.1.0 v1",
+    ]);
+
+    expect(output).toBe("major=v1\n");
+  });
+
+  it("does not put anything it read into $GITHUB_OUTPUT", () => {
+    const { output, stdout } = run([
+      "--version",
+      "v1.3.0",
+      "--tags",
+      "v1.0.0 v1.1.0 v1",
+    ]);
+
+    // The previous release is a log line, not an output.
+    expect(stdout).toContain("previous release: v1.1.0");
+    expect(output).not.toContain("v1.1.0");
+  });
+
+  it("fails, and writes no output, when the version is refused", () => {
+    const { status, stderr, output } = run([
+      "--version",
+      "v1.0.0",
+      "--tags",
+      "v1.1.0",
+    ]);
+
+    expect(status).toBe(1);
+    expect(stderr).toContain("::error::");
+    expect(output).toBe("");
   });
 });

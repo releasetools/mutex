@@ -203,12 +203,16 @@ if (
     process.stdout.write(
       `${result.version} accepted (previous release: ${result.previous ?? "none"})\n`,
     );
+    // Only the major, and only because it came from --version, which is
+    // matched against SEMVER above and so cannot carry a newline. Nothing
+    // read from the API is written here: a step output holding an attacker's
+    // newline lets it declare any other output it likes, and the tag names
+    // this reads are only as trustworthy as whoever can push a tag. The
+    // previous release is reported on stdout instead, where it is just a log
+    // line. (CodeQL js/http-to-file-access, alert 13.)
     if (process.env.GITHUB_OUTPUT) {
       const { appendFileSync } = await import("node:fs");
-      appendFileSync(
-        process.env.GITHUB_OUTPUT,
-        `major=${result.major}\nprevious=${result.previous ?? ""}\n`,
-      );
+      appendFileSync(process.env.GITHUB_OUTPUT, `major=${result.major}\n`);
     }
   } catch (error) {
     process.stderr.write(`::error::${error.message}\n`);
