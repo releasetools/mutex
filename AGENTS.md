@@ -18,7 +18,7 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 
 ## Before committing
 
-`npm run build` regenerates `lib/` and `dist/`, both of which are committed - the Action runs straight from `dist/`. The pre-commit hook does this, but a manual `npm run lint && npm run build && npm test` first avoids surprises.
+`npm run build` wipes and regenerates `lib/` and `dist/`, both of which are committed - the Action runs straight from `dist/`. It cleans first on purpose: `tsc` leaves output for deleted sources behind, and since the result is committed, a removed module would otherwise stay in the repository as compiled JavaScript. `lib/logic.js` sat there from the initial commit until this was noticed. The pre-commit hook does this, but a manual `npm run lint && npm run build && npm test` first avoids surprises.
 
 ## Layout
 
