@@ -13,6 +13,7 @@
     "build:watch": "tsc --watch",
     "build": "npm run clean && tsc && npm run package",
     "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
+    "package:action": "npm run build && node scripts/package-action.mjs",
     "mutex": "node ./bin/mutex.js",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
     "prepare": "husky"

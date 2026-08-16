@@ -71,51 +71,12 @@ jobs:
 
           echo "major=$(printf '%s' "$VERSION" | cut -d. -f1)" >> "$GITHUB_OUTPUT"
 
-      - name: 🔨 Lint, test and build
+      - name: 🔨 Lint, test and package
         run: |
           npm ci
           npm run lint
           npm test
-          npm run build
-
-      - name: 📦 Stage the published tree
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-
-          # Exactly what a consumer of this action needs, and nothing else.
-          # dist/*/package.json matters: ncc writes {"type":"module"} beside
-          # each bundle, and node will not load them as ESM without it.
-          mkdir -p stage
-          cp action.yml LICENSE README.md stage/
-          cp -r dist stage/
-
-          # The action reports its version by walking up from the bundle to the
-          # nearest package.json that has one. ncc's marker file has no version
-          # field, so without this the published action reports "unknown" and
-          # the verify job - which asserts it against this tag - fails every
-          # time. Caught by staging the tree and running it.
-          node -e '
-            const pkg = require("./package.json");
-            const manifest = {
-              name: pkg.name,
-              version: process.env.VERSION.replace(/^v/, ""),
-              description: pkg.description,
-              license: pkg.license,
-              private: true,
-            };
-            require("fs").writeFileSync(
-              "stage/package.json",
-              JSON.stringify(manifest, null, 2) + "\n",
-            );
-          '
-
-          echo "Publishing:"
-          find stage -type f | sort | sed 's/^/  /'
-
-          echo "Version the published action will report:"
-          (cd stage && node -p 'require("./package.json").version' | sed 's/^/  /')
+          npm run package:action
 
       # signed-push commits onto an existing branch, so the release line has to
       # be there. Seeded from main the first time a major is published.
@@ -145,7 +106,7 @@ jobs:
         id: publish
         uses: releasetools/actions/signed-push@57073d3d58774563dfaa76eaaf89ae086c278ee3 # v0
         with:
-          source-dir: stage
+          source-dir: publish
           target-repo: ${{ github.repository }}
           target-branch: release/${{ steps.version.outputs.major }}
           headline: "release: ${{ inputs.version }}"

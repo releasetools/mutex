@@ -349,6 +349,13 @@ The version must match `package.json` exactly, prefixed with `v`. The workflow c
 
 The first release on a new major seeds `release/<major>` from `main` automatically.
 
+The packaging step is a script rather than workflow YAML, so you can see exactly what a release would publish without cutting one:
+
+```shell
+npm run package:action
+node publish/dist/main/index.js      # reports the version it would report in CI
+```
+
 ### Afterwards
 
 Check the run summary for the signed commit, then confirm the published tree looks right:

@@ -197,3 +197,4 @@ out
 # at. `npm run build` produces it locally.
 /lib/
 /dist/
+/publish/
