@@ -132,6 +132,7 @@ describe("parseCommandLine", () => {
   });
 
   it("routes --help to the help command", () => {
+    expect(parseCommandLine([]).command).toBe("help");
     expect(parseCommandLine(["--help"]).command).toBe("help");
     expect(parseCommandLine(["lock", "--help"]).command).toBe("help");
     expect(parseCommandLine(["--help", "lock"]).topic).toBe("lock");

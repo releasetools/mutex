@@ -231,7 +231,7 @@ export function parseCommandLine(argv: string[]): CommandLine {
     command = "help";
     topic = asCommandName(positionals[0]) ?? null;
   } else if (positionals.length === 0) {
-    throw new UsageError("no command given");
+    command = "help";
   } else {
     const name = asCommandName(positionals[0]);
     if (!name) {

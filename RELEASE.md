@@ -17,6 +17,8 @@ Newest first. One line per change.
 
 - Removed `DATABASE_URL`. `MUTEX_DATABASE_URL` is the only name mutex reads, in the Action and the CLI, so a lock can no longer land in whatever database something else set that name to.
 - Added explicit direct and server profiles, including a background TCP server that keeps PostgreSQL connections warm for faster CLI lock operations, a systemd template, and a rootless per-user macOS LaunchAgent.
+- Running `mutex` without arguments now prints the general help instead of returning a usage error.
+- `mutex server status` and `mutex server stop` now identify a missing profiles file instead of claiming the implicit direct connection is a configured profile.
 
 ## 1.2.2
 

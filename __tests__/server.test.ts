@@ -14,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { SilentLogger } from "../src/logger.js";
+import { ConfigurationError } from "../src/cli/exit-codes.js";
 import {
   LockRecord,
   LockResult,
@@ -26,6 +27,7 @@ import {
   ServerDatabase,
   serverPaths,
 } from "../src/server/server.js";
+import { serverCommand } from "../src/server/lifecycle.js";
 import { TcpMutexStore } from "../src/server/tcp-store.js";
 
 class FakeDatabase implements ServerDatabase {
@@ -82,13 +84,36 @@ class FakeDatabase implements ServerDatabase {
 
 describe("mutex TCP server", () => {
   let temporary: string;
+  const originalConfigHome = process.env.XDG_CONFIG_HOME;
+  const originalDatabaseUrl = process.env.MUTEX_DATABASE_URL;
 
   beforeEach(async () => {
     temporary = await mkdtemp(path.join(os.tmpdir(), "mutex-server-"));
+    process.env.XDG_CONFIG_HOME = temporary;
   });
 
   afterEach(async () => {
     await rm(temporary, { recursive: true, force: true });
+    if (originalConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = originalConfigHome;
+    if (originalDatabaseUrl === undefined)
+      delete process.env.MUTEX_DATABASE_URL;
+    else process.env.MUTEX_DATABASE_URL = originalDatabaseUrl;
+  });
+
+  it("reports missing server configuration instead of an implicit direct profile", async () => {
+    process.env.MUTEX_DATABASE_URL = "postgres://example.invalid/locks";
+
+    await expect(
+      serverCommand("status", null, false, new SilentLogger()),
+    ).rejects.toMatchObject<Partial<ConfigurationError>>({
+      message: `no mutex server configuration found at ${path.join(
+        temporary,
+        "releasetools-mutex",
+        "profiles.toml",
+      )}`,
+      hint: "Run 'mutex profile' to create it.",
+    });
   });
 
   it("serves every operation through one warm store and writes exact logs", async () => {

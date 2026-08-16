@@ -16,6 +16,7 @@ import { Logger } from "../logger.js";
 import { resolveConnectionString } from "../cli/config.js";
 import {
   ensureProfiles,
+  loadProfiles,
   MutexProfile,
   profilesPath,
   selectProfile,
@@ -35,6 +36,11 @@ export async function serverCommand(
   const filePath = profilesPath();
   if (action === "start" || action === "run") {
     await ensureProfiles(process.stdin, process.stderr, filePath);
+  } else if (!(await loadProfiles(filePath))) {
+    throw new ConfigurationError(
+      `no mutex server configuration found at ${filePath}`,
+      "Run 'mutex profile' to create it.",
+    );
   }
   const { profile } = await selectProfile(requestedProfile, filePath);
   assertServerProfile(profile);
