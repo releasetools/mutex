@@ -138,6 +138,7 @@ describe("packageAction", () => {
     );
     expect(manifest.version).toBe("1.2.3");
     expect(manifest.name).toBe("@releasetools/mutex");
+    expect(manifest.description).toBe("a lock");
     expect(manifest.bin).toEqual({ mutex: "./bin/mutex.js" });
     expect(manifest.engines).toEqual({ node: ">=24.0.0" });
     expect(manifest.dependencies).toEqual({

@@ -2,7 +2,7 @@
   "name": "@releasetools/mutex",
   "version": "1.2.2",
   "private": true,
-  "description": "Advisory lock service for CI/CD pipelines. Prevents race conditions by ensuring mutual exclusion: only one job can access shared resources concurrently.",
+  "description": "Advisory locking for CI/CD, backed by a Postgres table. Locks have a TTL and auto-release when the job ends; a GitHub Action and a mutex CLI share the same table, so a lock taken by one blocks the other.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/releasetools/mutex.git"
