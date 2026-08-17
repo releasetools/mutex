@@ -1,6 +1,29 @@
 {
-  "name": "mutex",
-  "version": "1.2.2",
-  "description": "Advisory lock service for CI/CD pipelines. Prevents race conditions by ensuring mutual exclusion: only one job can access shared resources concurrently.",
-  "private": true
+  "name": "@releasetools/mutex",
+  "version": "1.3.0",
+  "description": "Advisory locking for CI/CD, backed by a Postgres table. Locks have a TTL and auto-release when the job ends; a GitHub Action and a mutex CLI share the same table, so a lock taken by one blocks the other.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/releasetools/mutex.git"
+  },
+  "homepage": "https://github.com/releasetools/mutex#readme",
+  "bugs": {
+    "url": "https://github.com/releasetools/mutex/issues"
+  },
+  "type": "module",
+  "bin": {
+    "mutex": "./bin/mutex.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "dependencies": {
+    "pg": "^8.16.3",
+    "pg-format": "^1.0.4"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
 }

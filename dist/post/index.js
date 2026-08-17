@@ -49307,6 +49307,17 @@ function getOctokit(token, options, ...additionalPlugins) {
  */
 const SKIP_LABEL = "SKIP_MUTEX";
 const TABLE_NAME = "releasetools_mutex";
+/**
+ * Where the connection string comes from, for both front ends.
+ *
+ * Prefixed on purpose. `DATABASE_URL` is the most reused name in the
+ * ecosystem - frameworks, ORMs, PaaS providers and CI systems all set it, and
+ * it points at the *application's* database far more often than at the one
+ * holding locks. mutex read it until 1.3.0, warning as it went; a repository
+ * that had one for its app and then added mutex was taking its locks in the
+ * app database without being told.
+ */
+const CONNECTION_ENV_VAR = "MUTEX_DATABASE_URL";
 //# sourceMappingURL=constants.js.map
 ;// CONCATENATED MODULE: ./lib/inputs.js
 /*
@@ -49595,7 +49606,7 @@ async function mutex_tryLock(request, mutex, log, events = {}) {
     let result = { acquired: false, status: "No attempt was made" };
     for (;;) {
         attempt++;
-        result = await mutex.acquireLock(request.identifier, request.reason, request.owner ?? null);
+        result = await mutex.acquireLock(request.identifier, request.reason, request.owner ?? null, request.expiration, request.operation);
         if (result.acquired) {
             log.info(`Lock '${request.identifier}' acquired on attempt ${attempt}.`);
             await events.onLocked?.(result);
@@ -49716,64 +49727,6 @@ async function releaseAndAnnounce(settings, mutex, log, notifications) {
     });
 }
 //# sourceMappingURL=action-steps.js.map
-;// CONCATENATED MODULE: ./lib/connection.js
-/*
- * Copyright (c) 2025-2026 Mihai Bojin
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- */
-/**
- * Where the connection string comes from.
- *
- * Prefixed on purpose. `DATABASE_URL` is the most reused name in the
- * ecosystem - frameworks, ORMs, PaaS providers and CI systems all set it, and
- * it points at the *application's* database far more often than at the one
- * holding locks. A repository that sets it for its app and then adds mutex
- * gets its locks in the app database, and is never told.
- */
-const CONNECTION_ENV_VAR = "MUTEX_DATABASE_URL";
-/**
- * Still read, because it is what every workflow written against v1 passes.
- * Using it warns; removal is tracked in issue #70.
- */
-const DEPRECATED_CONNECTION_ENV_VAR = "DATABASE_URL";
-/**
- * The precedence, in one place, for both front ends.
- *
- * `read` answers with what a name is worth where the caller stands: the CLI
- * reads the environment, the Action reads the environment and then its own
- * `with:` inputs. What they must agree on is the order the two names are
- * tried in and the warning the old one earns, which is why that lives here
- * rather than in each of them.
- *
- * Warns once, since each front end resolves the connection string once.
- */
-function findConnectionString(read, log) {
-    const preferred = read(CONNECTION_ENV_VAR);
-    if (preferred) {
-        return { value: preferred, name: CONNECTION_ENV_VAR };
-    }
-    const deprecated = read(DEPRECATED_CONNECTION_ENV_VAR);
-    if (deprecated) {
-        log.warning(`${DEPRECATED_CONNECTION_ENV_VAR} is deprecated; rename it to ${CONNECTION_ENV_VAR}. ` +
-            "Almost everything sets that name, and usually to the application's " +
-            "own database rather than the one holding locks.");
-        return { value: deprecated, name: DEPRECATED_CONNECTION_ENV_VAR };
-    }
-    return null;
-}
-//# sourceMappingURL=connection.js.map
 ;// CONCATENATED MODULE: ./lib/timing.js
 /*
  * Copyright (c) 2025-2026 Mihai Bojin
@@ -49859,14 +49812,10 @@ class MutexSettings {
     pollIntervalMs;
     autoReleaseLock;
     owner;
-    constructor(log) {
-        // Either name works as an environment variable or as a `with:` input; the
-        // order they are tried in is shared with the CLI, in connection.ts.
-        const connection = findConnectionString(loadFromEnvOrGHAInput, log);
-        if (!connection) {
-            throw new Error(`🚨 ${CONNECTION_ENV_VAR} not found. Cannot continue...`);
-        }
-        this.dbConnectionString = connection.value;
+    constructor() {
+        // From the environment or from a `with:` input, whichever the workflow
+        // finds easier to pass.
+        this.dbConnectionString = loadRequiredFromEnvOrGHAInput(CONNECTION_ENV_VAR);
         this.command = getInput("command", { required: true });
         this.identifier = getInput("id", { required: true });
         // An unset or non-numeric input parses to NaN, which would otherwise flow
@@ -50018,15 +49967,18 @@ class DatabaseMutex {
         this.config = config;
         this.log = log;
         // Database configuration using connection string
-        this.pool = new Pool({ connectionString: config.dbConnectionString });
+        this.pool = new Pool({
+            connectionString: config.dbConnectionString,
+            connectionTimeoutMillis: config.connectionTimeoutMillis,
+        });
         // Without a listener, an error on an idle client is an unhandled 'error'
         // event and takes the whole process down.
         this.pool.on("error", (error) => {
             logWarning(this.log, error, "Idle database client error");
         });
     }
-    async acquireLock(name, reason, owner = null) {
-        return this.withSchemaRetry(`Acquiring lock '${name}'`, () => this.acquireLockInternal(name, reason, owner));
+    async acquireLock(name, reason, owner = null, expiration = this.config.expiration ?? 60, _operation = "lock") {
+        return this.withSchemaRetry(`Acquiring lock '${name}'`, () => this.acquireLockInternal(name, reason, owner, expiration));
     }
     async releaseLock(name, owner = null, fence = null) {
         return this.withSchemaRetry(`Releasing lock '${name}'`, () => this.releaseLockInternal(name, owner, fence));
@@ -50082,7 +50034,24 @@ class DatabaseMutex {
         this.closed = true;
         await this.pool.end();
     }
-    async acquireLockInternal(name, reason, owner) {
+    /** Opens one connection during server startup so the first lock is warm. */
+    async warm() {
+        const client = await this.connect();
+        try {
+            await client.query("SELECT 1");
+        }
+        finally {
+            this.disconnect(client);
+        }
+    }
+    poolStatus() {
+        return {
+            total: this.pool.totalCount,
+            idle: this.pool.idleCount,
+            waiting: this.pool.waitingCount,
+        };
+    }
+    async acquireLockInternal(name, reason, owner, expiration) {
         let client;
         try {
             client = await this.connect();
@@ -50113,7 +50082,7 @@ class DatabaseMutex {
                 name,
                 reason,
                 owner,
-                this.config.expiration,
+                expiration,
             ]);
             // No row means a valid, unexpired lock already existed.
             if (result.rowCount === 0) {
@@ -50129,7 +50098,7 @@ class DatabaseMutex {
             await client.query("COMMIT");
             this.log.info(`Lock '${name}' acquired successfully.`);
             const record = toLockRecord(result.rows[0]);
-            const approximate = new Date(Date.now() + this.config.expiration * 1000).toISOString();
+            const approximate = new Date(Date.now() + expiration * 1000).toISOString();
             return {
                 acquired: true,
                 status: "Lock acquired",
@@ -50618,7 +50587,7 @@ async function post() {
             warning(`No lock was acquired in the main step. Nothing to release.`);
             return;
         }
-        const settings = new MutexSettings(log);
+        const settings = new MutexSettings();
         if (settings.autoReleaseLock !== true) {
             warning(`⚠️ Auto-releasing is disabled. Lock '${settings.identifier}' will not be released.`);
             return;
