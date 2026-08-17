@@ -228,7 +228,7 @@ jobs:
 
   # Keep publish authority away from npm ci, tests, and every dependency
   # lifecycle script they can execute. This job receives only the signed tree
-  # under the version tag plus the small, reviewed publishing script.
+  # under the version tag and invokes npm directly.
   publish_npm:
     needs: publish
     runs-on: ubuntu-latest
@@ -238,12 +238,6 @@ jobs:
     outputs:
       npm_available: ${{ steps.npm.outputs.available }}
     steps:
-      - name: Checkout publishing logic
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          path: source
-
       - name: Checkout the signed release package
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -257,7 +251,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
-      # npm versions cannot be replaced. The script skips one that already
+      # npm versions cannot be replaced. The command skips one that already
       # exists (including an overwrite of the Action release), refuses to
       # create retroactive packages before v1.3.0, and keeps a deliberately
       # lower backport from moving the registry's `latest` tag backwards.
@@ -270,7 +264,62 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ inputs.version }}
-        run: node source/scripts/publish-npm.mjs --directory package --version "$VERSION"
+        working-directory: package
+        run: |
+          set -euo pipefail
+
+          expected="${VERSION#v}"
+
+          # The npm package begins at v1.3.0. Re-running an older Action
+          # release must not create a package that never existed at the time.
+          case "$VERSION" in
+            v1.0.*|v1.1.*|v1.2.*)
+              echo "npm publishing starts at v1.3.0; skipping ${VERSION}."
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "status=not-applicable" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          name="$(node -p 'require("./package.json").name')"
+          packaged="$(node -p 'require("./package.json").version')"
+          if [ "$name" != "@releasetools/mutex" ]; then
+            echo "::error::Refusing to publish ${name}; expected @releasetools/mutex"
+            exit 1
+          fi
+          if [ "$packaged" != "$expected" ]; then
+            echo "::error::Package version ${packaged} does not match ${VERSION}"
+            exit 1
+          fi
+
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+          # A successful Action overwrite may be retried after npm already
+          # published. npm versions are immutable, so leave that one alone.
+          if published="$(npm view "${name}@${expected}" version 2>/dev/null)"; then
+            if [ "$published" != "$expected" ]; then
+              echo "::error::npm returned unexpected version ${published}"
+              exit 1
+            fi
+            echo "${name}@${expected} already exists; skipping npm publish."
+            echo "status=existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Keep a deliberately lower backport from moving latest backwards.
+          tag=latest
+          latest="$(npm view "$name" dist-tags.latest 2>/dev/null || true)"
+          if [ -n "$latest" ] && [ "$latest" != "$expected" ]; then
+            lower="$(printf '%s\n' "$expected" "$latest" | sort -V | head -n 1)"
+            [ "$lower" = "$expected" ] && tag=backport
+          fi
+
+          npm publish . \
+            --access public \
+            --tag "$tag" \
+            --provenance \
+            --registry https://registry.npmjs.org
+          echo "status=published" >> "$GITHUB_OUTPUT"
 
       - name: 📝 npm summary
         env:
