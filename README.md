@@ -497,7 +497,7 @@ They are separate on purpose. Replacing a release and releasing out of order are
 | Check           | Rejects a malformed version, one already released, or one below the highest released                                                                                                            |
 | Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                                                                           |
 | Build           | `npm ci`, lint, test                                                                                                                                                                            |
-| Package         | `npm run package:action` assembles `publish/`: the Action bundle, compiled CLI, runtime manifest, README, and license                                                                           |
+| Package         | `npm run package:release` assembles `publish/`: the Action bundle, compiled CLI, runtime manifest, README, and license                                                                          |
 | Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.3.0` and the floating `v1` at it |
 | Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
 | npm             | Publishes `@releasetools/mutex` with provenance; an older backport gets the `backport` dist-tag instead of moving `latest` backwards                                                            |
@@ -509,7 +509,7 @@ The first release on a new major seeds `release/<major>` from `main` automatical
 Packaging is a script rather than workflow YAML, so you can see what a release would publish without cutting one:
 
 ```shell
-npm run package:action
+npm run package:release
 node publish/dist/main/index.js      # reports the version it would report in CI
 npm pack ./publish --dry-run         # shows exactly what npm would receive
 ```

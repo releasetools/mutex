@@ -21,6 +21,7 @@ Newest first. One line per change.
 - `mutex server status` and `mutex server stop` now identify a missing profiles file instead of claiming the implicit direct connection is a configured profile.
 - Published the CLI as the public `@releasetools/mutex` package with provenance, so npm and mise can install it without cloning the repository.
 - The npm package description now explains how its Postgres-backed TTL locks coordinate the GitHub Action and CLI.
+- Renamed the release artifact command to `npm run package:release`, reflecting that it assembles both the GitHub Action and npm CLI package.
 - Added `npm run cli:link` for building and linking a checkout and `npm run check` for formatting, building, and testing it locally.
 
 ## 1.2.2

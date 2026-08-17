@@ -27,7 +27,7 @@ import { parseArgs } from "node:util";
  * here rather than inline in the workflow so it can be run and inspected
  * without cutting a release:
  *
- *     npm run package:action
+ *     npm run package:release
  *     node publish/dist/main/index.js
  *
  * That matters more than it sounds. The generated package.json below exists
@@ -43,7 +43,7 @@ const FILES = ["action.yml", "LICENSE", "README.md"];
 const DIRECTORIES = ["bin", "dist", "lib"];
 const CLI_DEPENDENCIES = ["pg", "pg-format"];
 
-export function packageAction({ root = process.cwd(), out } = {}) {
+export function packageRelease({ root = process.cwd(), out } = {}) {
   const source = path.resolve(root);
   const target = path.resolve(out ?? path.join(source, "publish"));
 
@@ -178,13 +178,13 @@ if (
   });
 
   try {
-    const { target, version, files } = packageAction(values);
+    const { target, version, files } = packageRelease(values);
     process.stdout.write(`Packaged mutex ${version} into ${target}\n`);
     for (const file of files) {
       process.stdout.write(`  ${file}\n`);
     }
   } catch (error) {
-    process.stderr.write(`package-action: ${error.message}\n`);
+    process.stderr.write(`package-release: ${error.message}\n`);
     process.exit(1);
   }
 }

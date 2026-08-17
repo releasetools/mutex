@@ -3,7 +3,7 @@ export default {
   testEnvironment: "node",
   clearMocks: true,
   testMatch: ["**/__tests__/**/*.test.ts"],
-  // package:action writes a second package.json with the same npm identity.
+  // package:release writes a second package.json with the same npm identity.
   modulePathIgnorePatterns: ["<rootDir>/publish/"],
   extensionsToTreatAsEsm: [".ts"],
   moduleNameMapper: {

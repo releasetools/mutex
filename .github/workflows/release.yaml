@@ -132,7 +132,7 @@ jobs:
           npm ci
           npm run lint
           npm test
-          npm run package:action
+          npm run package:release
 
       # signed-push commits onto an existing branch, so the release line has to
       # be there. Seeded from main the first time a major is published.
