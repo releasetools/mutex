@@ -27,7 +27,7 @@ import { parseArgs } from "node:util";
  * here rather than inline in the workflow so it can be run and inspected
  * without cutting a release:
  *
- *     npm run package:action
+ *     npm run package:release
  *     node publish/dist/main/index.js
  *
  * That matters more than it sounds. The generated package.json below exists
@@ -41,8 +41,9 @@ import { parseArgs } from "node:util";
 /** Copied verbatim into the published tree. */
 const FILES = ["action.yml", "LICENSE", "README.md"];
 const DIRECTORIES = ["bin", "dist", "lib"];
+const CLI_DEPENDENCIES = ["pg", "pg-format"];
 
-export function packageAction({ root = process.cwd(), out } = {}) {
+export function packageRelease({ root = process.cwd(), out } = {}) {
   const source = path.resolve(root);
   const target = path.resolve(out ?? path.join(source, "publish"));
 
@@ -78,11 +79,14 @@ export function packageAction({ root = process.cwd(), out } = {}) {
     version: manifest.version,
     description: manifest.description,
     license: manifest.license,
-    private: true,
+    repository: manifest.repository,
+    homepage: manifest.homepage,
+    bugs: manifest.bugs,
     type: manifest.type,
     bin: manifest.bin,
     engines: manifest.engines,
-    dependencies: manifest.dependencies,
+    dependencies: dependenciesFor(CLI_DEPENDENCIES, manifest.dependencies),
+    publishConfig: manifest.publishConfig,
   });
 
   verifyEntrypoints(target);
@@ -149,6 +153,17 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+function dependenciesFor(names, dependencies = {}) {
+  return Object.fromEntries(
+    names.map((name) => {
+      if (!dependencies[name]) {
+        throw new Error(`missing runtime dependency ${name}`);
+      }
+      return [name, dependencies[name]];
+    }),
+  );
+}
+
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -163,13 +178,13 @@ if (
   });
 
   try {
-    const { target, version, files } = packageAction(values);
+    const { target, version, files } = packageRelease(values);
     process.stdout.write(`Packaged mutex ${version} into ${target}\n`);
     for (const file of files) {
       process.stdout.write(`  ${file}\n`);
     }
   } catch (error) {
-    process.stderr.write(`package-action: ${error.message}\n`);
+    process.stderr.write(`package-release: ${error.message}\n`);
     process.exit(1);
   }
 }

@@ -56,6 +56,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          # A release build should not reuse another build's dependency cache.
+          package-manager-cache: false
+
       - name: ✅ Check the version
         id: version
         env:
@@ -125,7 +132,7 @@ jobs:
           npm ci
           npm run lint
           npm test
-          npm run package:action
+          npm run package:release
 
       # signed-push commits onto an existing branch, so the release line has to
       # be there. Seeded from main the first time a major is published.
@@ -218,6 +225,142 @@ jobs:
             echo "- \`${VERSION}\` and \`${MAJOR}\` point at it"
             echo "- bumped package.json on main in \`${BUMP_SHA:0:12}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Keep publish authority away from npm ci, tests, and every dependency
+  # lifecycle script they can execute. This job receives only the signed tree
+  # under the version tag and invokes npm directly.
+  publish_npm:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      npm_available: ${{ steps.npm.outputs.available }}
+    steps:
+      - name: Checkout the signed release package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.version }}
+          path: package
+
+      - name: Set up Node.js for npm trusted publishing
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      # npm versions cannot be replaced. The command skips one that already
+      # exists (including an overwrite of the Action release), refuses to
+      # create retroactive packages before v1.3.0, and keeps a deliberately
+      # lower backport from moving the registry's `latest` tag backwards.
+      #
+      # NPM_TOKEN is needed only to bootstrap the first package. Once the
+      # package trusts release.yaml on npmjs.com, OIDC wins and this secret can
+      # be deleted; provenance is generated from the same id-token permission.
+      - name: 📦 Publish the CLI to npm
+        id: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        working-directory: package
+        run: |
+          set -euo pipefail
+
+          expected="${VERSION#v}"
+
+          # The npm package begins at v1.3.0. Re-running an older Action
+          # release must not create a package that never existed at the time.
+          case "$VERSION" in
+            v1.0.*|v1.1.*|v1.2.*)
+              echo "npm publishing starts at v1.3.0; skipping ${VERSION}."
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "status=not-applicable" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          name="$(node -p 'require("./package.json").name')"
+          packaged="$(node -p 'require("./package.json").version')"
+          if [ "$name" != "@releasetools/mutex" ]; then
+            echo "::error::Refusing to publish ${name}; expected @releasetools/mutex"
+            exit 1
+          fi
+          if [ "$packaged" != "$expected" ]; then
+            echo "::error::Package version ${packaged} does not match ${VERSION}"
+            exit 1
+          fi
+
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+          # A successful Action overwrite may be retried after npm already
+          # published. npm versions are immutable, so leave that one alone.
+          if published="$(npm view "${name}@${expected}" version 2>/dev/null)"; then
+            if [ "$published" != "$expected" ]; then
+              echo "::error::npm returned unexpected version ${published}"
+              exit 1
+            fi
+            echo "${name}@${expected} already exists; skipping npm publish."
+            echo "status=existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Keep a deliberately lower backport from moving latest backwards.
+          tag=latest
+          latest="$(npm view "$name" dist-tags.latest 2>/dev/null || true)"
+          if [ -n "$latest" ] && [ "$latest" != "$expected" ]; then
+            lower="$(printf '%s\n' "$expected" "$latest" | sort -V | head -n 1)"
+            [ "$lower" = "$expected" ] && tag=backport
+          fi
+
+          npm publish . \
+            --access public \
+            --tag "$tag" \
+            --provenance \
+            --registry https://registry.npmjs.org
+          echo "status=published" >> "$GITHUB_OUTPUT"
+
+      - name: 📝 npm summary
+        env:
+          NPM_AVAILABLE: ${{ steps.npm.outputs.available }}
+          NPM_STATUS: ${{ steps.npm.outputs.status }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$NPM_AVAILABLE" = "true" ]; then
+            echo "npm package (${NPM_STATUS}): [\`@releasetools/mutex@${VERSION#v}\`](https://www.npmjs.com/package/@releasetools/mutex/v/${VERSION#v})" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "npm package: not applicable before v1.3.0" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # Install the exact package from the public registry, rather than exercising
+  # publish/ in the workspace, so this proves npm received a runnable CLI.
+  verify-npm:
+    if: needs.publish_npm.outputs.npm_available == 'true'
+    needs: publish_npm
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: ✅ Install and verify the npm CLI
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          expected="${VERSION#v}"
+          npm install --global "@releasetools/mutex@${expected}"
+          ran="$(mutex version)"
+          if [ "$ran" != "$expected" ]; then
+            echo "::error::npm installed mutex $ran, but this release is $expected"
+            exit 1
+          fi
+          echo "npm installed mutex $ran"
 
   # Proves the published action works, by using it the way a consumer would.
   #

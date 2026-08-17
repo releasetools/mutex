@@ -19,7 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 // @ts-expect-error - build tooling, deliberately plain JS with no types
-import { packageAction } from "../scripts/package-action.mjs";
+import { packageRelease } from "../scripts/package-release.mjs";
 
 /**
  * The published tree is a subset of the repository, so neither the Action nor
@@ -59,14 +59,28 @@ function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
   write(
     "package.json",
     JSON.stringify({
-      name: "mutex",
+      name: "@releasetools/mutex",
       version: "1.2.3",
       description: "a lock",
       license: "Apache-2.0",
+      repository: {
+        type: "git",
+        url: "git+https://github.com/releasetools/mutex.git",
+      },
+      homepage: "https://github.com/releasetools/mutex#readme",
+      bugs: { url: "https://github.com/releasetools/mutex/issues" },
       type: "module",
       bin: { mutex: "./bin/mutex.js" },
       engines: { node: ">=24.0.0" },
-      dependencies: { pg: "^8.16.3" },
+      dependencies: {
+        "@actions/core": "^3.0.0",
+        pg: "^8.16.3",
+        "pg-format": "^1.0.4",
+      },
+      publishConfig: {
+        access: "public",
+        registry: "https://registry.npmjs.org/",
+      },
       scripts: { build: "tsc" },
       devDependencies: { typescript: "^6" },
     }),
@@ -75,7 +89,7 @@ function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
   return root;
 }
 
-describe("packageAction", () => {
+describe("packageRelease", () => {
   const roots: string[] = [];
 
   const build = (overrides?: Parameters<typeof repository>[0]) => {
@@ -92,7 +106,7 @@ describe("packageAction", () => {
 
   it("publishes exactly what a consumer needs", () => {
     const root = build();
-    const { files } = packageAction({ root, out: path.join(root, "out") });
+    const { files } = packageRelease({ root, out: path.join(root, "out") });
 
     expect(files.sort()).toEqual(
       [
@@ -117,25 +131,37 @@ describe("packageAction", () => {
    */
   it("gives the tree a package.json carrying the version", () => {
     const root = build();
-    const { target } = packageAction({ root, out: path.join(root, "out") });
+    const { target } = packageRelease({ root, out: path.join(root, "out") });
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(target, "package.json"), "utf8"),
     );
     expect(manifest.version).toBe("1.2.3");
-    expect(manifest.name).toBe("mutex");
+    expect(manifest.name).toBe("@releasetools/mutex");
+    expect(manifest.description).toBe("a lock");
     expect(manifest.bin).toEqual({ mutex: "./bin/mutex.js" });
     expect(manifest.engines).toEqual({ node: ">=24.0.0" });
-    expect(manifest.dependencies).toEqual({ pg: "^8.16.3" });
+    expect(manifest.dependencies).toEqual({
+      pg: "^8.16.3",
+      "pg-format": "^1.0.4",
+    });
+    expect(manifest.repository.url).toBe(
+      "git+https://github.com/releasetools/mutex.git",
+    );
+    expect(manifest.publishConfig).toEqual({
+      access: "public",
+      registry: "https://registry.npmjs.org/",
+    });
   });
 
   it("leaves the repository's own scripts and devDependencies out of it", () => {
     const root = build();
-    const { target } = packageAction({ root, out: path.join(root, "out") });
+    const { target } = packageRelease({ root, out: path.join(root, "out") });
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(target, "package.json"), "utf8"),
     );
+    expect(manifest.private).toBeUndefined();
     expect(manifest.scripts).toBeUndefined();
     expect(manifest.devDependencies).toBeUndefined();
   });
@@ -147,7 +173,7 @@ describe("packageAction", () => {
   it("refuses to publish a tree missing an entrypoint action.yml names", () => {
     const root = build({ omit: ["dist/post/index.js"] });
 
-    expect(() => packageAction({ root, out: path.join(root, "out") })).toThrow(
+    expect(() => packageRelease({ root, out: path.join(root, "out") })).toThrow(
       /runs\.post .* not in the published tree/,
     );
   });
@@ -158,7 +184,7 @@ describe("packageAction", () => {
         'runs:\n  using: "node24"\n  pre: "dist/nope.js"\n  main: "dist/main/index.js"\n',
     });
 
-    expect(() => packageAction({ root, out: path.join(root, "out") })).toThrow(
+    expect(() => packageRelease({ root, out: path.join(root, "out") })).toThrow(
       /runs\.pre/,
     );
   });
@@ -167,7 +193,7 @@ describe("packageAction", () => {
     const root = build({ omit: ["dist/main/index.js"] });
     fs.rmSync(path.join(root, "dist"), { recursive: true, force: true });
 
-    expect(() => packageAction({ root, out: path.join(root, "out") })).toThrow(
+    expect(() => packageRelease({ root, out: path.join(root, "out") })).toThrow(
       /run `npm run build` first/,
     );
   });
@@ -179,7 +205,7 @@ describe("packageAction", () => {
       JSON.stringify({ name: "mutex" }),
     );
 
-    expect(() => packageAction({ root, out: path.join(root, "out") })).toThrow(
+    expect(() => packageRelease({ root, out: path.join(root, "out") })).toThrow(
       /no version/,
     );
   });
@@ -190,7 +216,7 @@ describe("packageAction", () => {
     fs.mkdirSync(out, { recursive: true });
     fs.writeFileSync(path.join(out, "stale.js"), "from an older run");
 
-    const { files } = packageAction({ root, out });
+    const { files } = packageRelease({ root, out });
     expect(files).not.toContain("stale.js");
   });
 });
