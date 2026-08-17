@@ -41,6 +41,7 @@ import { parseArgs } from "node:util";
 /** Copied verbatim into the published tree. */
 const FILES = ["action.yml", "LICENSE", "README.md"];
 const DIRECTORIES = ["bin", "dist", "lib"];
+const CLI_DEPENDENCIES = ["pg", "pg-format"];
 
 export function packageAction({ root = process.cwd(), out } = {}) {
   const source = path.resolve(root);
@@ -78,11 +79,14 @@ export function packageAction({ root = process.cwd(), out } = {}) {
     version: manifest.version,
     description: manifest.description,
     license: manifest.license,
-    private: true,
+    repository: manifest.repository,
+    homepage: manifest.homepage,
+    bugs: manifest.bugs,
     type: manifest.type,
     bin: manifest.bin,
     engines: manifest.engines,
-    dependencies: manifest.dependencies,
+    dependencies: dependenciesFor(CLI_DEPENDENCIES, manifest.dependencies),
+    publishConfig: manifest.publishConfig,
   });
 
   verifyEntrypoints(target);
@@ -147,6 +151,17 @@ function listFiles(dir, base = dir) {
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function dependenciesFor(names, dependencies = {}) {
+  return Object.fromEntries(
+    names.map((name) => {
+      if (!dependencies[name]) {
+        throw new Error(`missing runtime dependency ${name}`);
+      }
+      return [name, dependencies[name]];
+    }),
+  );
 }
 
 function writeJson(file, value) {

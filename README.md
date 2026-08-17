@@ -31,28 +31,37 @@ Any other job using `id: staging` now waits. The lock goes back when the job end
 
 ### On the command line
 
-Install a released version directly from this repository. Node.js 24 or newer
-is required:
+Install the public package from npm. Node.js 24 or newer is required:
 
 ```shell
-npm install --global "git+https://github.com/releasetools/mutex.git#v1.3.0"
+npm install --global @releasetools/mutex@1.3.0
 mutex version
 ```
 
-Use an exact version as above for a repeatable install, or use `#v1` to follow
-the latest compatible v1 release at installation time. npm does not update a
-global Git installation automatically. Re-run the install command to update:
+Use an exact version as above for a repeatable install, or use `@1` to select
+the newest compatible v1 release at installation time. npm does not update a
+global installation automatically. Re-run the install command to update:
 
 ```shell
 # Move an exact installation to a specific newer release.
-npm install --global "git+https://github.com/releasetools/mutex.git#v1.3.1"
+npm install --global @releasetools/mutex@1.3.1
 
 # Refresh an installation that follows the latest v1 release.
-npm install --global "git+https://github.com/releasetools/mutex.git#v1"
+npm install --global @releasetools/mutex@1
 ```
 
 npm writes the command to its configured global prefix; a Node version manager
 or user-owned npm prefix keeps the whole installation rootless.
+
+mise can own the package and its Node runtime instead:
+
+```shell
+mise use --global "npm:@releasetools/mutex@latest"
+mutex version
+```
+
+`mise upgrade` refreshes tools configured with a moving version such as
+`latest`; use `@1.3.0` instead when the installation must stay pinned.
 
 ```shell
 MUTEX_DATABASE_URL="postgres://..." mutex lock staging -- ./deploy.sh
@@ -432,7 +441,34 @@ GitHub has a [tutorial](https://docs.github.com/en/actions/tutorials/create-acti
 
 ## Releasing
 
-`main` holds source only. What `releasetools/mutex@v1` resolves to is built during the release and published to the `release/v1` branch, so a release is a workflow run rather than a `git tag`.
+`main` holds source only. What `releasetools/mutex@v1` resolves to is built during the release and published to the `release/v1` branch, while the same compiled CLI is published as `@releasetools/mutex` on npm. A release is therefore a workflow run rather than a `git tag` or a manual `npm publish`.
+
+### One-time npm setup
+
+The `releasetools` organization must exist on npmjs.com, and the releasing
+account must be allowed to publish public packages in that scope. npm cannot
+configure a trusted publisher until the package exists, so bootstrap the first
+release with a short-lived granular token that may publish with 2FA bypass:
+
+1. Add the token as the `NPM_TOKEN` Actions secret in this GitHub repository.
+2. Run the first release normally. The workflow publishes the package with
+   provenance and creates `@releasetools/mutex`.
+3. With npm 11.15 or newer and 2FA enabled, authorize this workflow:
+
+   ```shell
+   npm trust github @releasetools/mutex \
+     --repo releasetools/mutex \
+     --file release.yaml \
+     --allow-publish
+   ```
+
+4. Delete the `NPM_TOKEN` secret. In the package's npm settings, require 2FA
+   and disallow token publishing; future releases authenticate only through
+   short-lived GitHub OIDC credentials.
+
+The trusted publisher settings are case-sensitive. Configure the repository as
+`releasetools/mutex`, the workflow filename as `release.yaml`, no environment,
+and allow `npm publish`.
 
 ### Cutting a release
 
@@ -449,7 +485,7 @@ Two options, both off by default:
 | Option                |                                                                                                                                 |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `allow-lower-version` | Publish below the highest released version, for back-porting to an older line. Without it, `v1.2.22` after `v1.3.0` is refused. |
-| `overwrite-existing`  | Replace a version already published: moves its tag and updates its GitHub release.                                              |
+| `overwrite-existing`  | Replace an Action version and GitHub release. An npm version is immutable and remains unchanged if it already exists.           |
 
 They are separate on purpose. Replacing a release and releasing out of order are different decisions, so neither flag grants the other.
 
@@ -464,7 +500,9 @@ They are separate on purpose. Replacing a release and releasing out of order are
 | Package         | `npm run package:action` assembles `publish/`: the Action bundle, compiled CLI, runtime manifest, README, and license                                                                           |
 | Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.3.0` and the floating `v1` at it |
 | Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
-| Verify          | Uses `releasetools/mutex@v1` for real and checks the version it reports                                                                                                                         |
+| npm             | Publishes `@releasetools/mutex` with provenance; an older backport gets the `backport` dist-tag instead of moving `latest` backwards                                                            |
+| Verify npm      | Installs the exact version from the public registry and checks `mutex version`                                                                                                                  |
+| Verify Action   | Uses `releasetools/mutex@v1` for real and checks the version it reports                                                                                                                         |
 
 The first release on a new major seeds `release/<major>` from `main` automatically.
 
@@ -473,6 +511,7 @@ Packaging is a script rather than workflow YAML, so you can see what a release w
 ```shell
 npm run package:action
 node publish/dist/main/index.js      # reports the version it would report in CI
+npm pack ./publish --dry-run         # shows exactly what npm would receive
 ```
 
 ### Afterwards
@@ -481,6 +520,7 @@ node publish/dist/main/index.js      # reports the version it would report in CI
 git fetch origin 'refs/tags/*:refs/tags/*'
 git show --stat v1.3.0
 gh api repos/releasetools/mutex/commits/v1 --jq .commit.verification.verified
+npm view @releasetools/mutex@1.3.0 version
 ```
 
 Each published commit's parent is the previous release, so `release/v1` reads as a history of releases. The source it was built from is a `Source-Commit:` trailer rather than a parent.
@@ -492,6 +532,11 @@ The verify step failing means the release is published but broken, since `v1` ha
 `check-e2e-pin` failing means you are releasing a major the verify step still pins to `@v1`. Write a second verify job for the new major and update `PINNED`. Nothing is published until then.
 
 A version mismatch means `package.json` and the dispatched tag disagree. Nothing has been published.
+
+If npm authentication fails after the GitHub release is created, correct the
+bootstrap token or trusted-publisher settings and dispatch the same version
+with `overwrite-existing`. npm publishing is idempotent: the workflow publishes
+a missing package version and leaves an existing immutable one alone.
 
 `uses: releasetools/mutex@main` does not work, and is not meant to. There is no `dist/` there.
 

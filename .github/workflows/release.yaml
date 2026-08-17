@@ -56,6 +56,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          # A release build should not reuse another build's dependency cache.
+          package-manager-cache: false
+
       - name: ✅ Check the version
         id: version
         env:
@@ -218,6 +225,93 @@ jobs:
             echo "- \`${VERSION}\` and \`${MAJOR}\` point at it"
             echo "- bumped package.json on main in \`${BUMP_SHA:0:12}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Keep publish authority away from npm ci, tests, and every dependency
+  # lifecycle script they can execute. This job receives only the signed tree
+  # under the version tag plus the small, reviewed publishing script.
+  publish_npm:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      npm_available: ${{ steps.npm.outputs.available }}
+    steps:
+      - name: Checkout publishing logic
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: source
+
+      - name: Checkout the signed release package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.version }}
+          path: package
+
+      - name: Set up Node.js for npm trusted publishing
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      # npm versions cannot be replaced. The script skips one that already
+      # exists (including an overwrite of the Action release), refuses to
+      # create retroactive packages before v1.3.0, and keeps a deliberately
+      # lower backport from moving the registry's `latest` tag backwards.
+      #
+      # NPM_TOKEN is needed only to bootstrap the first package. Once the
+      # package trusts release.yaml on npmjs.com, OIDC wins and this secret can
+      # be deleted; provenance is generated from the same id-token permission.
+      - name: 📦 Publish the CLI to npm
+        id: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: node source/scripts/publish-npm.mjs --directory package --version "$VERSION"
+
+      - name: 📝 npm summary
+        env:
+          NPM_AVAILABLE: ${{ steps.npm.outputs.available }}
+          NPM_STATUS: ${{ steps.npm.outputs.status }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$NPM_AVAILABLE" = "true" ]; then
+            echo "npm package (${NPM_STATUS}): [\`@releasetools/mutex@${VERSION#v}\`](https://www.npmjs.com/package/@releasetools/mutex/v/${VERSION#v})" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "npm package: not applicable before v1.3.0" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # Install the exact package from the public registry, rather than exercising
+  # publish/ in the workspace, so this proves npm received a runnable CLI.
+  verify-npm:
+    if: needs.publish_npm.outputs.npm_available == 'true'
+    needs: publish_npm
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: ✅ Install and verify the npm CLI
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          expected="${VERSION#v}"
+          npm install --global "@releasetools/mutex@${expected}"
+          ran="$(mutex version)"
+          if [ "$ran" != "$expected" ]; then
+            echo "::error::npm installed mutex $ran, but this release is $expected"
+            exit 1
+          fi
+          echo "npm installed mutex $ran"
 
   # Proves the published action works, by using it the way a consumer would.
   #

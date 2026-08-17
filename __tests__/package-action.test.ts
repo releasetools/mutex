@@ -59,14 +59,28 @@ function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
   write(
     "package.json",
     JSON.stringify({
-      name: "mutex",
+      name: "@releasetools/mutex",
       version: "1.2.3",
       description: "a lock",
       license: "Apache-2.0",
+      repository: {
+        type: "git",
+        url: "git+https://github.com/releasetools/mutex.git",
+      },
+      homepage: "https://github.com/releasetools/mutex#readme",
+      bugs: { url: "https://github.com/releasetools/mutex/issues" },
       type: "module",
       bin: { mutex: "./bin/mutex.js" },
       engines: { node: ">=24.0.0" },
-      dependencies: { pg: "^8.16.3" },
+      dependencies: {
+        "@actions/core": "^3.0.0",
+        pg: "^8.16.3",
+        "pg-format": "^1.0.4",
+      },
+      publishConfig: {
+        access: "public",
+        registry: "https://registry.npmjs.org/",
+      },
       scripts: { build: "tsc" },
       devDependencies: { typescript: "^6" },
     }),
@@ -123,10 +137,20 @@ describe("packageAction", () => {
       fs.readFileSync(path.join(target, "package.json"), "utf8"),
     );
     expect(manifest.version).toBe("1.2.3");
-    expect(manifest.name).toBe("mutex");
+    expect(manifest.name).toBe("@releasetools/mutex");
     expect(manifest.bin).toEqual({ mutex: "./bin/mutex.js" });
     expect(manifest.engines).toEqual({ node: ">=24.0.0" });
-    expect(manifest.dependencies).toEqual({ pg: "^8.16.3" });
+    expect(manifest.dependencies).toEqual({
+      pg: "^8.16.3",
+      "pg-format": "^1.0.4",
+    });
+    expect(manifest.repository.url).toBe(
+      "git+https://github.com/releasetools/mutex.git",
+    );
+    expect(manifest.publishConfig).toEqual({
+      access: "public",
+      registry: "https://registry.npmjs.org/",
+    });
   });
 
   it("leaves the repository's own scripts and devDependencies out of it", () => {
@@ -136,6 +160,7 @@ describe("packageAction", () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(target, "package.json"), "utf8"),
     );
+    expect(manifest.private).toBeUndefined();
     expect(manifest.scripts).toBeUndefined();
     expect(manifest.devDependencies).toBeUndefined();
   });
