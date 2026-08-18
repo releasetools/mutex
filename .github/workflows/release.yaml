@@ -354,7 +354,23 @@ jobs:
           set -euo pipefail
 
           expected="${VERSION#v}"
-          npm install --global "@releasetools/mutex@${expected}"
+          package="@releasetools/mutex@${expected}"
+
+          # npm may acknowledge a publish before the package is visible to
+          # installs. Retry the exact version for roughly two minutes, asking
+          # npm to revalidate its registry metadata on every attempt.
+          attempt=1
+          max_attempts=12
+          until npm install --global --prefer-online "$package"; do
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "::error::npm could not install ${package} after ${max_attempts} attempts"
+              exit 1
+            fi
+            echo "::notice::npm install attempt ${attempt}/${max_attempts} failed; retrying in 10 seconds"
+            sleep 10
+            attempt=$((attempt + 1))
+          done
+
           ran="$(mutex version)"
           if [ "$ran" != "$expected" ]; then
             echo "::error::npm installed mutex $ran, but this release is $expected"

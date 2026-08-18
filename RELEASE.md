@@ -2,6 +2,11 @@
 
 Newest first. One line per change.
 
+## 1.3.1
+
+- The npm verification job now retries exact-version installation while a newly published package propagates through the registry, instead of failing on the first transient 404.
+- Added an npm release badge to the README, linked to the public `@releasetools/mutex` package.
+
 ## 1.3.0
 
 > **`DATABASE_URL` is no longer read.** Any workflow or shell still passing it
