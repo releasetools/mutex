@@ -24,6 +24,7 @@
     "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
     "package:release": "npm run build && node scripts/package-release.mjs",
     "cli:link": "npm run build && npm link",
+    "cli:unlink": "npm unlink --global $npm_package_name",
     "mutex": "node ./bin/mutex.js",
     "test": "npm run typecheck && NODE_OPTIONS=--experimental-vm-modules jest",
     "prepare": "husky",

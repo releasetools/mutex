@@ -6,6 +6,7 @@ Newest first. One line per change.
 
 - The npm verification job now retries exact-version installation while a newly published package propagates through the registry, instead of failing on the first transient 404.
 - Added an npm release badge to the README, linked to the public `@releasetools/mutex` package.
+- Added `npm run cli:unlink` for removing the global link `npm run cli:link` created, so a checkout can be unlinked without remembering the package name.
 
 ## 1.3.0
 
