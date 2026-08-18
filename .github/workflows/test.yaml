@@ -24,6 +24,41 @@ jobs:
           npm run lint
           npm test
 
+  postgres-integration:
+    name: PostgreSQL ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["14", "15", "16", "17", "18"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}-alpine
+        env:
+          POSTGRES_DB: mutex_test
+          POSTGRES_USER: mutex
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mutex -d mutex_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Run PostgreSQL integration tests
+        env:
+          MUTEX_TEST_DATABASE_URL: postgresql://mutex@localhost:5432/mutex_test
+        run: |
+          npm ci
+          npm run typecheck
+          NODE_OPTIONS=--experimental-vm-modules npx jest __tests__/database.integration.test.ts --runInBand
+
   test01:
     runs-on: ubuntu-latest
     needs: build-and-test

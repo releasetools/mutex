@@ -4,7 +4,9 @@ Newest first. One line per change.
 
 ## 1.3.2
 
-- Pooled CLI commands now start without loading the PostgreSQL client or mutex server lifecycle code, reducing the fixed cost of each short-lived command; [the benchmark](./benchmarks/direct-vs-server/status.md) measured server status at 80.4 ms instead of 314.2 ms for direct access.
+- Pooled CLI commands now start without loading the PostgreSQL client or mutex server lifecycle code, reducing the fixed cost of each short-lived command; remote server status measured 81.5 ms instead of 316.6 ms for direct access.
+- Lock, unlock, and renew now normally complete in one PostgreSQL round trip without changing ownership, expiry, or fencing behavior; the remote pooled lock/unlock cycle measured 166.7 ms, down from 369.7 ms.
+- Added a reusable direct-versus-server benchmark runner that writes its results outside the repository by default.
 
 ## 1.3.1
 

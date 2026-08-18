@@ -421,6 +421,14 @@ Run the tests alone with `npm test`. Before committing, use the full shorthand:
 npm run check
 ```
 
+The PostgreSQL integration suite runs when `MUTEX_TEST_DATABASE_URL` is
+available and is skipped otherwise. Point it at a disposable database; the
+suite creates and truncates `releasetools_mutex`:
+
+```shell
+MUTEX_TEST_DATABASE_URL="postgresql://mutex@localhost/mutex_test" npm test
+```
+
 `check` formats the source, builds the CLI and Action, and runs every test. The
 pre-commit hook runs the relevant formatting, tests, and build again before a
 commit is accepted. Remove the development link with:

@@ -37,10 +37,17 @@ import format from "pg-format";
  * parses them into correct `Date`s no matter what time zone the client or the
  * database session happens to run in.
  */
-const LOCK_COLUMNS = `id, reason, owner,
-        created_at AT TIME ZONE 'UTC' AS created_at,
-        expires_at AT TIME ZONE 'UTC' AS expires_at,
-        (expires_at IS NOT NULL AND expires_at < (NOW() AT TIME ZONE 'UTC')) AS expired`;
+function lockColumns(source = ""): string {
+  const prefix = source ? `${source}.` : "";
+  return `${prefix}id, ${prefix}reason, ${prefix}owner,
+        ${prefix}created_at AT TIME ZONE 'UTC' AS created_at,
+        ${prefix}expires_at AT TIME ZONE 'UTC' AS expires_at,
+        (${prefix}expires_at IS NOT NULL AND ${prefix}expires_at < (NOW() AT TIME ZONE 'UTC')) AS expired`;
+}
+
+const LOCK_COLUMNS = lockColumns();
+
+type MutationRow = Record<string, unknown> & { outcome: string };
 
 export class DatabaseMutex implements LockStore {
   private readonly config: MutexConfig;
@@ -184,87 +191,90 @@ export class DatabaseMutex implements LockStore {
     owner: string | null,
     expiration: number,
   ): Promise<LockResult> {
-    let client: PoolClient | undefined;
-    try {
-      client = await this.connect();
-      await client.query("BEGIN");
-
-      if (!(await this.holdAdvisoryLock(client, name))) {
-        await client.query("ROLLBACK");
-        return {
-          acquired: false,
-          status: "Lock held by another transaction",
-        };
-      }
-
-      // Insert the lock, or take it over when the existing one has expired.
-      // A row whose expires_at is NULL is never taken over: an unknown
-      // expiry is treated as "still held". Acquiring never extends a lock the
-      // caller already holds - that is `renewLock`'s job.
-      const upsertQuery = format(
-        `INSERT INTO %I (id, reason, owner, expires_at)
-        VALUES ($1, $2, $3, (NOW() AT TIME ZONE 'UTC') + ($4 || ' seconds')::INTERVAL)
+    // A standalone statement is its own transaction. The gate takes a
+    // transaction-scoped advisory lock before the upsert, and Postgres releases
+    // it as the statement finishes. `existing` and `changed` share one snapshot;
+    // RETURNING is how the data-modifying CTE communicates the row it wrote to
+    // the final result.
+    const query = format(
+      `WITH gate AS (
+        SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired
+      ),
+      existing AS (
+        SELECT ${lockColumns("held")}
+        FROM %I AS held
+        CROSS JOIN gate
+        WHERE gate.acquired AND held.id = $1
+      ),
+      changed AS (
+        INSERT INTO %I AS locked (id, reason, owner, expires_at)
+        SELECT
+          $1,
+          $2,
+          $3,
+          (NOW() AT TIME ZONE 'UTC') + ($4 || ' seconds')::INTERVAL
+        FROM gate
+        WHERE gate.acquired
         ON CONFLICT (id) DO UPDATE
         SET
-            expires_at = EXCLUDED.expires_at,
-            reason = EXCLUDED.reason,
-            owner = EXCLUDED.owner,
-            created_at = (NOW() AT TIME ZONE 'UTC')
-        WHERE
-            %I.expires_at < (NOW() AT TIME ZONE 'UTC')
-        RETURNING ${LOCK_COLUMNS};`,
-        TABLE_NAME,
-        TABLE_NAME,
-      );
+          expires_at = EXCLUDED.expires_at,
+          reason = EXCLUDED.reason,
+          owner = EXCLUDED.owner,
+          created_at = (NOW() AT TIME ZONE 'UTC')
+        WHERE locked.expires_at < (NOW() AT TIME ZONE 'UTC')
+        RETURNING ${lockColumns("locked")}
+      )
+      SELECT
+        CASE
+          WHEN NOT gate.acquired THEN 'contended'
+          WHEN changed.id IS NOT NULL THEN 'acquired'
+          ELSE 'held'
+        END AS outcome,
+        CASE WHEN changed.id IS NOT NULL THEN changed.id ELSE existing.id END AS id,
+        CASE WHEN changed.id IS NOT NULL THEN changed.reason ELSE existing.reason END AS reason,
+        CASE WHEN changed.id IS NOT NULL THEN changed.owner ELSE existing.owner END AS owner,
+        CASE WHEN changed.id IS NOT NULL THEN changed.created_at ELSE existing.created_at END AS created_at,
+        CASE WHEN changed.id IS NOT NULL THEN changed.expires_at ELSE existing.expires_at END AS expires_at,
+        CASE WHEN changed.id IS NOT NULL THEN changed.expired ELSE existing.expired END AS expired
+      FROM gate
+      LEFT JOIN existing ON TRUE
+      LEFT JOIN changed ON TRUE;`,
+      TABLE_NAME,
+      TABLE_NAME,
+    );
 
-      const result = await client.query(upsertQuery, [
-        name,
-        reason,
-        owner,
-        expiration,
-      ]);
+    const row = await this.runMutation(name, query, [
+      name,
+      reason,
+      owner,
+      expiration,
+    ]);
 
-      // No row means a valid, unexpired lock already existed.
-      if (result.rowCount === 0) {
-        const holder = await client.query(
-          format(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME),
-          [name],
-        );
-        await client.query("ROLLBACK");
-
-        this.log.info(`Lock for "${name}" exists and has not expired.`);
-        return {
-          acquired: false,
-          status: "Lock taken by another process (try again later)",
-          record:
-            holder.rows.length > 0 ? toLockRecord(holder.rows[0]) : undefined,
-        };
-      }
-
-      await client.query("COMMIT");
-      this.log.info(`Lock '${name}' acquired successfully.`);
-
-      const record = toLockRecord(result.rows[0]);
-      const approximate = new Date(
-        Date.now() + expiration * 1000,
-      ).toISOString();
+    if (row.outcome === "contended") {
       return {
-        acquired: true,
-        status: "Lock acquired",
-        expires: record.expiresAt ?? `approximately ${approximate}`,
-        record,
+        acquired: false,
+        status: "Lock held by another transaction",
       };
-    } catch (error) {
-      // Not reported here: `withSchemaRetry` either succeeds on the retry, in
-      // which case this was not a problem, or rethrows for the caller to report.
-      this.log.debug(
-        `An error occurred while acquiring a lock for '${name}'; rolling back: ${describeError(error)}`,
-      );
-      await rollback(client, this.log);
-      throw error;
-    } finally {
-      this.disconnect(client);
     }
+
+    if (row.outcome === "held") {
+      this.log.info(`Lock for "${name}" exists and has not expired.`);
+      return {
+        acquired: false,
+        status: "Lock taken by another process (try again later)",
+        record: row.id == null ? undefined : toLockRecord(row),
+      };
+    }
+
+    const record = toLockRecord(row);
+    const approximate = new Date(Date.now() + expiration * 1000).toISOString();
+    this.log.info(`Lock '${name}' acquired successfully.`);
+    return {
+      acquired: true,
+      status: "Lock acquired",
+      expires: record.expiresAt ?? `approximately ${approximate}`,
+      record,
+    };
   }
 
   private async releaseLockInternal(
@@ -272,61 +282,79 @@ export class DatabaseMutex implements LockStore {
     owner: string | null,
     fence: string | null,
   ): Promise<UnlockResult> {
-    let client: PoolClient | undefined;
-    try {
-      client = await this.connect();
-      await client.query("BEGIN");
+    const query = format(
+      `WITH gate AS (
+        SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired
+      ),
+      existing AS (
+        SELECT ${lockColumns("held")}
+        FROM %I AS held
+        CROSS JOIN gate
+        WHERE gate.acquired AND held.id = $1
+      ),
+      deleted AS (
+        DELETE FROM %I AS locked
+        USING gate, existing
+        WHERE gate.acquired
+          AND locked.id = existing.id
+          AND (existing.owner IS NULL OR existing.owner IS NOT DISTINCT FROM $2::text)
+          AND (
+            $3::text IS NULL
+            OR to_char(
+              existing.created_at AT TIME ZONE 'UTC',
+              'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            ) = $3::text
+          )
+        RETURNING locked.id
+      )
+      SELECT
+        CASE
+          WHEN NOT gate.acquired THEN 'contended'
+          WHEN existing.id IS NULL THEN 'not-found'
+          WHEN NOT (existing.owner IS NULL OR existing.owner IS NOT DISTINCT FROM $2::text) THEN 'owned-by-another'
+          WHEN $3::text IS NOT NULL
+            AND to_char(
+              existing.created_at AT TIME ZONE 'UTC',
+              'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            ) <> $3::text THEN 'superseded'
+          WHEN deleted.id IS NOT NULL THEN 'unlocked'
+          ELSE 'not-found'
+        END AS outcome,
+        existing.id,
+        existing.reason,
+        existing.owner,
+        existing.created_at,
+        existing.expires_at,
+        existing.expired
+      FROM gate
+      LEFT JOIN existing ON TRUE
+      LEFT JOIN deleted ON TRUE;`,
+      TABLE_NAME,
+      TABLE_NAME,
+    );
 
-      if (!(await this.holdAdvisoryLock(client, name))) {
-        await client.query("ROLLBACK");
-        return { unlocked: false, outcome: "contended" };
-      }
-
-      const existing = await client.query(
-        format(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME),
-        [name],
-      );
-
-      if (existing.rows.length === 0) {
-        await client.query("COMMIT");
-        this.log.warning(
-          `Lock '${name}' was not found. No release was necessary.`,
-        );
-        return { unlocked: true, outcome: "not-found" };
-      }
-
-      const record = toLockRecord(existing.rows[0]);
-      if (!mayModify(record, owner)) {
-        await client.query("COMMIT");
-        return { unlocked: false, outcome: "owned-by-another", record };
-      }
-
-      // The caller knows which acquisition it is releasing, and this is not
-      // it: the lock lapsed and somebody took it over. Ownership cannot catch
-      // this when neither side named an owner, which is the default.
-      if (fence !== null && record.createdAt !== fence) {
-        await client.query("COMMIT");
-        return { unlocked: false, outcome: "superseded", record };
-      }
-
-      await client.query(format(`DELETE FROM %I WHERE id = $1;`, TABLE_NAME), [
-        name,
-      ]);
-      await client.query("COMMIT");
-
-      this.log.info(`Lock '${name}' released successfully.`);
-      return { unlocked: true, outcome: "unlocked", record };
-    } catch (error) {
-      // Not reported here: `withSchemaRetry` either succeeds on the retry, in
-      // which case this was not a problem, or rethrows for the caller to report.
-      this.log.debug(
-        `An error occurred while releasing a lock for '${name}'; rolling back: ${describeError(error)}`,
-      );
-      await rollback(client, this.log);
-      throw error;
-    } finally {
-      this.disconnect(client);
+    const row = await this.runMutation(name, query, [name, owner, fence]);
+    if (row.outcome === "contended") {
+      return { unlocked: false, outcome: "contended" };
     }
+
+    if (row.outcome === "not-found") {
+      this.log.warning(
+        `Lock '${name}' was not found. No release was necessary.`,
+      );
+      return { unlocked: true, outcome: "not-found" };
+    }
+
+    const record = toLockRecord(row);
+    if (!mayModify(record, owner)) {
+      return { unlocked: false, outcome: "owned-by-another", record };
+    }
+    if (fence !== null && record.createdAt !== fence) {
+      return { unlocked: false, outcome: "superseded", record };
+    }
+
+    this.log.info(`Lock '${name}' released successfully.`);
+    return { unlocked: true, outcome: "unlocked", record };
   }
 
   private async renewLockInternal(
@@ -334,126 +362,118 @@ export class DatabaseMutex implements LockStore {
     expiration: number,
     owner: string | null,
   ): Promise<RenewResult> {
-    let client: PoolClient | undefined;
-    try {
-      client = await this.connect();
-      await client.query("BEGIN");
+    const query = format(
+      `WITH gate AS (
+        SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired
+      ),
+      existing AS (
+        SELECT ${lockColumns("held")}
+        FROM %I AS held
+        CROSS JOIN gate
+        WHERE gate.acquired AND held.id = $1
+      ),
+      renewed AS (
+        UPDATE %I AS locked
+        SET expires_at = GREATEST(
+          (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL,
+          locked.expires_at
+        )
+        FROM gate, existing
+        WHERE gate.acquired
+          AND locked.id = existing.id
+          AND (existing.owner IS NULL OR existing.owner IS NOT DISTINCT FROM $3::text)
+          AND NOT existing.expired
+        RETURNING ${lockColumns("locked")}
+      )
+      SELECT
+        CASE
+          WHEN NOT gate.acquired THEN 'contended'
+          WHEN existing.id IS NULL THEN 'not-found'
+          WHEN NOT (existing.owner IS NULL OR existing.owner IS NOT DISTINCT FROM $3::text) THEN 'owned-by-another'
+          WHEN existing.expired THEN 'expired'
+          WHEN renewed.id IS NOT NULL THEN 'renewed'
+          ELSE 'not-found'
+        END AS outcome,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.id ELSE existing.id END AS id,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.reason ELSE existing.reason END AS reason,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.owner ELSE existing.owner END AS owner,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.created_at ELSE existing.created_at END AS created_at,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.expires_at ELSE existing.expires_at END AS expires_at,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.expired ELSE existing.expired END AS expired,
+        CASE
+          WHEN renewed.id IS NOT NULL THEN renewed.expires_at IS DISTINCT FROM existing.expires_at
+          ELSE FALSE
+        END AS extended
+      FROM gate
+      LEFT JOIN existing ON TRUE
+      LEFT JOIN renewed ON TRUE;`,
+      TABLE_NAME,
+      TABLE_NAME,
+    );
 
-      if (!(await this.holdAdvisoryLock(client, name))) {
-        await client.query("ROLLBACK");
-        return { renewed: false, outcome: "contended" };
-      }
-
-      const existing = await client.query(
-        format(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME),
-        [name],
-      );
-
-      if (existing.rows.length === 0) {
-        await client.query("COMMIT");
-        return { renewed: false, outcome: "not-found" };
-      }
-
-      const record = toLockRecord(existing.rows[0]);
-
-      // An unowned lock has nobody to wrong, so it stays open - which is what
-      // keeps Action-written locks manageable from the CLI.
-      if (!mayModify(record, owner)) {
-        await client.query("COMMIT");
-        return { renewed: false, outcome: "owned-by-another", record };
-      }
-
-      // An expired lock may already have been taken over by someone else, so
-      // pushing its expiry forward would re-take it behind their back.
-      if (record.expired) {
-        await client.query("COMMIT");
-        return { renewed: false, outcome: "expired", record };
-      }
-
-      // UPDATE, never an upsert: a lock that vanished between the read and
-      // here stays gone rather than being recreated.
-      // GREATEST, so a renewal can only push the expiry outwards. Postgres
-      // ignores NULLs here, so a row with no recorded expiry still takes the
-      // computed one rather than staying NULL.
-      const renewed = await client.query(
-        format(
-          `UPDATE %I
-          SET expires_at = GREATEST(
-              (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL,
-              expires_at
-          )
-          WHERE id = $1
-          RETURNING ${LOCK_COLUMNS};`,
-          TABLE_NAME,
-        ),
-        [name, expiration],
-      );
-
-      if (renewed.rows.length === 0) {
-        await client.query("COMMIT");
-        return { renewed: false, outcome: "not-found" };
-      }
-      await client.query("COMMIT");
-
-      const updated = toLockRecord(renewed.rows[0]);
-      const extended = updated.expiresAt !== record.expiresAt;
-
-      this.log.info(
-        extended
-          ? `Lock '${name}' renewed for ${expiration}s.`
-          : `Lock '${name}' already ran past ${expiration}s; left as it was.`,
-      );
-      return {
-        renewed: true,
-        outcome: "renewed",
-        extended,
-        record: updated,
-      };
-    } catch (error) {
-      // Not reported here: `withSchemaRetry` either succeeds on the retry, in
-      // which case this was not a problem, or rethrows for the caller to report.
-      this.log.debug(
-        `An error occurred while renewing a lock for '${name}'; rolling back: ${describeError(error)}`,
-      );
-      await rollback(client, this.log);
-      throw error;
-    } finally {
-      this.disconnect(client);
+    const row = await this.runMutation(name, query, [name, expiration, owner]);
+    if (row.outcome === "contended") {
+      return { renewed: false, outcome: "contended" };
     }
+    if (row.outcome === "not-found") {
+      return { renewed: false, outcome: "not-found" };
+    }
+
+    const record = toLockRecord(row);
+    if (!mayModify(record, owner)) {
+      return { renewed: false, outcome: "owned-by-another", record };
+    }
+    if (record.expired) {
+      return { renewed: false, outcome: "expired", record };
+    }
+
+    const extended = row.extended === true;
+    this.log.info(
+      extended
+        ? `Lock '${name}' renewed for ${expiration}s.`
+        : `Lock '${name}' already ran past ${expiration}s; left as it was.`,
+    );
+    return {
+      renewed: true,
+      outcome: "renewed",
+      extended,
+      record,
+    };
   }
 
   /**
-   * Takes a transaction-scoped advisory lock on the mutex id, so no other
-   * process can acquire or release the same lock concurrently. Retries once,
-   * since contention here is almost always momentary.
+   * Runs one complete mutation statement, retrying it once when another
+   * transaction briefly holds the advisory lock for this mutex id.
    */
-  private async holdAdvisoryLock(
-    client: PoolClient,
+  private async runMutation(
     name: string,
-  ): Promise<boolean> {
-    if (await this.tryAdvisoryLock(client, name)) {
-      return true;
+    query: string,
+    values: unknown[],
+  ): Promise<MutationRow> {
+    let row = await this.queryMutation(query, values);
+    if (row.outcome !== "contended") {
+      return row;
     }
 
+    this.log.debug(`Could not acquire advisory lock '${name}'.`);
     await sleep(1);
-    return this.tryAdvisoryLock(client, name);
+    row = await this.queryMutation(query, values);
+    if (row.outcome === "contended") {
+      this.log.debug(`Could not acquire advisory lock '${name}'.`);
+    }
+    return row;
   }
 
-  private async tryAdvisoryLock(
-    client: PoolClient,
-    name: string,
-  ): Promise<boolean> {
-    const result = await client.query(
-      "SELECT pg_try_advisory_xact_lock(hashtext($1)) as acquired",
-      [name],
-    );
-
-    if (!result.rows[0].acquired) {
-      this.log.debug(`Could not acquire advisory lock '${name}'.`);
-      return false;
+  private async queryMutation(
+    query: string,
+    values: unknown[],
+  ): Promise<MutationRow> {
+    const result = await this.pool.query(query, values);
+    const row = result.rows[0] as MutationRow | undefined;
+    if (!row || typeof row.outcome !== "string") {
+      throw new Error(`Database mutation returned no outcome (rows=${result.rows.length})`);
     }
-
-    return true;
+    return row;
   }
 
   /**
@@ -587,20 +607,6 @@ export function mayModify(record: LockRecord, owner: string | null): boolean {
     return true;
   }
   return record.owner === owner;
-}
-
-async function rollback(
-  client: PoolClient | undefined,
-  log: Logger,
-): Promise<void> {
-  if (!client) {
-    return;
-  }
-  try {
-    await client.query("ROLLBACK");
-  } catch (error) {
-    logWarning(log, error, "Failed to roll back the transaction");
-  }
 }
 
 function toLockRecord(row: Record<string, unknown>): LockRecord {
