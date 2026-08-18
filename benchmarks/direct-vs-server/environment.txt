@@ -8,6 +8,6 @@ Profile: server
 PID: 85342
 Uptime: 0s
 Address: localhost:5625
-Log: /Users/embo/.config/releasetools-mutex/mutex-server.log
+Log: $HOME/.config/releasetools-mutex/mutex-server.log
 Protocol: 1
 Pool: healthy (1 total, 1 idle, 0 waiting)
