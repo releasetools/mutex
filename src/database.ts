@@ -471,7 +471,7 @@ export class DatabaseMutex implements LockStore {
     const result = await this.pool.query(query, values);
     const row = result.rows[0] as MutationRow | undefined;
     if (!row || typeof row.outcome !== "string") {
-      throw new Error("Database mutation returned no outcome");
+      throw new Error(`Database mutation returned no outcome (rows=${result.rows.length})`);
     }
     return row;
   }
