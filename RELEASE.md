@@ -2,6 +2,10 @@
 
 Newest first. One line per change.
 
+## 1.3.2
+
+- Pooled CLI commands now start without loading the PostgreSQL client or database server, reducing the fixed cost of each short-lived command; [the benchmark](./benchmarks/direct-vs-server/status.md) measured server status at 80.4 ms instead of 314.2 ms for direct access.
+
 ## 1.3.1
 
 - The npm verification job now retries exact-version installation while a newly published package propagates through the registry, instead of failing on the first transient 404.
