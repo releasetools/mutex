@@ -1,6 +1,7 @@
 # mutex
 
 [![CodeQL](https://github.com/releasetools/mutex/actions/workflows/codeql.yaml/badge.svg)](https://github.com/releasetools/mutex/actions/workflows/codeql.yaml)
+[![npm version](https://img.shields.io/npm/v/@releasetools/mutex.svg)](https://www.npmjs.com/package/@releasetools/mutex)
 
 Only one CI job at a time gets to touch a shared resource. mutex keeps advisory locks in a PostgreSQL table, so a workflow that wants the staging environment waits for whoever has it instead of racing them.
 
@@ -425,7 +426,7 @@ pre-commit hook runs the relevant formatting, tests, and build again before a
 commit is accepted. Remove the development link with:
 
 ```shell
-npm unlink --global mutex
+npm run cli:unlink
 ```
 
 | Path              | What lives there                                                          |
