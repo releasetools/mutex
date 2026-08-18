@@ -426,7 +426,7 @@ pre-commit hook runs the relevant formatting, tests, and build again before a
 commit is accepted. Remove the development link with:
 
 ```shell
-npm unlink --global mutex
+npm run cli:unlink
 ```
 
 | Path              | What lives there                                                          |
