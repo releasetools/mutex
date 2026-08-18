@@ -17,10 +17,10 @@
  */
 
 import { CONNECTION_ENV_VAR } from "../constants.js";
-import { DatabaseMutex } from "../database.js";
 import { logError } from "../helpers.js";
 import { ConsoleLogger } from "../logger.js";
-import { CommandName, helpText, parseCommandLine } from "./args.js";
+import { helpText, parseCommandLine } from "./args.js";
+import type { CommandName } from "./args.js";
 import {
   commandList,
   commandLock,
@@ -28,8 +28,8 @@ import {
   commandRenew,
   commandStatus,
   commandUnlock,
-  CommandContext,
 } from "./commands.js";
+import type { CommandContext } from "./commands.js";
 import { resolveConnectionString } from "./config.js";
 import {
   ConfigurationError,
@@ -41,10 +41,8 @@ import {
 } from "./exit-codes.js";
 import { Output } from "./output.js";
 import { readPackageVersion } from "../version.js";
-import { LockStore } from "../mutex.js";
-import { profileCommand, selectProfile } from "./profiles.js";
-import { TcpMutexStore } from "../server/tcp-store.js";
-import { serverCommand, ServerAction } from "../server/lifecycle.js";
+import type { LockStore } from "../mutex.js";
+import type { ServerAction } from "../server/lifecycle.js";
 
 export async function main(argv: string[]): Promise<number> {
   let commandLine;
@@ -76,9 +74,11 @@ export async function main(argv: string[]): Promise<number> {
   if (commandLine.command === "profile" || commandLine.command === "server") {
     try {
       if (commandLine.command === "profile") {
+        const { profileCommand } = await import("./profiles.js");
         await profileCommand(identifier);
         return EXIT_OK;
       }
+      const { serverCommand } = await import("../server/lifecycle.js");
       return await serverCommand(
         identifier as ServerAction,
         options.profile,
@@ -106,12 +106,14 @@ export async function main(argv: string[]): Promise<number> {
 
   let mutex: LockStore | undefined;
   try {
+    const { selectProfile } = await import("./profiles.js");
     const selected = await selectProfile(options.profile);
     if (selected.profile.mode === "direct") {
       const connection = resolveConnectionString();
       log.debug(
         `Using direct profile '${selected.profile.name}' and the connection string from $${CONNECTION_ENV_VAR}.`,
       );
+      const { DatabaseMutex } = await import("../database.js");
       mutex = new DatabaseMutex(
         {
           dbConnectionString: connection,
@@ -123,6 +125,7 @@ export async function main(argv: string[]): Promise<number> {
       log.debug(
         `Using server profile '${selected.profile.name}' at ${selected.profile.bindAddress}.`,
       );
+      const { TcpMutexStore } = await import("../server/tcp-store.js");
       mutex = new TcpMutexStore(
         selected.profile.bindAddress!,
         undefined,
