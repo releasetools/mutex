@@ -11,6 +11,20 @@ permissions: {}
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14-alpine
+        env:
+          POSTGRES_DB: mutex_test
+          POSTGRES_USER: mutex
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mutex -d mutex_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
     permissions:
       contents: read
     steps:
@@ -18,6 +32,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run tests
+        env:
+          MUTEX_TEST_DATABASE_URL: postgresql://mutex@localhost:5432/mutex_test
         run: |
           npm install
           npm run build
