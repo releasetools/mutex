@@ -20,7 +20,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "24"
+          node-version-file: package.json
           package-manager-cache: false
 
       - name: Run tests
@@ -60,7 +60,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "24"
+          node-version-file: package.json
           package-manager-cache: false
 
       - name: Run PostgreSQL integration tests
@@ -84,7 +84,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "24"
+          node-version-file: package.json
           package-manager-cache: false
 
       # dist/ is built at release time, not committed, so `uses: ./` below has
@@ -124,7 +124,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "24"
+          node-version-file: package.json
           package-manager-cache: false
 
       # dist/ is built at release time, not committed, so `uses: ./` below has
@@ -175,7 +175,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "24"
+          node-version-file: package.json
           package-manager-cache: false
 
       # dist/ is built at release time, not committed, so `uses: ./` below has
