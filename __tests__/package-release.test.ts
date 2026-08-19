@@ -105,6 +105,13 @@ describe("packageRelease", () => {
     roots.push(root);
     return root;
   };
+  const elsewhere = () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "elsewhere-")),
+    );
+    roots.push(root);
+    return root;
+  };
 
   afterEach(() => {
     for (const root of roots.splice(0)) {
@@ -264,10 +271,96 @@ describe("packageRelease", () => {
   it("replaces whatever was there before", () => {
     const root = build();
     const out = path.join(root, "out");
-    fs.mkdirSync(out, { recursive: true });
+    packageRelease({ root, out });
     fs.writeFileSync(path.join(out, "stale.js"), "from an older run");
 
     const { files } = packageRelease({ root, out });
     expect(files).not.toContain("stale.js");
+  });
+
+  /**
+   * The published tree is a copy list, and a name on that list is trusted to be
+   * the file it looks like. `existsSync` answers about where a link points, and
+   * `cp -r` follows it, so an allowlisted name could stand in for a tree nobody
+   * meant to publish.
+   */
+  describe("the copy list is names, not links", () => {
+    it("refuses a file that is a link somewhere else", () => {
+      const root = build();
+      const secrets = path.join(elsewhere(), "secrets");
+      fs.writeFileSync(secrets, "not ours\n");
+      fs.rmSync(path.join(root, "README.md"));
+      fs.symlinkSync(secrets, path.join(root, "README.md"));
+
+      expect(() =>
+        packageRelease({ root, out: path.join(root, "out") }),
+      ).toThrow(/missing README\.md/);
+    });
+
+    it("refuses a directory that is a link somewhere else", () => {
+      const root = build();
+      const other = elsewhere();
+      fs.writeFileSync(path.join(other, "not-a-skill.md"), "not ours\n");
+      fs.rmSync(path.join(root, "skills"), { recursive: true });
+      fs.symlinkSync(other, path.join(root, "skills"));
+
+      expect(() =>
+        packageRelease({ root, out: path.join(root, "out") }),
+      ).toThrow(/skills is not a regular directory/);
+    });
+  });
+
+  /**
+   * `--out` is emptied before anything is written to it, so a mistyped one is
+   * the most expensive argument this command takes.
+   */
+  describe("refusing to empty the wrong directory", () => {
+    it("refuses a directory that contains the checkout", () => {
+      const root = build();
+      for (const out of [root, path.dirname(root), path.parse(root).root]) {
+        expect(() => packageRelease({ root, out })).toThrow(
+          /contains the checkout/,
+        );
+      }
+    });
+
+    it("refuses your home directory", () => {
+      expect(() =>
+        packageRelease({ root: build(), out: os.homedir() }),
+      ).toThrow(/home directory/);
+    });
+
+    it("refuses a directory holding something it did not put there", () => {
+      const root = build();
+      const out = path.join(root, "out");
+      fs.mkdirSync(out, { recursive: true });
+      fs.writeFileSync(path.join(out, "notes.md"), "not a release tree\n");
+
+      expect(() => packageRelease({ root, out })).toThrow(
+        /refusing to empty it/,
+      );
+      expect(fs.existsSync(path.join(out, "notes.md"))).toBe(true);
+    });
+
+    /**
+     * The marker says "this is my own previous output, empty it". Asking
+     * `existsSync` about it would let a link at that path answer for whatever
+     * it points at, which is the safeguard talked out of refusing.
+     */
+    it("is not talked round by a marker that is a link", () => {
+      const root = build();
+      const out = path.join(root, "out");
+      fs.mkdirSync(out, { recursive: true });
+      fs.writeFileSync(path.join(out, "notes.md"), "not a release tree\n");
+      fs.symlinkSync(
+        path.join(root, "action.yml"),
+        path.join(out, "action.yml"),
+      );
+
+      expect(() => packageRelease({ root, out })).toThrow(
+        /refusing to empty it/,
+      );
+      expect(fs.existsSync(path.join(out, "notes.md"))).toBe(true);
+    });
   });
 });

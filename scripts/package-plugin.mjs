@@ -16,9 +16,9 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { isRealDirectory, isRegularFile, refuseToEmpty } from "./packaging.mjs";
 import { validateAgentPlugins } from "./validate-agent-plugins.mjs";
 
 /**
@@ -56,7 +56,10 @@ export function packagePlugin({ root = process.cwd(), out } = {}) {
   const source = path.resolve(root);
   const target = path.resolve(out ?? path.join(source, "plugin"));
 
-  refuseToEmpty(target, source);
+  refuseToEmpty(target, source, {
+    marker: ".claude-plugin/plugin.json",
+    what: "an assembled plugin",
+  });
 
   fs.rmSync(target, { recursive: true, force: true });
   fs.mkdirSync(target, { recursive: true });
@@ -97,59 +100,22 @@ export function packagePlugin({ root = process.cwd(), out } = {}) {
 }
 
 /**
- * Decides whether `--out` may be emptied, because emptying is what happens next.
- *
- * Assembling has to start from nothing - a file the previous version shipped
- * and this one does not would otherwise be published forever - so the output
- * directory is deleted rather than written over. That makes `--out` an
- * argument worth being suspicious of.
- *
- * Two rules. It may not contain the checkout, which rules out the filesystem
- * root, a home directory and the checkout itself in one comparison. And it may
- * not hold anything this command did not put there: an empty directory is
- * fine, a previous assembly is fine, and somebody's notes are one typo away
- * from being an argument here and should cost an error message rather than
- * the notes.
- */
-function refuseToEmpty(target, source) {
-  const within = path.relative(target, source);
-  if (within === "" || (!within.startsWith("..") && !path.isAbsolute(within))) {
-    throw new Error(
-      `--out ${target} contains the checkout, which it would delete`,
-    );
-  }
-  if (target === os.homedir()) {
-    throw new Error(`--out ${target} is your home directory`);
-  }
-
-  let stats;
-  try {
-    stats = fs.lstatSync(target);
-  } catch {
-    return;
-  }
-  if (!stats.isDirectory()) {
-    throw new Error(`--out ${target} is not a directory`);
-  }
-  if (
-    fs.readdirSync(target).length > 0 &&
-    !fs.existsSync(path.join(target, ".claude-plugin", "plugin.json"))
-  ) {
-    throw new Error(
-      `--out ${target} holds something other than an assembled plugin; refusing to empty it`,
-    );
-  }
-}
-
-/**
- * Copies a directory, refusing anything that is not a plain file.
+ * Copies a directory, refusing anything that is not a plain file - including
+ * the directory itself.
  *
  * A symlink would be published as a symlink, and where it pointed on the runner
  * says nothing about where it points on somebody's laptop - so it is either a
  * broken plugin or a file escaping the plugin directory, and neither is worth
- * supporting for a tree of markdown and one script.
+ * supporting for a tree of markdown and one script. The root matters more than
+ * the entries inside it: `skills` pointing somewhere else is not one stray file
+ * in the artifact, it is a different tree in place of the allowlisted one.
  */
 function copyTree(from, to, relative) {
+  if (!isRealDirectory(from)) {
+    throw new Error(
+      `${relative} is not a regular directory; the plugin publishes no symlinks`,
+    );
+  }
   fs.mkdirSync(to, { recursive: true });
   for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
     const within = path.join(relative, entry.name);
@@ -162,14 +128,6 @@ function copyTree(from, to, relative) {
         `${within} is not a regular file; the plugin publishes no symlinks`,
       );
     }
-  }
-}
-
-function isRegularFile(file) {
-  try {
-    return fs.lstatSync(file).isFile();
-  } catch {
-    return false;
   }
 }
 

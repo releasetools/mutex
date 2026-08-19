@@ -18,6 +18,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { isRealDirectory, isRegularFile, refuseToEmpty } from "./packaging.mjs";
 
 /**
  * Assembles the tree that gets published as the action, the versioned CLI, and
@@ -66,12 +67,19 @@ export function packageRelease({ root = process.cwd(), out } = {}) {
     throw new Error(`${source}/package.json has no version`);
   }
 
+  refuseToEmpty(target, source, {
+    marker: "action.yml",
+    what: "an assembled release tree",
+  });
+
   fs.rmSync(target, { recursive: true, force: true });
   fs.mkdirSync(target, { recursive: true });
 
   for (const file of FILES) {
     const from = path.join(source, file);
-    if (!fs.existsSync(from)) {
+    // lstat, not existsSync: a name on the list that resolves somewhere else
+    // publishes whatever is at the other end.
+    if (!isRegularFile(from)) {
       throw new Error(`missing ${file} - cannot publish without it`);
     }
     const to = path.join(target, file);
@@ -89,6 +97,13 @@ export function packageRelease({ root = process.cwd(), out } = {}) {
       const from = path.join(source, dir);
       if (!fs.existsSync(from)) {
         throw new Error(`missing ${dir}/ - ${remedy}`);
+      }
+      // `cp -r` follows a link to a directory, so an allowlisted name pointing
+      // elsewhere would publish that tree in place of this one.
+      if (!isRealDirectory(from)) {
+        throw new Error(
+          `${dir} is not a regular directory; nothing published is a symlink`,
+        );
       }
       fs.cpSync(from, path.join(target, dir), { recursive: true });
     }
