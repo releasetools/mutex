@@ -37,6 +37,19 @@ export type NegotiablePoolConfig = PoolConfig & {
   sslnegotiation?: SslNegotiation;
 };
 
+export interface SslNegotiationOptions {
+  /** What a profile or the connection string asked for, if either did. */
+  sslNegotiation?: SslNegotiation;
+  /**
+   * Use direct negotiation when nothing asked and the connection has TLS.
+   *
+   * The server sets it: one failed connection is a fair price for a long-lived
+   * process, and `isDirectNegotiationFailure` is what turns that failure into
+   * a retreat rather than an outage.
+   */
+  preferDirect?: boolean;
+}
+
 /** What mutex settled on, for the debug line and for failure hints. */
 export interface SslPosture {
   /** `sslmode` exactly as the connection string or `PGSSLMODE` wrote it. */
@@ -89,7 +102,7 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", ""]);
  */
 export function resolveConnection(
   connectionString: string,
-  options: { sslNegotiation?: SslNegotiation } = {},
+  options: SslNegotiationOptions = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedConnection {
   const warnings: string[] = [];
@@ -115,8 +128,8 @@ export function resolveConnection(
   // unrecognised one. Accepting it would make TLS mandatory where it used to
   // be absent, and would shadow `PGSSLMODE` with a value nobody wrote.
   const declared = url.searchParams.get("sslmode") || env.PGSSLMODE || null;
-  const negotiation =
-    options.sslNegotiation ?? readNegotiation(url) ?? "postgres";
+  const asked = options.sslNegotiation ?? readNegotiation(url) ?? undefined;
+  const requested = asked ?? (options.preferDirect ? "direct" : "postgres");
 
   // An explicit `uselibpqcompat=true` is an informed request for libpq's
   // meanings. Overriding it would defeat the only escape hatch node-postgres
@@ -129,12 +142,19 @@ export function resolveConnection(
           `Drop uselibpqcompat, or use sslmode=verify-full, for a verified connection.`,
       );
     }
+    const overLibpqTls = declared !== "disable";
+    const libpqNegotiation = usable(requested, overLibpqTls, asked, warnings);
     return {
       config: applyNegotiation(
         parseIntoClientConfig(connectionString) as NegotiablePoolConfig,
-        negotiation,
+        libpqNegotiation,
       ),
-      posture: { declared, effective: "libpq", promoted: false, negotiation },
+      posture: {
+        declared,
+        effective: "libpq",
+        promoted: false,
+        negotiation: libpqNegotiation,
+      },
       warnings,
     };
   }
@@ -177,6 +197,13 @@ export function resolveConnection(
     );
   }
 
+  const negotiation = usable(
+    requested,
+    effective !== "plaintext",
+    asked,
+    warnings,
+  );
+
   return {
     config: applyNegotiation(config, negotiation),
     posture: {
@@ -187,6 +214,51 @@ export function resolveConnection(
     },
     warnings,
   };
+}
+
+/**
+ * Drops direct negotiation onto a connection that has no TLS to negotiate.
+ *
+ * node-postgres refuses that combination outright - "sslnegotiation=direct
+ * requires SSL to be enabled" - so leaving it in place would fail every
+ * connection rather than slow one down. Costing nothing to decide here, it is
+ * only worth a word when somebody asked for it rather than inherited it.
+ */
+function usable(
+  requested: SslNegotiation,
+  encrypted: boolean,
+  asked: SslNegotiation | undefined,
+  warnings: string[],
+): SslNegotiation {
+  if (requested !== "direct" || encrypted) {
+    return requested;
+  }
+  if (asked === "direct") {
+    warnings.push(
+      "Direct SSL negotiation was requested for a connection that does not use TLS, which " +
+        "node-postgres rejects, so it is not being used. Add sslmode=verify-full to enable it.",
+    );
+  }
+  return "postgres";
+}
+
+/**
+ * How a server too old for direct negotiation fails.
+ *
+ * PostgreSQL below 17 reads the TLS handshake as a malformed startup packet
+ * and hangs up, so all that reaches the client is a socket that closed. The
+ * pattern is deliberately broad: mistaking a network blip for an old server
+ * costs one round trip per connection from then on, while missing a real old
+ * server costs every connection.
+ */
+const DIRECT_NEGOTIATION_FAILURE =
+  /socket disconnected|EPROTO|ECONNRESET|wrong version number/i;
+
+/** True when a failure looks like a server that cannot start TLS directly. */
+export function isDirectNegotiationFailure(error: unknown): boolean {
+  return DIRECT_NEGOTIATION_FAILURE.test(
+    error instanceof Error ? error.message : String(error),
+  );
 }
 
 /** One line for `--verbose`, and the tail of a TLS failure. */
@@ -211,10 +283,7 @@ export function explainSslFailure(
 ): string | null {
   const message = error instanceof Error ? error.message : String(error);
 
-  if (
-    posture.negotiation === "direct" &&
-    /socket disconnected|EPROTO|ECONNRESET|wrong version number/i.test(message)
-  ) {
+  if (posture.negotiation === "direct" && isDirectNegotiationFailure(error)) {
     return (
       `Direct SSL negotiation is in use and needs PostgreSQL 17 or newer; older servers close the connection ` +
       `exactly like this. Remove ssl_negotiation from the profile, or sslnegotiation from ${CONNECTION_ENV_VAR}, to rule it out.`
@@ -235,13 +304,6 @@ export function explainSslFailure(
   return null;
 }
 
-/**
- * States the negotiation on the configuration mutex hands to the pool.
- *
- * Writing it unconditionally is what keeps `config` and `posture` from
- * disagreeing. Leaving it to whatever `parseIntoClientConfig` retained would
- * make the diagnostics describe a connection nobody opened.
- */
 function applyNegotiation(
   config: NegotiablePoolConfig,
   negotiation: SslNegotiation,
@@ -289,8 +351,8 @@ function withoutSslMode(url: URL): string {
  * Reads `sslnegotiation` from the connection string, rejecting what neither
  * mutex nor node-postgres understands.
  *
- * mutex writes this field itself, so an unrecognised value would otherwise be
- * quietly overwritten - and a typo would read as "direct negotiation is on"
+ * mutex now writes this field itself, so an unrecognised value would otherwise
+ * be quietly overwritten - and a typo would read as "direct negotiation is on"
  * while nothing had changed. node-postgres rejects the same values, so this
  * only moves the complaint earlier.
  */

@@ -30,6 +30,8 @@ import { describeError, logWarning, sleep } from "./helpers.js";
 import {
   describePosture,
   explainSslFailure,
+  isDirectNegotiationFailure,
+  NegotiablePoolConfig,
   resolveConnection,
   SslPosture,
 } from "./connection.js";
@@ -58,9 +60,12 @@ type MutationRow = Record<string, unknown> & { outcome: string };
 export class DatabaseMutex implements LockStore {
   private readonly config: MutexConfig;
   private readonly log: Logger;
-  private readonly pool: Pool;
-  private readonly posture: SslPosture;
+  private poolConfig: NegotiablePoolConfig;
+  private pool: Pool;
+  private posture: SslPosture;
   private closed = false;
+  /** Direct negotiation is abandoned at most once, and never resumed. */
+  private directRetired = false;
   /** Schema creation is tried at most once per instance. */
   private schemaAttempted = false;
 
@@ -73,6 +78,7 @@ export class DatabaseMutex implements LockStore {
     // `connection.ts`.
     const connection = resolveConnection(config.dbConnectionString, {
       sslNegotiation: config.sslNegotiation,
+      preferDirect: config.preferDirectSsl,
     });
     this.posture = connection.posture;
     for (const warning of connection.warnings) {
@@ -80,16 +86,66 @@ export class DatabaseMutex implements LockStore {
     }
     log.debug(`Database connection: ${describePosture(connection.posture)}.`);
 
-    this.pool = new Pool({
+    this.poolConfig = {
       ...connection.config,
       connectionTimeoutMillis: config.connectionTimeoutMillis,
-    });
+      min: config.minPoolSize,
+    };
+    this.pool = this.openPool(this.poolConfig);
+  }
 
+  private openPool(config: NegotiablePoolConfig): Pool {
+    const pool = new Pool(config);
     // Without a listener, an error on an idle client is an unhandled 'error'
     // event and takes the whole process down.
-    this.pool.on("error", (error) => {
+    pool.on("error", (error) => {
       logWarning(this.log, error, "Idle database client error");
     });
+    return pool;
+  }
+
+  /**
+   * Gives up on direct SSL negotiation after it fails once.
+   *
+   * A server older than 17 reads the TLS handshake as a malformed startup
+   * packet and closes the connection, and node-postgres does not retry. One
+   * lost connection is a fair price for a process that will open many, so the
+   * pool is rebuilt without it and the caller tries again. Retired for the
+   * life of this instance: a server does not get newer while it runs, and
+   * probing again would cost a failed connection every time.
+   */
+  private async retreatFromDirect(error: unknown): Promise<boolean> {
+    if (
+      this.directRetired ||
+      this.posture.negotiation !== "direct" ||
+      !isDirectNegotiationFailure(error)
+    ) {
+      return false;
+    }
+    this.directRetired = true;
+    this.log.warning(
+      "Direct SSL negotiation failed, which is how PostgreSQL below 17 refuses it. " +
+        "Continuing with negotiated SSL, one round trip slower, for the rest of this process.",
+    );
+
+    const retired = this.pool;
+    this.posture = { ...this.posture, negotiation: "postgres" };
+    this.poolConfig = { ...this.poolConfig, sslnegotiation: "postgres" };
+    this.pool = this.openPool(this.poolConfig);
+    await retired.end().catch(() => undefined);
+    return true;
+  }
+
+  /** Runs `attempt`, once more if direct negotiation was what broke it. */
+  private async guarded<T>(attempt: () => Promise<T>): Promise<T> {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (await this.retreatFromDirect(error)) {
+        return attempt();
+      }
+      throw this.explained(error);
+    }
   }
 
   async acquireLock(
@@ -187,12 +243,14 @@ export class DatabaseMutex implements LockStore {
 
   /** Opens one connection during server startup so the first lock is warm. */
   async warm(): Promise<void> {
-    const client = await this.connect();
-    try {
-      await client.query("SELECT 1");
-    } finally {
-      this.disconnect(client);
-    }
+    return this.guarded(async () => {
+      const client = await this.connect();
+      try {
+        await client.query("SELECT 1");
+      } finally {
+        this.disconnect(client);
+      }
+    });
   }
 
   poolStatus(): { total: number; idle: number; waiting: number } {
@@ -505,11 +563,7 @@ export class DatabaseMutex implements LockStore {
     operation: string,
     run: () => Promise<T>,
   ): Promise<T> {
-    try {
-      return await this.retryOnceForSchema(operation, run);
-    } catch (error) {
-      throw this.explained(error);
-    }
+    return this.guarded(() => this.retryOnceForSchema(operation, run));
   }
 
   /**
@@ -611,12 +665,7 @@ export class DatabaseMutex implements LockStore {
 
   private async connect(): Promise<PoolClient> {
     this.log.debug("Attempting to connect to the database.");
-    let client: PoolClient;
-    try {
-      client = await this.pool.connect();
-    } catch (error) {
-      throw this.explained(error);
-    }
+    const client = await this.pool.connect();
     this.log.debug("Successfully connected to the database.");
     return client;
   }

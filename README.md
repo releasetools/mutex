@@ -219,6 +219,10 @@ ssl_negotiation = "direct"
 
 It belongs here rather than only in the connection string because it describes the server rather than the credential, and the connection string is often a secret issued by somebody else. `sslnegotiation=direct` in the connection string does the same thing; when both say something, the profile wins.
 
+A **server profile does not need the setting**: it tries direct negotiation on its own whenever the connection uses TLS, and gives up on it permanently the first time a server refuses. That costs one failed connection against PostgreSQL 16 or older, once, at startup - a fair price for a process that will open many, and not one a CLI command could recover. Setting `ssl_negotiation = "postgres"` turns the attempt off. Neither front end asks for direct negotiation on a connection without TLS, which node-postgres rejects outright.
+
+The server also keeps one connection open. node-postgres closes an idle connection after ten seconds and its floor is zero connections, so a lock server asked for something every few minutes was paying a fresh handshake nearly every time - about 180 ms against a hosted database, against the 25 ms direct negotiation saves. It now holds one, and that is where most of the saving is.
+
 Start the server after making `MUTEX_DATABASE_URL` visible to it:
 
 ```shell
