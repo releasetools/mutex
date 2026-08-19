@@ -496,27 +496,29 @@ Locks are taken under a name that says who holds them: the agent, the host and t
 
 A lock nobody is watching expires quietly, so the helper writes down what it took - the id, the owner and the expiry - in `${XDG_STATE_HOME:-$HOME/.local/state}/releasetools-mutex/agent-locks.json`. Nothing in it is secret, and it is a reminder rather than a source of truth: PostgreSQL still holds the locks, and `mutex status <id>` still names the owner needed to release one.
 
-Two things read it, both without touching the database:
+What reads it is a **prompt hook**: it asks the agent to check with you at ten minutes and again at two, and says so once when a lock has expired. It ships in `hooks/hooks.json`, needs no wiring in Claude Code, and reads nothing but that file - no database round trip, and nothing to remember to run. Anywhere else that can run a command between turns, the same warning comes from `node .../agent-lock.mjs nudge`.
 
-- **A status line segment**, printing `🔒 staging 42m` in cyan, amber under ten minutes and red under two. A global CLI installation has the helper at `$(npm root -g)/@releasetools/mutex/skills/mutex/agent-lock.mjs`; otherwise find the copy the agent installed:
+That is the point of writing it down at all: a deadline that has to be asked about is a deadline nobody sees.
 
-  ```shell
-  find ~/.claude/plugins ~/.hermes/skills ~/.gemini/skills -name agent-lock.mjs 2>/dev/null | head -1
-  ```
+<details>
+<summary>Optional: a status line segment</summary>
 
-  Then append it to whatever status line you already have:
+`agent-lock.mjs statusline` prints one line - `🔒 staging 42m`, amber under ten minutes and red under two - and nothing at all when nothing is held. Nothing installs it, and it deliberately replaces nobody's status line: it is a segment to append to whichever one you already have.
 
-  ```shell
-  # at the end of your status line script
-  held=$(node /path/to/skills/mutex/agent-lock.mjs statusline)
-  [ -n "$held" ] && printf " | %s" "$held"
-  ```
+```shell
+# find the copy your agent installed, or use the one in a global CLI install
+find ~/.claude/plugins ~/.hermes/skills ~/.gemini/skills -name agent-lock.mjs 2>/dev/null | head -1
+```
 
-  It prints nothing at all when nothing is held, so it costs nothing on the sessions that never take a lock.
+```shell
+# at the end of your own status line script
+held=$(node /path/to/skills/mutex/agent-lock.mjs statusline)
+[ -n "$held" ] && printf " | %s" "$held"
+```
 
-- **A prompt hook**, which asks the agent to check with you at ten minutes and again at two, and says so once when a lock has expired. It ships in `hooks/hooks.json` and needs no wiring in Claude Code. Anywhere else that can run a command between turns, the same warning comes from `node .../agent-lock.mjs nudge`.
+Worth it if you keep long locks and like seeing them; the hook covers the case that actually matters without it.
 
-Neither needs the agent to be asked how long is left, which is the point: a deadline that has to be queried is a deadline nobody sees.
+</details>
 
 ### Working on the plugin
 

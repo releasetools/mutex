@@ -17,5 +17,5 @@ It never takes a lock unasked, and never breaks somebody else's: there is no
 stopping the pooled server, choosing profiles and deleting expired rows stay
 yours to run - `mutex server start`, `mutex profile`, `mutex prune`.
 
-A lock lasts an hour unless asked otherwise, a status line can show the time
-left, and a warning arrives at ten minutes and again at two.
+A lock lasts an hour unless asked otherwise, and a warning arrives at ten
+minutes and again at two.

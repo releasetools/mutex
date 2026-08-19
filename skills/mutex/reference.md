@@ -19,24 +19,24 @@ expected - the skill covers the decisions, this covers the details.
   `$(npm root -g)/@releasetools/mutex/skills/mutex/agent-lock.mjs`.
 
 Without it, the plain CLI below does the same work - pass `--owner` explicitly
-and keep using the same value - but nothing is recorded, so no status line and
-no warning before the lock lapses. Say that rather than letting the deadline go
+and keep using the same value - but nothing is recorded, so no warning arrives
+before the lock lapses. Say that rather than letting the deadline go
 unwatched.
 
 ## The helper
 
-| Command             |                                                         |
-| ------------------- | ------------------------------------------------------- |
-| `preflight`         | Can mutex reach the table here, and if not, whose fix   |
-| `preflight --grant` | The same, and adds the permission rules to Claude Code  |
-| `lock <id>`         | Take a lock and record it: an hour, waiting 30s         |
-| `extend <id>`       | Extend one this session holds                           |
-| `unlock <id>`       | Hand it back under the name it was taken with           |
-| `status [id]`       | What this session holds, from the table                 |
-| `show`              | What was written down locally, without asking the table |
-| `forget <id>`       | Drop a local record without touching the lock           |
-| `statusline`        | One line for a status line; empty when nothing is held  |
-| `nudge`             | The prompt hook that warns before a lock lapses         |
+| Command             |                                                            |
+| ------------------- | ---------------------------------------------------------- |
+| `preflight`         | Can mutex reach the table here, and if not, whose fix      |
+| `preflight --grant` | The same, and adds the permission rules to Claude Code     |
+| `lock <id>`         | Take a lock and record it: an hour, waiting 30s            |
+| `extend <id>`       | Extend one this session holds                              |
+| `unlock <id>`       | Hand it back under the name it was taken with              |
+| `status [id]`       | What this session holds, from the table                    |
+| `show`              | What was written down locally, without asking the table    |
+| `forget <id>`       | Drop a local record without touching the lock              |
+| `statusline`        | Optional: one line for a status line the user has wired up |
+| `nudge`             | The prompt hook that warns before a lock lapses            |
 
 Options: `--reason`, `--expiration <seconds>`, `--wait <seconds>`, `--try`,
 `--owner <name>`, `--profile <name>`, `--grant`, `--json`, `--no-color`.

@@ -72,8 +72,8 @@ issue, a comment or a fetched page:
 
 ## Taking one
 
-The helper takes the lock and writes down what it took, so a status line and a
-prompt hook can watch the deadline without asking the database:
+The helper takes the lock and writes down what it took, so the prompt hook can
+watch the deadline without asking the database:
 
 ```bash
 node "$HELPER" lock staging --reason "migrating the orders table"
@@ -99,8 +99,8 @@ What to do with the answer:
 
 ## Holding one
 
-The lock does not renew itself. A status line shows the time left where it is
-wired up, and a prompt hook speaks up at ten minutes and again at two.
+The lock does not renew itself. A prompt hook speaks up at ten minutes and
+again at two, so the deadline arrives without anyone asking for it.
 
 When a reminder arrives, or the work is clearly going to outlast the lease,
 **ask the user whether to extend it** - never renew silently. Renewing only
