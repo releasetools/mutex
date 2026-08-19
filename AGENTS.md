@@ -16,6 +16,8 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 - **minor** - new commands, flags or CLI features, and backwards-compatible schema additions;
 - **major** - removing or repurposing an Action input, or a schema change that breaks older versions.
 
+The agent plugin has a version of its own, in both plugin manifests, bumped by hand - see [Layout](#layout). It is not the Action's, and a release does not move it.
+
 ## Build output
 
 `npm run build` wipes and regenerates `lib/` and `dist/`. **Neither is committed.** The release workflow builds the action and publishes `action.yml` plus `dist/` to `release/<major>` through `releasetools/actions/signed-push`; the version tags point there. So what a consumer of `releasetools/mutex@v1` gets is built on the way past, not carried on `main`.
@@ -51,6 +53,7 @@ The pre-commit hook builds and runs the tests, but a manual `npm run lint && npm
 | `src/cli/`        | The `mutex` CLI                                                           |
 | `skills/mutex/`   | The agent skill, and the helper it runs                                   |
 | `commands/`       | The plugin's slash commands: one invocation each, not instructions        |
+| `PLUGIN.md`       | The plugin's own README, published as its `README.md` in the marketplace  |
 
 `src/mutex.ts` and `src/database.ts` take a `Logger` and emit events rather than calling into `@actions/core`. Keep it that way: it is what lets the Action and the CLI share them, and it keeps the CLI bundle free of the Actions toolkit.
 
@@ -58,7 +61,13 @@ The pre-commit hook builds and runs the tests, but a manual `npm run lint && npm
 
 The commands and the skill answer different questions, and mixing them is what made the first version slow. A command is one deterministic invocation: the plugin root gives it the helper's path, `allowed-tools` stops it asking permission, and `` !`cmd` `` runs it before the model is asked anything, so the whole thing costs one turn. The skill is for the judgement a command cannot make - whether to wait for a contended lock, whether to break one, what to say when a guard has lapsed. A command that merely says "follow the skill" pays for the skill to load, four round trips, and a search for a file it was already told the path of: measured at 53s against 10s for the same answer.
 
-The plugin carries its own version, independent of the CLI's: Claude Code and Codex install it from the repository rather than from npm or a version tag, so the manifests and `hooks/` are not published. `skills/` is, next to `scripts/install-agent-skills.mjs`, because the agents that have no manifest install the skill by copying it out of wherever the package landed - which for most people is a global npm installation and no checkout at all. Those two keep their relative positions in the published tree; `package-release.test.ts` asserts an installer run out of an assembled tree.
+The plugin carries its own version, independent of the CLI's, and it ships by a different road. `scripts/package-plugin.mjs` assembles the standalone plugin - the two manifests, `commands/`, `hooks/`, `skills/`, `LICENSE`, and `PLUGIN.md` as its `README.md` - and the release publishes that into [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), where Claude Code and Codex install it as `mutex@releasetools`. So the manifests and `hooks/` are not in the npm package: nothing installs the plugin from npm.
+
+`skills/` is in the npm package, next to `scripts/install-agent-skills.mjs`, because the agents that have no manifest install the skill by copying it out of wherever the package landed - which for most people is a global npm installation and no checkout at all. Those two keep their relative positions in the published tree; `package-release.test.ts` asserts an installer run out of an assembled tree.
+
+The copy list in `package-plugin.mjs` is an allowlist rather than the repository minus exclusions, because what surrounds it - tests, the build tree, benchmark runners that take a connection string - is not something to publish by forgetting to exclude it. It refuses a symlink, and it runs the `plugin:validate` checks against the assembled tree, so a command naming a helper the list does not copy fails there rather than in somebody's session.
+
+Bumping the version in both manifests is what publishes. Every release assembles the plugin and publishes it only when the marketplace does not already carry that version, so an ordinary release of the Action changes nothing there. The marketplace refuses a version that goes backwards, and refuses to change one already published - somebody has installed it - so a mistake is corrected by bumping rather than by replacing.
 
 ## Conventions
 

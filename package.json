@@ -24,6 +24,7 @@
     "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
     "package:release": "npm run build && node scripts/package-release.mjs",
     "plugin:validate": "node scripts/validate-agent-plugins.mjs",
+    "plugin:package": "node scripts/package-plugin.mjs",
     "plugin:install": "node scripts/install-agent-skills.mjs",
     "cli:link": "npm run build && npm link",
     "cli:unlink": "npm unlink --global $npm_package_name",
