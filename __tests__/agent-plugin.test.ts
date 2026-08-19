@@ -140,7 +140,7 @@ describe("the repository's own packaging", () => {
         "preflight",
         "lock",
         "unlock",
-        "extend",
+        "renew",
         "status",
         "help",
       ]),

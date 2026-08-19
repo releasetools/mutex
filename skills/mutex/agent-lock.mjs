@@ -1370,7 +1370,7 @@ Commands:
   preflight        Report whether mutex can reach the lock table here
                    (--grant also adds the permission rules it needs)
   lock <id>        Take a lock, and record what was taken
-  extend <id>      Extend a recorded lock, keeping its owner (alias: renew)
+  renew <id>       Extend a recorded lock, keeping its owner
   unlock <id>      Hand a recorded lock back
   status [id]      What you hold, from the table - or who holds one lock
   show             What this machine wrote down, without asking the table
@@ -1458,7 +1458,7 @@ export function main(argv, options = {}) {
     return EXIT_USAGE;
   }
 
-  const needsId = ["lock", "extend", "renew", "unlock", "forget"];
+  const needsId = ["lock", "renew", "unlock", "forget"];
   if (needsId.includes(command) && !id) {
     write(stderr, `agent-lock: '${command}' needs a lock id`);
     return EXIT_USAGE;
@@ -1469,10 +1469,6 @@ export function main(argv, options = {}) {
       return commandPreflight(shared);
     case "lock":
       return commandLock(id, shared);
-    // `extend` is what the command, the reference and the warning all call it,
-    // because that is what a person asks for. `renew` is the CLI's verb for
-    // the same thing, and anyone who knows the CLI will reach for it.
-    case "extend":
     case "renew":
       return commandRenew(id, shared);
     case "unlock":

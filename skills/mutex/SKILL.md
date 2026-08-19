@@ -37,7 +37,7 @@ risky, and does not take a lock "to be safe" as part of a larger task.
 Once a lock is taken, the rest follows without asking: hand it back when the
 guarded work finishes or fails, and say so if it lapses.
 
-Prefer the commands - `/mutex:lock`, `/mutex:unlock`, `/mutex:extend`,
+Prefer the commands - `/mutex:lock`, `/mutex:unlock`, `/mutex:renew`,
 `/mutex:status`, `/mutex:preflight` - when one fits: they run a single
 deterministic invocation and are what the user sees. This skill is for
 everything they cannot decide alone.
