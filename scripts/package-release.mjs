@@ -20,7 +20,8 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 /**
- * Assembles the tree that gets published as the action and versioned CLI.
+ * Assembles the tree that gets published as the action, the versioned CLI, and
+ * the agent skill that drives it.
  *
  * `dist/` is not committed, so what a consumer of `releasetools/mutex@v1`
  * receives is built and staged at release time. This is that staging, kept
@@ -39,8 +40,21 @@ import { parseArgs } from "node:util";
  */
 
 /** Copied verbatim into the published tree. */
-const FILES = ["action.yml", "LICENSE", "README.md"];
-const DIRECTORIES = ["bin", "dist", "lib"];
+const FILES = [
+  "action.yml",
+  "LICENSE",
+  "README.md",
+  // Hermes, Gemini and Antigravity install the skill by copying it, and a
+  // global install is the only checkout most people have.
+  "scripts/install-agent-skills.mjs",
+];
+
+/** Committed directories, published as they stand. */
+const DIRECTORIES = ["bin", "commands", "skills"];
+
+/** Directories that do not exist until the build has run. */
+const BUILT_DIRECTORIES = ["dist", "lib"];
+
 const CLI_DEPENDENCIES = ["pg", "pg-format"];
 
 export function packageRelease({ root = process.cwd(), out } = {}) {
@@ -60,15 +74,24 @@ export function packageRelease({ root = process.cwd(), out } = {}) {
     if (!fs.existsSync(from)) {
       throw new Error(`missing ${file} - cannot publish without it`);
     }
-    fs.copyFileSync(from, path.join(target, file));
+    const to = path.join(target, file);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
   }
 
-  for (const dir of DIRECTORIES) {
-    const from = path.join(source, dir);
-    if (!fs.existsSync(from)) {
-      throw new Error(`missing ${dir}/ - run \`npm run build\` first`);
+  // Two lists, because the two absences mean different things: a missing
+  // `lib/` is a forgotten build, and a missing `skills/` is a broken checkout.
+  for (const [directories, remedy] of [
+    [DIRECTORIES, "cannot publish without it"],
+    [BUILT_DIRECTORIES, "run `npm run build` first"],
+  ]) {
+    for (const dir of directories) {
+      const from = path.join(source, dir);
+      if (!fs.existsSync(from)) {
+        throw new Error(`missing ${dir}/ - ${remedy}`);
+      }
+      fs.cpSync(from, path.join(target, dir), { recursive: true });
     }
-    fs.cpSync(from, path.join(target, dir), { recursive: true });
   }
 
   // Keep build tooling out, but retain what npm needs to install the compiled
