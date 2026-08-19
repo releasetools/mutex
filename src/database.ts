@@ -27,6 +27,12 @@ import {
 import { TABLE_NAME } from "./constants.js";
 import { Logger, SilentLogger } from "./logger.js";
 import { describeError, logWarning, sleep } from "./helpers.js";
+import {
+  describePosture,
+  explainSslFailure,
+  resolveConnection,
+  SslPosture,
+} from "./connection.js";
 import format from "pg-format";
 
 /**
@@ -53,6 +59,7 @@ export class DatabaseMutex implements LockStore {
   private readonly config: MutexConfig;
   private readonly log: Logger;
   private readonly pool: Pool;
+  private readonly posture: SslPosture;
   private closed = false;
   /** Schema creation is tried at most once per instance. */
   private schemaAttempted = false;
@@ -61,9 +68,18 @@ export class DatabaseMutex implements LockStore {
     this.config = config;
     this.log = log;
 
-    // Database configuration using connection string
+    // mutex decides what the connection string's sslmode means rather than
+    // inheriting whichever meaning the installed node-postgres holds; see
+    // `connection.ts`.
+    const connection = resolveConnection(config.dbConnectionString);
+    this.posture = connection.posture;
+    for (const warning of connection.warnings) {
+      log.warning(warning);
+    }
+    log.debug(`Database connection: ${describePosture(connection.posture)}.`);
+
     this.pool = new Pool({
-      connectionString: config.dbConnectionString,
+      ...connection.config,
       connectionTimeoutMillis: config.connectionTimeoutMillis,
     });
 
@@ -471,7 +487,9 @@ export class DatabaseMutex implements LockStore {
     const result = await this.pool.query(query, values);
     const row = result.rows[0] as MutationRow | undefined;
     if (!row || typeof row.outcome !== "string") {
-      throw new Error(`Database mutation returned no outcome (rows=${result.rows.length})`);
+      throw new Error(
+        `Database mutation returned no outcome (rows=${result.rows.length})`,
+      );
     }
     return row;
   }
@@ -482,6 +500,30 @@ export class DatabaseMutex implements LockStore {
    * action before.
    */
   private async withSchemaRetry<T>(
+    operation: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.retryOnceForSchema(operation, run);
+    } catch (error) {
+      throw this.explained(error);
+    }
+  }
+
+  /**
+   * Adds what mutex knows about the connection to a handshake failure.
+   *
+   * TLS errors describe the certificate, never the setting that demanded one,
+   * so the cause is invisible from the message alone.
+   */
+  private explained(error: unknown): unknown {
+    const hint = explainSslFailure(error, this.posture);
+    return hint
+      ? new Error(`${describeError(error)}\n  ${hint}`, { cause: error })
+      : error;
+  }
+
+  private async retryOnceForSchema<T>(
     operation: string,
     run: () => Promise<T>,
   ): Promise<T> {
@@ -567,7 +609,12 @@ export class DatabaseMutex implements LockStore {
 
   private async connect(): Promise<PoolClient> {
     this.log.debug("Attempting to connect to the database.");
-    const client = await this.pool.connect();
+    let client: PoolClient;
+    try {
+      client = await this.pool.connect();
+    } catch (error) {
+      throw this.explained(error);
+    }
     this.log.debug("Successfully connected to the database.");
     return client;
   }

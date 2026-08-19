@@ -363,6 +363,24 @@ MUTEX_DATABASE_URL="$LOCKS_URL" mutex lock deploy
 
 `DATABASE_URL` is not read at all, in either front end. mutex read it up to 1.2.2 and warned; the prefix is the point, because frameworks, ORMs, PaaS providers and CI systems all set that name, and they set it to the application's own database. A repository that had one and then added mutex was keeping its locks in the app's database without ever being told, and locks in the wrong database exclude nobody.
 
+### What `sslmode` means here
+
+mutex decides what the `sslmode` in a connection string means, rather than inheriting whichever meaning the installed node-postgres holds:
+
+| `sslmode`                                 | What mutex does                                                            |
+| ----------------------------------------- | -------------------------------------------------------------------------- |
+| `verify-full`                             | Encrypts, and checks the certificate chain and the hostname                |
+| `require`, `prefer`, `verify-ca`, `allow` | The same as `verify-full`                                                  |
+| `no-verify`                               | Encrypts without checking the certificate                                  |
+| `disable`                                 | No TLS. Warns when the host is not local                                   |
+| unset                                     | No TLS, as node-postgres has always done. Warns when the host is not local |
+
+The four promoted modes mean something weaker in libpq - encrypt, but do not check who answered - which is no protection against something that can answer in the server's place. node-postgres has always read them as `verify-full` and warns that pg v9 will adopt libpq's meaning instead, which would quietly weaken every connection string that says `require`. Deciding here is what makes that upgrade a no-op, and it is why the warning no longer appears.
+
+Certificates named by `sslrootcert`, `sslcert` and `sslkey` are loaded as usual, so a private CA keeps working. `uselibpqcompat=true` still hands the decision back to node-postgres, and mutex warns once about what that costs. `PGSSLMODE` is read when the connection string says nothing.
+
+Promotion is stricter than the name suggests, which shows up as a certificate error against a server whose CA is private. mutex adds what to do to that failure rather than leaving the certificate to explain itself. Run any command with `--verbose` to see what a connection settled on: `Database connection: sslmode=require applied as verify-full.`
+
 ### Scripting
 
 Read-only commands answer through the exit code:
