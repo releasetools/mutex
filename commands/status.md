@@ -9,7 +9,11 @@ allowed-tools:
 
 !`node "${CLAUDE_PLUGIN_ROOT}/skills/mutex/agent-lock.mjs" status`
 
-Relay that, shortest form that keeps the facts: what you hold and for how much
-longer, then anything else in the way and whose it is. If `$ARGUMENTS` named a
-lock, answer about that one only. This is read-only: take, release and renew
-nothing.
+Print that table above **verbatim**, inside a fenced code block, and nothing
+else. Do not summarise it, do not turn it into sentences, and do not drop
+columns: it is a table so it can be scanned down, and a paragraph cannot be.
+
+One short line after it is welcome when something needs saying - a lock about to
+lapse, or nothing held at all. If `$ARGUMENTS` named a lock, run the same
+command with that id and print that instead. This is read-only: take, release
+and renew nothing.

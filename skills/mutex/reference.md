@@ -30,9 +30,9 @@ unwatched.
 | `preflight`         | Can mutex reach the table here, and if not, whose fix      |
 | `preflight --grant` | The same, and adds the permission rules to Claude Code     |
 | `lock <id>`         | Take a lock and record it: an hour, waiting 30s            |
-| `extend <id>`       | Extend one this session holds                              |
+| `extend <id>`       | Extend one this session holds (`renew` does the same)      |
 | `unlock <id>`       | Hand it back under the name it was taken with              |
-| `status [id]`       | What this session holds, from the table                    |
+| `status [id]`       | A table of what you hold and what else is in the way       |
 | `show`              | What was written down locally, without asking the table    |
 | `forget <id>`       | Drop a local record without touching the lock              |
 | `statusline`        | Optional: one line for a status line the user has wired up |

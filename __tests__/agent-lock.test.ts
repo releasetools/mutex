@@ -18,6 +18,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 // @ts-expect-error - skill tooling, deliberately plain JS with no types
 import * as agentLock from "../skills/mutex/agent-lock.mjs";
 
@@ -36,8 +37,10 @@ const {
   formatRemaining,
   forget,
   preflight,
+  main,
   readState,
   remember,
+  renderLockTable,
   renderStatusline,
   resolveOwner,
   statePath,
@@ -685,10 +688,10 @@ describe("what is held", () => {
       stdout: out.stream,
     });
 
-    expect(out.text).toContain(`Yours (${mine}):`);
+    expect(out.text).toContain(`Yours - ${mine}`);
     expect(out.text).toContain("staging");
-    expect(out.text).toContain("Others:");
-    expect(out.text).toContain("deploy  held by alice");
+    expect(out.text).toContain("Everything else");
+    expect(out.text).toMatch(/deploy\s+alice/);
     // One round trip, not one per lock.
     expect(
       mutex.argv.filter((argument: string) => argument === "list"),
@@ -710,6 +713,109 @@ describe("what is held", () => {
 
     expect(out.text).toMatch(/^Nothing held by /);
   });
+});
+
+describe("the table", () => {
+  const at = (minutes: number) =>
+    new Date(Date.now() + minutes * 60 * 1000).toISOString();
+
+  const record = (overrides = {}) => ({
+    id: "staging",
+    owner: "claude@host:22ca1fea-a521-4d5c-ad62-b6d05809f8ef",
+    reason: "deploying the orders service",
+    createdAt: at(-5),
+    expiresAt: at(42),
+    expired: false,
+    ...overrides,
+  });
+
+  it("gives every column the user asked for, aligned", () => {
+    const [header, row] = renderLockTable([record()]);
+
+    expect(header.split(/\s{2,}/)).toEqual([
+      "ID",
+      "REASON",
+      "TAKEN",
+      "EXPIRES",
+      "LEFT",
+    ]);
+    expect(row).toContain("staging");
+    expect(row).toContain("deploying the orders service");
+    expect(row).toMatch(/\d{2}:\d{2}Z/);
+    expect(row.trimEnd()).toMatch(/42m$/);
+  });
+
+  it("says how long ago an expired one ran out", () => {
+    const [, row] = renderLockTable([record({ expiresAt: at(-70) })]);
+
+    expect(row.trimEnd()).toMatch(/expired 1h 10m ago$/);
+  });
+
+  /**
+   * A session id is a UUID, and a column of them is 52 characters to scan
+   * past. Abbreviated visibly, so nobody copies one thinking it whole.
+   */
+  it("abbreviates the owner in a list, and never in a single lock", () => {
+    const [, listed] = renderLockTable([record()], { owner: true });
+    expect(listed).toMatch(/claude@host:22ca1fea-\S*…/);
+    expect(listed).not.toContain("ad62-b6d05809f8ef");
+
+    const [, single] = renderLockTable([record()], {
+      owner: true,
+      fullOwner: true,
+    });
+    expect(single).toContain(
+      "claude@host:22ca1fea-a521-4d5c-ad62-b6d05809f8ef",
+    );
+  });
+
+  it("keeps a long reason from pushing the columns off the screen", () => {
+    const [, row] = renderLockTable([record({ reason: "x".repeat(80) })]);
+
+    expect(row).toContain("…");
+    expect(row.length).toBeLessThan(110);
+  });
+});
+
+/**
+ * The command files name a subcommand, and nothing else checks that the helper
+ * has one: `/mutex:extend` shipped invoking `extend` while the helper only
+ * answered to `renew`, and the failure was a usage message where a renewal
+ * should have been.
+ */
+describe("what the commands invoke", () => {
+  const commandsDir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../commands",
+  );
+
+  const invoked = fs
+    .readdirSync(commandsDir)
+    .filter((entry) => entry.endsWith(".md"))
+    .flatMap((entry) => {
+      const text = fs.readFileSync(path.join(commandsDir, entry), "utf8");
+      return [...text.matchAll(/agent-lock\.mjs"?\s+([a-z-]+)/g)].map(
+        (match) => [entry, match[1]] as [string, string],
+      );
+    });
+
+  it("finds a subcommand in the command files at all", () => {
+    expect(invoked.length).toBeGreaterThan(2);
+  });
+
+  it.each(invoked)(
+    "%s invokes a subcommand the helper answers to",
+    (_file, subcommand) => {
+      const errors: string[] = [];
+      main([subcommand, "some-lock"], {
+        executable: "/nonexistent-mutex-for-this-test",
+        stdout: { write: () => {} },
+        stderr: { write: (text: string) => errors.push(text) },
+      });
+
+      expect(errors.join("")).not.toContain("unknown command");
+    },
+  );
 });
 
 describe("permission rules", () => {

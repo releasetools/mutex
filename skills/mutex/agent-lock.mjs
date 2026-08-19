@@ -999,6 +999,90 @@ export function commandUnlock(id, options = {}) {
 }
 
 /**
+ * A UTC timestamp a person reads across a row: the date only when it is not
+ * today, since a table of locks is nearly always about the next few hours.
+ */
+function shortTime(value, now = Date.now()) {
+  const at = Date.parse(value ?? "");
+  if (Number.isNaN(at)) {
+    return "-";
+  }
+  const iso = new Date(at).toISOString();
+  const day = iso.slice(0, 10);
+  const time = iso.slice(11, 16);
+  return day === new Date(now).toISOString().slice(0, 10)
+    ? `${time}Z`
+    : `${day} ${time}Z`;
+}
+
+/** How much lease is left, or how long ago it ran out. */
+function timeLeft(record, now = Date.now()) {
+  const left = remainingSeconds(record, now);
+  if (left === null) {
+    return "-";
+  }
+  return left > 0 ? formatRemaining(left) : `expired ${formatRemaining(left)}`;
+}
+
+/**
+ * The locks as a table, because a list of them is read by scanning down one
+ * column - when does the next one free up, which of these is mine, what was
+ * somebody doing.
+ */
+export function renderLockTable(records, options = {}) {
+  const now = options.now ?? Date.now();
+  const owner = options.owner === true;
+  const reasonWidth = 32;
+  // A session id is a UUID, and a column of them is 52 characters of noise to
+  // scan past. Abbreviated visibly, so nobody copies one thinking it whole -
+  // `mutex status <id>` prints the owner in full when it is needed.
+  const ownerWidth = options.fullOwner === true ? Infinity : 28;
+
+  const header = [
+    "ID",
+    ...(owner ? ["OWNER"] : []),
+    "REASON",
+    "TAKEN",
+    "EXPIRES",
+    "LEFT",
+  ];
+  const rows = records.map((record) => {
+    const reason = record.reason || "-";
+    const held = record.owner ?? "-";
+    return [
+      record.id,
+      ...(owner
+        ? [
+            held.length > ownerWidth
+              ? `${held.slice(0, ownerWidth - 1)}…`
+              : held,
+          ]
+        : []),
+      reason.length > reasonWidth
+        ? `${reason.slice(0, reasonWidth - 1)}…`
+        : reason,
+      shortTime(record.createdAt, now),
+      shortTime(record.expiresAt, now),
+      timeLeft(record, now),
+    ];
+  });
+
+  const widths = header.map((_, column) =>
+    Math.max(...[header, ...rows].map((row) => row[column].length)),
+  );
+  // The last column is not padded, so nothing trails into empty space.
+  const line = (row) =>
+    row
+      .map((cell, column) =>
+        column === row.length - 1 ? cell : cell.padEnd(widths[column]),
+      )
+      .join("  ")
+      .trimEnd();
+
+  return [line(header), ...rows.map(line)];
+}
+
+/**
  * What is held, from the table rather than from the local note.
  *
  * One round trip, and it answers the question a person actually asks - "what
@@ -1032,13 +1116,14 @@ export function commandStatus(identifier, options = {}) {
     write(
       stdout,
       record
-        ? `${identifier}: ${record.expired ? "expired" : "held"} by ${
-            record.owner === mine
-              ? "you"
-              : (record.owner ?? "nobody in particular")
-          }, ${describeExpiry({ expiresAt: record.expiresAt }, now)}${
-            record.reason ? ` - "${record.reason}"` : ""
-          }`
+        ? [
+            record.owner === mine ? "Yours" : "Held by somebody else",
+            ...renderLockTable([record], {
+              now,
+              owner: record.owner !== mine,
+              fullOwner: true,
+            }),
+          ].join("\n")
         : `${identifier}: not held.`,
     );
     return result.status;
@@ -1057,18 +1142,19 @@ export function commandStatus(identifier, options = {}) {
     return result.status;
   }
 
-  const line = (lock) =>
-    `  ${lock.id}  ${lock.expired ? "expired" : "held"}` +
-    `${lock.owner && lock.owner !== mine ? ` by ${lock.owner}` : ""}` +
-    `, ${describeExpiry(lock, now)}${lock.reason ? ` - "${lock.reason}"` : ""}`;
-
   write(
     stdout,
     [
       yours.length > 0
-        ? [`Yours (${mine}):`, ...yours.map(line)].join("\n")
+        ? [`Yours - ${mine}`, ...renderLockTable(yours, { now })].join("\n")
         : `Nothing held by ${mine}.`,
-      others.length > 0 ? ["Others:", ...others.map(line)].join("\n") : "",
+      others.length > 0
+        ? [
+            "",
+            "Everything else",
+            ...renderLockTable(others, { now, owner: true }),
+          ].join("\n")
+        : "",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -1284,7 +1370,7 @@ Commands:
   preflight        Report whether mutex can reach the lock table here
                    (--grant also adds the permission rules it needs)
   lock <id>        Take a lock, and record what was taken
-  renew <id>       Extend a recorded lock, keeping its owner
+  extend <id>      Extend a recorded lock, keeping its owner (alias: renew)
   unlock <id>      Hand a recorded lock back
   status [id]      What you hold, from the table - or who holds one lock
   show             What this machine wrote down, without asking the table
@@ -1372,7 +1458,7 @@ export function main(argv, options = {}) {
     return EXIT_USAGE;
   }
 
-  const needsId = ["lock", "renew", "unlock", "forget"];
+  const needsId = ["lock", "extend", "renew", "unlock", "forget"];
   if (needsId.includes(command) && !id) {
     write(stderr, `agent-lock: '${command}' needs a lock id`);
     return EXIT_USAGE;
@@ -1383,6 +1469,10 @@ export function main(argv, options = {}) {
       return commandPreflight(shared);
     case "lock":
       return commandLock(id, shared);
+    // `extend` is what the command, the reference and the warning all call it,
+    // because that is what a person asks for. `renew` is the CLI's verb for
+    // the same thing, and anyone who knows the CLI will reach for it.
+    case "extend":
     case "renew":
       return commandRenew(id, shared);
     case "unlock":
