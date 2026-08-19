@@ -210,7 +210,7 @@ describe("parseCommandLine", () => {
     expect(() => parseCommandLine(["list", "--reason", "x"])).toThrow(
       /does not take --reason/,
     );
-    expect(() => parseCommandLine(["list", "--owner", "x"])).toThrow(
+    expect(() => parseCommandLine(["status", "id", "--owner", "x"])).toThrow(
       /does not take --owner/,
     );
   });
@@ -322,6 +322,17 @@ describe("parseCommandLine", () => {
     ).toBeNull();
   });
 
+  it("takes an owner on list, from the flag or the environment", () => {
+    // The filter is read exactly as lock, unlock and renew read the owner.
+    expect(parseCommandLine(["list", "--owner", "ci"]).options.owner).toBe(
+      "ci",
+    );
+    expect(parseCommandLine(["list", "-o", "ci"]).options.owner).toBe("ci");
+    expect(parseCommandLine(["list"]).options.owner).toBe("tester");
+    // Naming nobody is what widens a listing back out to the whole table.
+    expect(parseCommandLine(["list", "--owner", ""]).options.owner).toBeNull();
+  });
+
   it("has no --env-var", () => {
     // A variable under another name needs an assignment, not an option:
     // MUTEX_DATABASE_URL="$LOCKS_URL" mutex lock id.
@@ -403,5 +414,6 @@ describe("helpText", () => {
 
   it("shows the usage line for one command", () => {
     expect(helpText("renew")).toContain("mutex renew <id>");
+    expect(helpText("list")).toContain("mutex list [--owner <name>]");
   });
 });

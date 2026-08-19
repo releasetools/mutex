@@ -162,7 +162,7 @@ export interface LockStore extends MutexInterface {
     owner?: string | null,
   ): Promise<RenewResult>;
   inspectLock(name: string): Promise<LockRecord | null>;
-  listLocks(): Promise<LockRecord[]>;
+  listLocks(owner?: string | null): Promise<LockRecord[]>;
   pruneExpired(dryRun?: boolean): Promise<LockRecord[]>;
   close(): Promise<void>;
 }

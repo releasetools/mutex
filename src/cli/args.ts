@@ -108,11 +108,11 @@ export const COMMANDS: Record<CommandName, CommandSpec> = {
     options: [...GENERAL_OPTIONS],
   },
   list: {
-    summary: "List every lock, expired ones included",
-    usage: "mutex list [options]",
+    summary: "List locks, expired ones included",
+    usage: "mutex list [--owner <name>] [options]",
     identifier: "none",
     acceptsProgram: false,
-    options: [...GENERAL_OPTIONS],
+    options: ["owner", ...GENERAL_OPTIONS],
   },
   prune: {
     summary: "Delete locks that have already expired",
@@ -465,6 +465,10 @@ Lock options:
   -i, --poll-interval <seconds>  Delay between attempts (default: ${DEFAULT_POLL_INTERVAL_SECONDS})
       --no-renew                 Do not renew the lock while a wrapped program runs
   -o, --owner <name>             Who is taking the lock (default: $MUTEX_OWNER, else unowned)
+
+list:
+  -o, --owner <name>             Show only this owner's locks (default: $MUTEX_OWNER;
+                                 --owner '' names nobody, and lists every lock)
 
 prune:
       --dry-run                  List what would be deleted, and delete nothing

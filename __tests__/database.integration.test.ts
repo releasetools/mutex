@@ -164,6 +164,24 @@ databaseTest("DatabaseMutex PostgreSQL integration", () => {
     ).resolves.toMatchObject({ unlocked: true, outcome: "unlocked" });
   });
 
+  it("lists one owner's locks, and everything when nobody is named", async () => {
+    await mutex.acquireLock("alpha", "reason", "alice", 60);
+    await mutex.acquireLock("beta", "reason", "bob", 60);
+    await mutex.acquireLock("gamma", "reason", null, 60);
+
+    // One row back, so an unowned lock is nobody's rather than everybody's.
+    await expect(mutex.listLocks("alice")).resolves.toMatchObject([
+      { id: "alpha", owner: "alice" },
+    ]);
+    // Holding nothing is an answer rather than a failure.
+    await expect(mutex.listLocks("nobody")).resolves.toEqual([]);
+    expect((await mutex.listLocks()).map((lock) => lock.id)).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+  });
+
   it("returns contended after the one retry when another transaction holds the gate", async () => {
     const blocker = await admin.connect();
     try {

@@ -29,9 +29,14 @@ import {
 } from "../src/server/server.js";
 import { serverCommand } from "../src/server/lifecycle.js";
 import { TcpMutexStore } from "../src/server/tcp-store.js";
+import {
+  LIFECYCLE_PROTOCOL_VERSION,
+  PROTOCOL_VERSION,
+} from "../src/server/protocol.js";
 
 class FakeDatabase implements ServerDatabase {
   acquisitions: Array<{ name: string; expiration: number }> = [];
+  listed: Array<string | null> = [];
   closed = false;
   warmCount = 0;
 
@@ -61,8 +66,9 @@ class FakeDatabase implements ServerDatabase {
     return record(name);
   }
 
-  async listLocks(): Promise<LockRecord[]> {
-    return [record("listed")];
+  async listLocks(owner: string | null = null): Promise<LockRecord[]> {
+    this.listed.push(owner);
+    return [record("listed", owner)];
   }
 
   async pruneExpired(): Promise<LockRecord[]> {
@@ -164,13 +170,19 @@ describe("mutex TCP server", () => {
     expect((await client.renewLock("deploy", 30, "alice")).renewed).toBe(true);
     expect((await client.inspectLock("deploy"))?.id).toBe("deploy");
     expect((await client.listLocks())[0].id).toBe("listed");
+    expect((await client.listLocks("alice"))[0].owner).toBe("alice");
+    // Blank names nobody here too, so a client that cannot say null still asks
+    // for the whole table rather than for an owner called "".
+    expect((await client.listLocks(""))[0].id).toBe("listed");
+    // The filter is answered by the store, not by the client after the fact.
+    expect(database.listed).toEqual([null, "alice", null]);
     expect(await client.pruneExpired(true)).toEqual([]);
 
     const health = await client.health();
     expect(health).toMatchObject({
       profile: "pooled",
       bindAddress: profile.bindAddress,
-      protocolVersion: 1,
+      protocolVersion: 2,
       pool: { healthy: true, total: 1 },
     });
     await client.stop();
@@ -181,7 +193,7 @@ describe("mutex TCP server", () => {
     const lines = (await readFile(serverPaths(profile).logPath, "utf8"))
       .trimEnd()
       .split("\n");
-    expect(lines).toHaveLength(7);
+    expect(lines).toHaveLength(9);
     expect(lines[0]).toMatch(
       /^\|\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\|lock\|deploy%7Cprod%0Anow\|alice\|127\.0\.0\.1\|host%7Cname%0Aline\|$/,
     );
@@ -194,9 +206,99 @@ describe("mutex TCP server", () => {
     expect(lines[5]).toMatch(
       /^\|\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\|list\|-\|-\|127\.0\.0\.1\|host%7Cname%0Aline\|$/,
     );
-    expect(lines[6]).toContain("|prune|-|-|127.0.0.1|");
+    expect(lines[6]).toContain("|list|-|alice|127.0.0.1|");
+    expect(lines[7]).toContain("|list|-|-|127.0.0.1|");
+    expect(lines[8]).toContain("|prune|-|-|127.0.0.1|");
+  });
+
+  /**
+   * The remedy a version mismatch names is restarting the server, so the two
+   * commands that see it and fix it cannot themselves be gated on the version.
+   * Otherwise upgrading mutex strands the running server behind `kill`.
+   */
+  it("is stopped and inspected by a client of any version, but works locks only at its own", async () => {
+    const port = await unusedPort();
+    const profile: MutexProfile = {
+      name: "pooled",
+      mode: "server",
+      enabled: true,
+      bindAddress: `127.0.0.1:${port}`,
+      workingDir: temporary,
+    };
+    const running = runServer(
+      profile,
+      "not-used-by-the-fake",
+      new SilentLogger(),
+      () => new FakeDatabase(),
+    );
+    const client = new TcpMutexStore(
+      profile.bindAddress!,
+      500,
+      "host",
+      "pooled",
+    );
+    await waitForServer(client);
+
+    const stale = {
+      version: PROTOCOL_VERSION - 1,
+      profile: "pooled",
+      hostname: "a-client-built-from-older-code",
+      payload: {},
+    };
+
+    // Lock work still refuses, by name: a wrong answer is worse than none.
+    await expect(
+      rawRequest(profile.bindAddress!, { ...stale, operation: "list" }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: `protocol ${PROTOCOL_VERSION - 1} is incompatible with server protocol ${PROTOCOL_VERSION}`,
+    });
+
+    // Asking how it is, and telling it to stop, do not.
+    await expect(
+      rawRequest(profile.bindAddress!, { ...stale, operation: "health" }),
+    ).resolves.toMatchObject({
+      ok: true,
+      // Answered in the frozen dialect, so an older client accepts the reply.
+      version: LIFECYCLE_PROTOCOL_VERSION,
+      result: { profile: "pooled", protocolVersion: PROTOCOL_VERSION },
+    });
+    await expect(
+      rawRequest(profile.bindAddress!, { ...stale, operation: "stop" }),
+    ).resolves.toMatchObject({
+      ok: true,
+      version: LIFECYCLE_PROTOCOL_VERSION,
+      result: { stopping: true },
+    });
+
+    await running;
   });
 });
+
+/** A request in whatever shape the caller wants, version included. */
+async function rawRequest(
+  bindAddress: string,
+  request: Record<string, unknown>,
+): Promise<{ version: number; ok: boolean; error?: string; result?: unknown }> {
+  const split = bindAddress.lastIndexOf(":");
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({
+      host: bindAddress.slice(0, split),
+      port: Number(bindAddress.slice(split + 1)),
+    });
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.once("error", reject);
+    socket.once("connect", () => socket.write(`${JSON.stringify(request)}\n`));
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      socket.destroy();
+      resolve(JSON.parse(buffer.slice(0, newline)));
+    });
+  });
+}
 
 async function waitForServer(client: TcpMutexStore): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt++) {
