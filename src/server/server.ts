@@ -57,7 +57,11 @@ export async function runServer(
     logger,
   ) =>
     new DatabaseMutex(
-      { dbConnectionString: value, connectionTimeoutMillis: 10_000 },
+      {
+        dbConnectionString: value,
+        connectionTimeoutMillis: 10_000,
+        sslNegotiation: profile.sslNegotiation,
+      },
       logger,
     ),
 ): Promise<void> {

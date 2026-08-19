@@ -2,11 +2,13 @@
 
 Newest first. One line per change.
 
-## 1.3.2
+## 1.4.0
 
 - Connection strings that say `sslmode=require`, `prefer`, `verify-ca` or `allow` keep checking the server's certificate chain and hostname, and no longer print node-postgres' SSL deprecation warning on every command; upgrading to pg v9 can no longer weaken them without saying so. See [What `sslmode` means here](./README.md#what-sslmode-means-here).
 - A connection to a database that is not local and carries no TLS now warns, instead of sending the password and every lock in the clear silently.
-- A certificate rejected during connection now names the `sslmode` that demanded the check, instead of leaving the certificate error to explain itself.
+- A failed TLS handshake now names the setting that most likely caused it, instead of leaving a certificate error or a closed socket to explain itself.
+- An `sslnegotiation` in the connection string that is neither `postgres` nor `direct` is now rejected by name, rather than being silently ignored.
+- Profiles accept `ssl_negotiation = "direct"`, which removes a round trip from the TLS handshake and needs PostgreSQL 17 or newer; measured 26.5 ms per connection against a hosted database, with a benchmark runner to measure your own.
 - Pooled CLI commands now start without loading the PostgreSQL client or mutex server lifecycle code, reducing the fixed cost of each short-lived command; remote server status measured 81.5 ms instead of 316.6 ms for direct access.
 - Lock, unlock, and renew now normally complete in one PostgreSQL round trip without changing ownership, expiry, or fencing behavior; the remote pooled lock/unlock cycle measured 166.7 ms, down from 369.7 ms.
 - Added a reusable direct-versus-server benchmark runner that writes its results outside the repository by default.

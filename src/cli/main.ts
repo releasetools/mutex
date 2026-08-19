@@ -118,6 +118,7 @@ export async function main(argv: string[]): Promise<number> {
         {
           dbConnectionString: connection,
           expiration: options.expiration,
+          sslNegotiation: selected.profile.sslNegotiation,
         },
         log,
       );

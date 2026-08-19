@@ -143,7 +143,8 @@ describe("resolveConnection (SSL policy)", () => {
   const NO_ENV: NodeJS.ProcessEnv = {};
   const at = (query: string) =>
     `postgres://u:p@db.example.com:5432/locks${query}`;
-  const resolve = (url: string, env = NO_ENV) => resolveConnection(url, env);
+  const resolve = (url: string, options = {}, env = NO_ENV) =>
+    resolveConnection(url, options, env);
 
   it("does not let node-postgres emit its sslmode deprecation warning", () => {
     // The warning this whole module exists to answer. It fires at most once
@@ -223,16 +224,18 @@ describe("resolveConnection (SSL policy)", () => {
   });
 
   it("still reaches PGSSLMODE past an empty sslmode", () => {
-    const { config, posture } = resolve(at("?sslmode="), {
-      PGSSLMODE: "require",
-    });
+    const { config, posture } = resolve(
+      at("?sslmode="),
+      {},
+      { PGSSLMODE: "require" },
+    );
 
     expect(config.ssl).toEqual({});
     expect(posture).toMatchObject({ declared: "require", promoted: true });
   });
 
   it("reads PGSSLMODE when the connection string is silent", () => {
-    const { config, posture } = resolve(at(""), { PGSSLMODE: "require" });
+    const { config, posture } = resolve(at(""), {}, { PGSSLMODE: "require" });
 
     expect(config.ssl).toEqual({});
     expect(posture).toMatchObject({ declared: "require", promoted: true });
@@ -266,9 +269,11 @@ describe("resolveConnection (SSL policy)", () => {
 
     const { config } = resolve(`${url}&sslmode=require`);
 
-    const { ssl, ...rest } = config;
+    // `ssl` and `sslnegotiation` are the two fields mutex states itself.
+    const { ssl, sslnegotiation, ...rest } = config;
     expect(rest).toEqual(parseIntoClientConfig(url));
     expect(ssl).toEqual({});
+    expect(sslnegotiation).toBe("postgres");
   });
 
   it("still loads a private CA named by sslrootcert", async () => {
@@ -304,6 +309,52 @@ describe("resolveConnection (SSL policy)", () => {
 
     expect(config).toEqual({ connectionString: "/var/run/postgresql locks" });
   });
+
+  it("applies the negotiation it reports, from either source", () => {
+    // The pool config and the posture have to agree: reporting `direct` while
+    // leaving the field to whatever the URL parser happened to keep would make
+    // the diagnostics describe a connection nobody opened.
+    for (const [label, url, options] of [
+      ["from the URL", at("?sslmode=require&sslnegotiation=direct"), {}],
+      ["from a profile", at("?sslmode=require"), { sslNegotiation: "direct" }],
+    ] as const) {
+      const { config, posture } = resolve(url, options);
+
+      expect([label, config.sslnegotiation]).toEqual([label, "direct"]);
+      expect([label, posture.negotiation]).toEqual([label, "direct"]);
+    }
+  });
+
+  it("rejects an sslnegotiation neither mutex nor node-postgres knows", () => {
+    // mutex writes the field itself, so a typo would otherwise be overwritten
+    // and read as though direct negotiation were on.
+    expect(() => resolve(at("?sslmode=require&sslnegotiation=dircet"))).toThrow(
+      /Invalid sslnegotiation value/,
+    );
+  });
+
+  it("lets a profile override the connection string's sslnegotiation", () => {
+    const { config, posture } = resolve(
+      at("?sslmode=require&sslnegotiation=direct"),
+      {
+        sslNegotiation: "postgres",
+      },
+    );
+
+    expect(config).toMatchObject({ sslnegotiation: "postgres" });
+    expect(posture.negotiation).toBe("postgres");
+  });
+
+  it("takes sslnegotiation from the connection string when no profile says", () => {
+    const { config, posture } = resolve(
+      at("?sslmode=require&sslnegotiation=direct"),
+    );
+
+    // Rebuilding the URL must not drop it on the way to the pool, which
+    // nothing else would notice: the connection would simply be slower.
+    expect(config).toMatchObject({ sslnegotiation: "direct" });
+    expect(posture.negotiation).toBe("direct");
+  });
 });
 
 describe("explainSslFailure", () => {
@@ -311,7 +362,19 @@ describe("explainSslFailure", () => {
     declared: "require",
     effective: "verify-full",
     promoted: true,
+    negotiation: "postgres",
     ...over,
+  });
+
+  it("blames direct negotiation for a socket that closed mid-handshake", () => {
+    // Exactly what PostgreSQL 16 does when a client opens with TLS.
+    const error = new Error(
+      "Client network socket disconnected before secure TLS connection was established",
+    );
+
+    expect(
+      explainSslFailure(error, posture({ negotiation: "direct" })),
+    ).toContain("PostgreSQL 17");
   });
 
   it("explains a certificate rejection that the connection string never mentions", () => {

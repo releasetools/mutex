@@ -19,6 +19,24 @@ import type { PoolConfig } from "pg";
 import { parseIntoClientConfig } from "pg-connection-string";
 import { CONNECTION_ENV_VAR } from "./constants.js";
 
+/**
+ * How the TLS handshake starts. `direct` skips the SSLRequest packet and the
+ * server's one-byte reply, saving a round trip, and needs PostgreSQL 17 or
+ * newer: older servers read the TLS ClientHello as a malformed startup packet
+ * and hang up. node-postgres does not fall back.
+ */
+export type SslNegotiation = "postgres" | "direct";
+
+/**
+ * Pool configuration including the field `@types/pg` has not caught up with.
+ *
+ * node-postgres has read `sslnegotiation` since 8.16 and validates it in
+ * `connection-parameters.js`, but its types do not list it.
+ */
+export type NegotiablePoolConfig = PoolConfig & {
+  sslnegotiation?: SslNegotiation;
+};
+
 /** What mutex settled on, for the debug line and for failure hints. */
 export interface SslPosture {
   /** `sslmode` exactly as the connection string or `PGSSLMODE` wrote it. */
@@ -30,11 +48,12 @@ export interface SslPosture {
   effective: "verify-full" | "no-verify" | "plaintext" | "libpq";
   /** True when `declared` means something weaker elsewhere than it does here. */
   promoted: boolean;
+  negotiation: SslNegotiation;
 }
 
 export interface ResolvedConnection {
   /** Ready for `new Pool()`. */
-  config: PoolConfig;
+  config: NegotiablePoolConfig;
   posture: SslPosture;
   /**
    * Emitted once by the caller. Each one is an exposure worth interrupting
@@ -70,6 +89,7 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", ""]);
  */
 export function resolveConnection(
   connectionString: string,
+  options: { sslNegotiation?: SslNegotiation } = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedConnection {
   const warnings: string[] = [];
@@ -80,7 +100,12 @@ export function resolveConnection(
   if (!url) {
     return {
       config: { connectionString },
-      posture: { declared: null, effective: "plaintext", promoted: false },
+      posture: {
+        declared: null,
+        effective: "plaintext",
+        promoted: false,
+        negotiation: "postgres",
+      },
       warnings,
     };
   }
@@ -90,6 +115,8 @@ export function resolveConnection(
   // unrecognised one. Accepting it would make TLS mandatory where it used to
   // be absent, and would shadow `PGSSLMODE` with a value nobody wrote.
   const declared = url.searchParams.get("sslmode") || env.PGSSLMODE || null;
+  const negotiation =
+    options.sslNegotiation ?? readNegotiation(url) ?? "postgres";
 
   // An explicit `uselibpqcompat=true` is an informed request for libpq's
   // meanings. Overriding it would defeat the only escape hatch node-postgres
@@ -103,8 +130,11 @@ export function resolveConnection(
       );
     }
     return {
-      config: parseIntoClientConfig(connectionString) as PoolConfig,
-      posture: { declared, effective: "libpq", promoted: false },
+      config: applyNegotiation(
+        parseIntoClientConfig(connectionString) as NegotiablePoolConfig,
+        negotiation,
+      ),
+      posture: { declared, effective: "libpq", promoted: false, negotiation },
       warnings,
     };
   }
@@ -112,7 +142,9 @@ export function resolveConnection(
   // Parsing with `sslmode` removed leaves the certificate files to
   // node-postgres and keeps its deprecation warning from firing, since mutex
   // is about to state the same decision more precisely.
-  const config = parseIntoClientConfig(withoutSslMode(url)) as PoolConfig;
+  const config = parseIntoClientConfig(
+    withoutSslMode(url),
+  ) as NegotiablePoolConfig;
   const loaded = typeof config.ssl === "object" && config.ssl ? config.ssl : {};
   let effective: SslPosture["effective"];
 
@@ -146,11 +178,12 @@ export function resolveConnection(
   }
 
   return {
-    config,
+    config: applyNegotiation(config, negotiation),
     posture: {
       declared,
       effective,
       promoted: declared !== null && PROMOTED_MODES.has(declared),
+      negotiation,
     },
     warnings,
   };
@@ -158,21 +191,35 @@ export function resolveConnection(
 
 /** One line for `--verbose`, and the tail of a TLS failure. */
 export function describePosture(posture: SslPosture): string {
-  return `sslmode=${posture.declared ?? "unset"} applied as ${posture.effective}`;
+  const declared = posture.declared ?? "unset";
+  const negotiation =
+    posture.negotiation === "direct" ? ", direct SSL negotiation" : "";
+  return `sslmode=${declared} applied as ${posture.effective}${negotiation}`;
 }
 
 /**
  * Turns a TLS handshake failure into something that names its likely cause.
  *
- * Promoting `require` to `verify-full` rejects a private CA with a certificate
- * error that never mentions `sslmode`, so the setting responsible for it is
- * invisible from the message alone.
+ * Both failures worth explaining are silent about themselves: promoting
+ * `require` to `verify-full` rejects a private CA with a certificate error
+ * that never mentions `sslmode`, and direct negotiation against a server older
+ * than 17 only ever reports a socket that closed.
  */
 export function explainSslFailure(
   error: unknown,
   posture: SslPosture,
 ): string | null {
   const message = error instanceof Error ? error.message : String(error);
+
+  if (
+    posture.negotiation === "direct" &&
+    /socket disconnected|EPROTO|ECONNRESET|wrong version number/i.test(message)
+  ) {
+    return (
+      `Direct SSL negotiation is in use and needs PostgreSQL 17 or newer; older servers close the connection ` +
+      `exactly like this. Remove ssl_negotiation from the profile, or sslnegotiation from ${CONNECTION_ENV_VAR}, to rule it out.`
+    );
+  }
 
   if (
     posture.promoted &&
@@ -186,6 +233,20 @@ export function explainSslFailure(
   }
 
   return null;
+}
+
+/**
+ * States the negotiation on the configuration mutex hands to the pool.
+ *
+ * Writing it unconditionally is what keeps `config` and `posture` from
+ * disagreeing. Leaving it to whatever `parseIntoClientConfig` retained would
+ * make the diagnostics describe a connection nobody opened.
+ */
+function applyNegotiation(
+  config: NegotiablePoolConfig,
+  negotiation: SslNegotiation,
+): NegotiablePoolConfig {
+  return { ...config, sslnegotiation: negotiation };
 }
 
 /**
@@ -222,6 +283,28 @@ function withoutSslMode(url: URL): string {
     copy.host = "";
   }
   return copy.toString();
+}
+
+/**
+ * Reads `sslnegotiation` from the connection string, rejecting what neither
+ * mutex nor node-postgres understands.
+ *
+ * mutex writes this field itself, so an unrecognised value would otherwise be
+ * quietly overwritten - and a typo would read as "direct negotiation is on"
+ * while nothing had changed. node-postgres rejects the same values, so this
+ * only moves the complaint earlier.
+ */
+function readNegotiation(url: URL): SslNegotiation | null {
+  const value = url.searchParams.get("sslnegotiation");
+  if (!value) {
+    return null;
+  }
+  if (value !== "postgres" && value !== "direct") {
+    throw new Error(
+      `Invalid sslnegotiation value: "${value}". Valid values are "postgres" and "direct".`,
+    );
+  }
+  return value;
 }
 
 /** The `host` parameter wins over the authority, as it does in libpq. */
