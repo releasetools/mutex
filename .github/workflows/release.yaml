@@ -25,6 +25,15 @@ on:
 # Deny by default; each job grants only what it needs.
 permissions: {}
 
+env:
+  # The agent plugin is validated by installing it, so these decide what
+  # "it installs" means. Pinned rather than `latest`, because a release should
+  # not be gated on a client published that morning. Bump through review.
+  # renovate: datasource=npm depName=@anthropic-ai/claude-code
+  CLAUDE_CODE_VERSION: "2.1.235"
+  # renovate: datasource=npm depName=@openai/codex
+  CODEX_VERSION: "0.147.0"
+
 jobs:
   # Runs before anything is published, so a release that cannot be verified is
   # blocked rather than shipped and then reported.
@@ -502,3 +511,289 @@ jobs:
 
       - name: ⏳ Mock action - wait 5 seconds and then continue
         run: sleep 5
+
+  # The agent plugin carries a version of its own, because Claude Code and Codex
+  # install it from releasetools/agent-plugins rather than from a mutex tag. So
+  # most releases find it already published and stop here; a release that
+  # follows a change to `skills/`, `commands/` or the manifests publishes it.
+  #
+  # Assembly happens in this job, which holds no credentials, and publication in
+  # the next one, which holds a cross-repository write token and runs nothing
+  # from this repository. That split is the point: a token that can write to
+  # every consumer's plugin should never be in the same job as `npm ci`.
+  package_plugin:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # This job installs the client CLIs, which run their packages' own
+          # install scripts. Nothing here uses git after the checkout, so the
+          # token does not stay in .git/config where those scripts could read
+          # it.
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
+      # No `npm ci`. The packaging and the checks it runs are Node's standard
+      # library and nothing else, and the tests already ran in the publish job
+      # this depends on - so a release that could not be verified never gets
+      # this far.
+      - name: 📦 Assemble the standalone plugin
+        id: package
+        run: |
+          set -euo pipefail
+
+          npm run plugin:package -- --out "${RUNNER_TEMP}/plugin"
+
+          version="$(node -p "require('${RUNNER_TEMP}/plugin/.claude-plugin/plugin.json').version")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Assembled the mutex plugin ${version}"
+
+      - name: 📦 Install the pinned client CLIs
+        run: |
+          npm install --global \
+            "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+            "@openai/codex@${CODEX_VERSION}"
+
+      - name: ✅ Validate the plugin with Claude Code
+        run: claude plugin validate --strict "${RUNNER_TEMP}/plugin"
+
+      # Codex installs out of a marketplace rather than out of a directory, so
+      # the check needs one. A throwaway catalog here means a manifest Codex
+      # rejects fails before any token is minted, rather than after.
+      - name: ✅ Install the plugin with Codex
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          probe="${RUNNER_TEMP}/probe"
+          mkdir -p "${probe}/.agents/plugins" "${probe}/plugins" "$CODEX_HOME"
+          cp -R "${RUNNER_TEMP}/plugin" "${probe}/plugins/mutex"
+          node -e '
+            const fs = require("node:fs");
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/probe/.agents/plugins/marketplace.json`,
+              JSON.stringify({
+                name: "probe",
+                interface: { displayName: "probe" },
+                plugins: [{
+                  name: "mutex",
+                  source: { source: "local", path: "./plugins/mutex" },
+                  policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+                  category: "Developer Tools",
+                }],
+              }, null, 2));
+          '
+
+          codex plugin marketplace add "$probe"
+          codex plugin add mutex@probe
+
+          installed="$(codex plugin list --json | node -e '
+            const { installed } = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            const found = installed.find((row) => row.name === "mutex");
+            process.stdout.write(found ? found.version : "");
+          ')"
+          if [ "$installed" != "$VERSION" ]; then
+            echo "::error::Codex installed mutex '${installed}', but the assembled plugin is ${VERSION}"
+            exit 1
+          fi
+          echo "Codex installed mutex ${installed}"
+
+      # include-hidden-files, because the whole plugin hangs off .claude-plugin/
+      # and .codex-plugin/ and the default is to drop them silently.
+      - name: ⬆️ Upload the verified plugin
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutex-plugin
+          path: ${{ runner.temp }}/plugin
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  # Writes into releasetools/agent-plugins. It runs nothing out of this
+  # repository - no `npm ci`, no dependency of the Action or the CLI - only the
+  # marketplace's own checked-in publisher and the two pinned client CLIs,
+  # against a directory assembled and verified elsewhere.
+  #
+  # Installing those CLIs does run their packages' install scripts, so it
+  # happens before the token is minted, and the checkout is told not to keep
+  # the token in .git/config. The token's whole life on this runner is the
+  # publisher, the validators and signed-push.
+  publish_plugin:
+    needs: [publish, package_plugin]
+    runs-on: ubuntu-latest
+    permissions: {}
+    # One mutex publication at a time. A simultaneous publication of some other
+    # plugin is caught by signed-push instead, which commits against the target
+    # HEAD it read: the loser fails rather than overwriting, and re-running from
+    # the new HEAD converges.
+    concurrency:
+      group: publish-agent-plugin-mutex
+      cancel-in-progress: false
+    steps:
+      - name: ⬇️ Download the verified plugin
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mutex-plugin
+          path: plugin
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      # First, deliberately: this runs two third-party packages' install
+      # scripts, and the job has no cross-repository token yet for them to
+      # find. The cost is one npm install on a release that publishes nothing.
+      - name: 📦 Install the pinned client CLIs
+        run: |
+          npm install --global \
+            "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+            "@openai/codex@${CODEX_VERSION}"
+
+      # Scoped to the marketplace alone. The release App installs on several
+      # repositories; this token can write to exactly one of them.
+      #
+      # It needs Contents: write there. signed-push sends every file in the
+      # tree, so if GitHub ever refuses the commit over
+      # `.github/workflows/validate.yml`, the App needs Workflows: write as
+      # well - that file is republished unchanged on every publication.
+      - name: 🔑 Mint a token for the marketplace
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.GH_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: agent-plugins
+
+      - name: Checkout the marketplace
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository_owner }}/agent-plugins
+          ref: main
+          path: marketplace
+          token: ${{ steps.app-token.outputs.token }}
+          # The token is for this fetch and for signed-push, which takes it as
+          # an input. Nothing here runs git against the remote afterwards.
+          persist-credentials: false
+
+      # The publisher refuses a version that goes backwards and refuses to
+      # change a version somebody has already installed. An unchanged plugin is
+      # the ordinary case, and it writes nothing.
+      - name: 📚 Stage the publication
+        id: stage
+        env:
+          VERSION: ${{ needs.package_plugin.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          node marketplace/scripts/publish-plugin.mjs \
+            --root marketplace --plugin plugin --json > result.json
+          cat result.json
+
+          status="$(node -p 'require("./result.json").status')"
+          previous="$(node -p 'require("./result.json").previousVersion ?? ""')"
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          echo "previous=${previous}" >> "$GITHUB_OUTPUT"
+
+          if [ "$status" = "unchanged" ]; then
+            echo "::notice::mutex ${VERSION} is already in the marketplace; nothing to publish."
+          fi
+
+      - name: ✅ Check the cross-client invariants
+        if: steps.stage.outputs.status == 'published'
+        run: node marketplace/scripts/validate-marketplaces.mjs --root marketplace
+
+      - name: ✅ Validate the staged marketplace with Claude Code
+        if: steps.stage.outputs.status == 'published'
+        run: claude plugin validate --strict marketplace
+
+      # The last check before anyone else can get this: install mutex the way a
+      # user installs it, out of the tree that is about to be committed.
+      - name: ✅ Install mutex@releasetools from the staged marketplace
+        if: steps.stage.outputs.status == 'published'
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude
+          VERSION: ${{ needs.package_plugin.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$CODEX_HOME" "$CLAUDE_CONFIG_DIR"
+          staged="${PWD}/marketplace"
+
+          claude plugin marketplace add "$staged"
+          claude plugin install mutex@releasetools
+          claude_version="$(claude plugin list --json | node -e '
+            const rows = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            const found = rows.find((row) => row.id === "mutex@releasetools");
+            process.stdout.write(found ? found.version : "");
+          ')"
+
+          codex plugin marketplace add "$staged"
+          codex plugin add mutex@releasetools
+          codex_version="$(codex plugin list --json | node -e '
+            const { installed } = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+            const found = installed.find((row) => row.name === "mutex");
+            process.stdout.write(found ? found.version : "");
+          ')"
+
+          if [ "$claude_version" != "$VERSION" ] || [ "$codex_version" != "$VERSION" ]; then
+            echo "::error::Publishing mutex ${VERSION}, but Claude Code installed '${claude_version}' and Codex installed '${codex_version}'"
+            exit 1
+          fi
+          echo "Both clients installed mutex ${VERSION} from the staged marketplace"
+
+      # The whole tree, pruned: the marketplace is a generated repository, and
+      # a file left behind by a plugin that was withdrawn is a file an agent
+      # still reads. force-tags is off, so mutex-v<version> is created once and
+      # a re-run over an existing version leaves the tag where it is.
+      - name: 🔏 Publish the marketplace, signed
+        id: marketplace
+        if: steps.stage.outputs.status == 'published'
+        uses: releasetools/actions/signed-push@e03d8631693c67061fb9d1216cf23b1c370a992c # v0.0.6
+        with:
+          source-dir: marketplace
+          target-repo: ${{ github.repository_owner }}/agent-plugins
+          target-branch: main
+          headline: "publish mutex v${{ needs.package_plugin.outputs.version }}"
+          body: |
+            Source-Commit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}>
+          prune: "true"
+          tags: mutex-v${{ needs.package_plugin.outputs.version }}
+          force-tags: "false"
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: 📝 Marketplace summary
+        env:
+          STATUS: ${{ steps.stage.outputs.status }}
+          PREVIOUS: ${{ steps.stage.outputs.previous }}
+          VERSION: ${{ needs.package_plugin.outputs.version }}
+          COMMIT_URL: ${{ steps.marketplace.outputs.commit-url }}
+          COMMIT_SHA: ${{ steps.marketplace.outputs.commit-sha }}
+        run: |
+          {
+            if [ "$STATUS" = "published" ]; then
+              echo "## Published the mutex plugin ${VERSION}"
+              echo
+              echo "- \`mutex-v${VERSION}\` in [releasetools/agent-plugins](https://github.com/${GITHUB_REPOSITORY_OWNER}/agent-plugins), commit [\`${COMMIT_SHA:0:12}\`](${COMMIT_URL})"
+              echo "- previously published: ${PREVIOUS:-none}"
+            else
+              echo "## Agent plugin: nothing to publish"
+              echo
+              echo "The marketplace already carries mutex ${VERSION}. Bump the version in both plugin manifests to publish a new one."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

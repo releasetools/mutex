@@ -471,11 +471,19 @@ fi
 
 One directory serves every agent. Claude Code and Codex install it as a plugin and read `skills/` through the manifests in `.claude-plugin/` and `.codex-plugin/`. Hermes, Gemini and Antigravity discover skills by walking a directory under their own home, so they get a copy of the same files.
 
+Installing the plugin installs no `mutex` command and supplies no connection string. It runs the CLI, so [install that first](#quickstart) - the short path is below - and set `MUTEX_DATABASE_URL` yourself; the plugin never reads its value. `/mutex:preflight` reports whether the lock table is reachable, and what is missing when it is not.
+
+```shell
+mise use --global node@24 \
+  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
+mutex version
+```
+
 ### Claude Code
 
 ```shell
-claude plugin marketplace add releasetools/mutex
-claude plugin install mutex@releasetools-mutex
+claude plugin marketplace add releasetools/agent-plugins
+claude plugin install mutex@releasetools
 ```
 
 The same two steps work as `/plugin marketplace add` and `/plugin install` inside a session.
@@ -483,9 +491,11 @@ The same two steps work as `/plugin marketplace add` and `/plugin install` insid
 ### Codex
 
 ```shell
-codex plugin marketplace add releasetools/mutex
-codex plugin add mutex@releasetools-mutex
+codex plugin marketplace add releasetools/agent-plugins
+codex plugin add mutex@releasetools
 ```
+
+Both install from [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which carries a copy of `plugins/mutex/` written by this repository's release rather than a pointer back at it. So a marketplace install is a published plugin version, independent of what `main` happens to hold, and one marketplace serves every releasetools plugin instead of one per repository.
 
 ### Hermes, Gemini and Antigravity
 
@@ -580,11 +590,16 @@ Worth it if you keep long locks and like seeing them; the hook covers the case t
 ### Working on the plugin
 
 ```shell
-npm run plugin:validate   # manifests, skill front matter, hook targets
+npm run plugin:validate   # manifests, skill front matter, hook and command targets
 npm run plugin:install    # copy the skill into every agent installed here
+npm run plugin:package -- --out /tmp/mutex-plugin   # what the marketplace publishes
 ```
 
 `npm test` runs the validation too. The rule it exists to keep: `skills/` is the only copy of any skill, and the two manifests agree on the version, so no two agents can read different instructions out of the same repository.
+
+To try a change before it is published, point the agent at the checkout instead of the marketplace - `claude --plugin-dir .`, or `codex plugin marketplace add .` from a directory carrying a catalog of your own.
+
+The plugin's version lives in both manifests and is bumped by hand, independently of the Action and the CLI: it changes when `skills/`, `commands/`, `hooks/` or [PLUGIN.md](./PLUGIN.md) change, and not because a release happened. Every release assembles the plugin, and publishes it to the marketplace only when that version is not already there - so bumping the manifests is what publishes, and cutting a release is when it goes out.
 
 ## Development
 

@@ -60,25 +60,18 @@ function plugin(overrides: Record<string, unknown> = {}) {
     ...MANIFEST,
     skills: "./skills/",
     commands: "./commands/",
+    interface: {
+      displayName: "mutex",
+      shortDescription: "Distributed locks",
+      longDescription: "Distributed locks for guarded operations",
+      category: "Developer Tools",
+      ...((overrides.face as object) ?? {}),
+    },
     ...((overrides.codex as object) ?? {}),
   };
 
   write(".claude-plugin/plugin.json", JSON.stringify(claude));
   write(".codex-plugin/plugin.json", JSON.stringify(codex));
-  write(
-    ".claude-plugin/marketplace.json",
-    JSON.stringify({
-      name: "releasetools-mutex",
-      owner: { name: "releasetools" },
-      plugins: [
-        {
-          name: "mutex",
-          source: "./",
-          ...((overrides.entry as object) ?? {}),
-        },
-      ],
-    }),
-  );
   write(
     `skills/${overrides.skillDirectory ?? "mutex"}/SKILL.md`,
     `---\nname: ${overrides.skillName ?? "mutex"}\ndescription: Takes locks\n---\n\n# mutex\n`,
@@ -281,11 +274,46 @@ describe("validateAgentPlugins", () => {
     ]);
   });
 
-  it("keeps the catalog from pinning a version the manifest owns", () => {
-    const root = build({ entry: { version: "0.0.9" } });
+  /**
+   * The commands name the helper by an absolute path the host substitutes, so
+   * a helper that is not in the published tree fails at the moment it is run
+   * and nowhere earlier - inside a directory the user has never heard of.
+   */
+  it("catches a command naming a helper that is not there", () => {
+    const root = build();
+    fs.writeFileSync(
+      path.join(root, "commands", "lock.md"),
+      "---\nname: lock\ndescription: Take a lock\nallowed-tools: Bash\n---\n" +
+        'Run `node "${CLAUDE_PLUGIN_ROOT}/skills/mutex/moved.mjs" lock`.\n',
+    );
+
     expect(validateAgentPlugins({ root }).errors).toEqual([
-      expect.stringContaining("must not pin a plugin version"),
+      expect.stringContaining("commands/lock.md references a missing file"),
     ]);
+  });
+
+  it("catches a commands directory that is not there at all", () => {
+    const root = build();
+    fs.rmSync(path.join(root, "commands"), { recursive: true });
+
+    expect(validateAgentPlugins({ root }).errors).toEqual([
+      expect.stringContaining("commands/ is missing"),
+    ]);
+  });
+
+  /**
+   * Codex requires the interface block, and `category` is also the only place
+   * the published Codex catalog entry can get a category from.
+   */
+  it("catches a Codex manifest with nothing to display", () => {
+    expect(
+      validateAgentPlugins({ root: build({ face: { category: "" } }) }).errors,
+    ).toEqual([expect.stringContaining("interface.category is missing")]);
+
+    expect(
+      validateAgentPlugins({ root: build({ codex: { interface: undefined } }) })
+        .errors,
+    ).toEqual([expect.stringContaining("has no interface block")]);
   });
 });
 

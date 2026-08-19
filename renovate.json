@@ -16,5 +16,16 @@
       "matchDepNames": ["releasetools/mutex"],
       "pinDigests": false
     }
+  ],
+  "customManagers": [
+    {
+      "description": "The Claude Code and Codex CLI versions the release pins to validate and install the agent plugin. They are not dependencies of anything, so no manager sees them without being told.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\w+: \"(?<currentValue>[^\"]+)\""
+      ],
+      "versioningTemplate": "npm"
+    }
   ]
 }

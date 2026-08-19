@@ -44,8 +44,14 @@ const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const PLUGIN_NAME = "mutex";
 const CLAUDE_MANIFEST = ".claude-plugin/plugin.json";
 const CODEX_MANIFEST = ".codex-plugin/plugin.json";
-const MARKETPLACE = ".claude-plugin/marketplace.json";
 const HOOKS = "hooks/hooks.json";
+/** Required by Codex, and the source of the published catalog entry. */
+const CODEX_INTERFACE = [
+  "displayName",
+  "shortDescription",
+  "longDescription",
+  "category",
+];
 
 /**
  * Parses JSON, and refuses a repeated key.
@@ -171,10 +177,25 @@ export function validateAgentPlugins({ root = PACKAGE_ROOT, expected } = {}) {
     errors.push(`${CODEX_MANIFEST} must set "skills": "./skills/"`);
   }
 
+  // Codex keeps the display metadata Claude Code puts at the top level of its
+  // manifest under `interface`, and requires it. `category` is also the one
+  // field the published catalog entry cannot derive from anywhere else.
+  if (codex) {
+    const face = codex.interface;
+    if (typeof face !== "object" || face === null) {
+      errors.push(`${CODEX_MANIFEST} has no interface block`);
+    } else {
+      for (const field of CODEX_INTERFACE) {
+        if (typeof face[field] !== "string" || face[field].trim() === "") {
+          errors.push(`${CODEX_MANIFEST} interface.${field} is missing`);
+        }
+      }
+    }
+  }
+
   validateSkills(root, errors);
   validateCommands(root, codex, errors);
   validateNoProductCopies(root, errors);
-  validateMarketplace(root, load(MARKETPLACE), errors);
   validateHooks(root, errors);
 
   return { version: versions.codex ?? versions.claude ?? null, errors };
@@ -246,12 +267,12 @@ function validateSkills(root, errors) {
  */
 function validateCommands(root, codex, errors) {
   const directory = path.join(root, "commands");
-  if (!fs.existsSync(directory)) {
-    return;
-  }
-
   if (codex && codex.commands !== "./commands/") {
     errors.push(`${CODEX_MANIFEST} must set "commands": "./commands/"`);
+  }
+  if (!fs.existsSync(directory)) {
+    errors.push("commands/ is missing");
+    return;
   }
 
   const names = [];
@@ -283,6 +304,7 @@ function validateCommands(root, codex, errors) {
     if (text.includes("agent-lock.mjs") && !/^allowed-tools:/m.test(front[1])) {
       errors.push(`commands/${entry} runs the helper without allowed-tools`);
     }
+    validatePluginRoot(root, `commands/${entry}`, text, errors);
   }
 
   const help = names.includes("help")
@@ -328,36 +350,6 @@ function validateNoProductCopies(root, errors) {
   }
 }
 
-/** The catalog entry, which must not pin a version of its own. */
-function validateMarketplace(root, marketplace, errors) {
-  if (!marketplace) {
-    return;
-  }
-  const plugins = marketplace.plugins;
-  if (!Array.isArray(plugins)) {
-    errors.push(`${MARKETPLACE} plugins must be an array`);
-    return;
-  }
-  const entries = plugins.filter((entry) => entry?.name === PLUGIN_NAME);
-  if (entries.length !== 1) {
-    errors.push(
-      `${MARKETPLACE} must contain exactly one '${PLUGIN_NAME}' entry`,
-    );
-  }
-  for (const entry of entries) {
-    if ("version" in entry) {
-      // Two places to bump is one place to forget, and the one that gets
-      // forgotten is the one nobody reads.
-      errors.push(
-        `${MARKETPLACE} must not pin a plugin version; ${CLAUDE_MANIFEST} owns it`,
-      );
-    }
-    if (entry.source !== "./") {
-      errors.push(`${MARKETPLACE} entry source must be './'`);
-    }
-  }
-}
-
 /**
  * Hooks that point at something.
  *
@@ -392,12 +384,25 @@ function validateHooks(root, errors) {
   }
 
   for (const command of commands) {
-    for (const [, reference] of command.matchAll(
-      /\$\{CLAUDE_PLUGIN_ROOT\}\/([^"'\s]+)/g,
-    )) {
-      if (!fs.existsSync(path.join(root, reference))) {
-        errors.push(`${HOOKS} references a missing file: ${reference}`);
-      }
+    validatePluginRoot(root, HOOKS, command, errors);
+  }
+}
+
+/**
+ * `${CLAUDE_PLUGIN_ROOT}/...` has to name something that shipped.
+ *
+ * This is the packaging mistake with no symptom: the plugin installs, the
+ * command appears in the menu, and running it reports that node cannot find a
+ * file inside a directory the user has never heard of. The artifact is
+ * assembled from a copy list, so a helper that moves without the list moving
+ * with it fails exactly here and nowhere earlier.
+ */
+function validatePluginRoot(root, label, text, errors) {
+  for (const [, reference] of text.matchAll(
+    /\$\{CLAUDE_PLUGIN_ROOT\}\/([^"'\s:)]+)/g,
+  )) {
+    if (!fs.existsSync(path.join(root, reference))) {
+      errors.push(`${label} references a missing file: ${reference}`);
     }
   }
 }
