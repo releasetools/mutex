@@ -58,11 +58,19 @@ or user-owned npm prefix keeps the whole installation rootless.
 
 #### With mise
 
-mise can manage both the package and its Node runtime. Its
-[npm backend](https://mise.jdx.dev/dev-tools/backends/npm.html) does not add
-Node automatically, so declare both tools. Because mutex is still below mise's
-default download-count threshold, explicitly approve this package; the
-exception does not apply to its dependencies:
+mise's [npm backend](https://mise.jdx.dev/dev-tools/backends/npm.html) can
+install mutex without npm, but it does not add the Node runtime that mutex needs.
+If your global mise configuration already provides Node.js 24 or newer, install
+only mutex. Because the package is still below mise's default download-count
+threshold, explicitly approve it; the exception does not apply to dependencies:
+
+```shell
+mise use --global \
+  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
+mutex version
+```
+
+For a new mise setup, install the runtime and mutex together:
 
 ```shell
 mise use --global node@24 \
@@ -70,12 +78,29 @@ mise use --global node@24 \
 mutex version
 ```
 
-`allow_low_downloads` requires mise 2026.8.8 or newer. `mise upgrade` refreshes
-tools configured with the moving `latest` version; use an exact package version
-instead when the installation must stay pinned:
+The second command makes Node.js 24 the global mise default. A project-local
+configuration can override that version; force the supported runtime when a
+project selects an older one:
 
 ```shell
-mise use --global node@24 \
+mise exec node@24 -- mutex version
+```
+
+With mise activated, `mutex` is available directly. Without shell activation,
+run it through `mise exec -- mutex`. `allow_low_downloads` requires mise 2026.8.8
+or newer.
+
+Update only a moving mutex installation with:
+
+```shell
+mise upgrade 'npm:@releasetools/mutex'
+```
+
+Use an exact package version instead of `latest` when the installation must stay
+pinned:
+
+```shell
+mise use --global \
   'npm:@releasetools/mutex[allow_low_downloads=true]@1.3.1'
 ```
 
