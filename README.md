@@ -453,29 +453,36 @@ discoverable rather than something you have to describe:
 
 | Command                        |                                                      |
 | ------------------------------ | ---------------------------------------------------- |
-| `/mutex:check`                 | Can mutex reach its lock table here, and if not, why |
+| `/mutex:preflight`             | Can mutex reach its lock table here, and if not, why |
 | `/mutex:lock <id> [reason]`    | Take a lock, an hour by default                      |
 | `/mutex:status [id]`           | Who holds a lock, and what this session holds        |
 | `/mutex:extend <id> [seconds]` | Extend a lock before it lapses                       |
 | `/mutex:unlock <id>`           | Hand it back                                         |
 | `/mutex:help`                  | What the plugin does, and what it will not           |
 
-Each one defers to the skill rather than restating it, so there is one set of
-rules and one place to change them. There is deliberately no command for
-starting the pooled server, choosing a profile or pruning expired locks: those
-are yours to run, and the plugin says so instead of doing them.
+Each one is a single deterministic invocation rather than a description of what
+to do, because the difference is measured in tens of seconds. `/mutex:preflight`
+and `/mutex:status` run their command before the model is asked anything, so
+they cost one turn and no tool call; the rest name the exact command and say
+what to report. They consult the skill only when an answer comes back that a
+plain report does not cover, and nothing runs a preflight before every
+operation - the operation itself reports a missing connection string perfectly
+well.
+
+There is deliberately no command for starting the pooled server, choosing a
+profile or pruning expired locks: those are yours to run, and the plugin says so
+instead of doing them.
 
 Claude Code and Codex read `commands/` as it stands. Gemini reads TOML, so the
-installer renders the same files into `~/.gemini/commands/mutex/` on the way in
-
-- one source, translated, rather than two that drift. Hermes has no command
-  surface, and gets the skill.
+installer renders the same files into `~/.gemini/commands/mutex/` on the way in:
+one source, translated, rather than two that drift. Hermes has no command
+surface, and gets the skill.
 
 ### What the agent does with it
 
 | Step        |                                                                                                                                     |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `preflight` | Once per session: can mutex reach the table here, through a profile or `$MUTEX_DATABASE_URL`. If neither, it says so and stops      |
+| `preflight` | Can mutex reach the table here, through a profile or `$MUTEX_DATABASE_URL`. Run when something fails, not before every lock         |
 | `lock`      | An hour by default rather than the CLI's minute, waiting 30 seconds rather than the whole lease, under an owner naming this session |
 | `renew`     | Only after asking. Reminders arrive on their own; the decision to extend does not                                                   |
 | `unlock`    | With the owner it recorded, so it releases what it took and nothing else                                                            |
@@ -484,7 +491,7 @@ An hour because a conversation is not a CI step: it does not know how long it wi
 
 ### Knowing when the lock runs out
 
-Locks are taken under a name that says who holds them: the agent, the host and the session, as in `claude@workstation:22ca1fea-a521-4d5c-ad62-b6d05809f8ef`. It is derived rather than generated, so it is the same name every time that session asks for it - which is what lets a lock be released after the note of it is lost, and what stops one session from releasing another's. `$MUTEX_OWNER` overrides it. Where nothing in the environment names a session the owner is the agent and host alone, and `/mutex:check` says so, because then every session on that machine can take the others' locks back.
+Locks are taken under a name that says who holds them: the agent, the host and the session, as in `claude@workstation:22ca1fea-a521-4d5c-ad62-b6d05809f8ef`. It is derived rather than generated, so it is the same name every time that session asks for it - which is what lets a lock be released after the note of it is lost, and what stops one session from releasing another's. `$MUTEX_OWNER` overrides it. Where nothing in the environment names a session the owner is the agent and host alone, and `/mutex:preflight` says so, because then every session on that machine can take the others' locks back.
 
 A lock nobody is watching expires quietly, so the helper writes down what it took - the id, the owner and the expiry - in `${XDG_STATE_HOME:-$HOME/.local/state}/releasetools-mutex/agent-locks.json`. Nothing in it is secret, and it is a reminder rather than a source of truth: PostgreSQL still holds the locks, and `mutex status <id>` still names the owner needed to release one.
 

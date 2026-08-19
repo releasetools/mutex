@@ -92,16 +92,26 @@ function filesUnder(root, prefix = "") {
  *
  * The markdown is the original: Claude Code and Codex both read `commands/`
  * directly, and only Gemini needs a translation. Keeping that translation
- * mechanical - front matter to `description`, body to `prompt`, `$ARGUMENTS` to
- * `{{args}}` - is what stops the two from drifting into different instructions.
+ * mechanical - front matter to `description`, body to `prompt`, `$ARGUMENTS`
+ * to `{{args}}`, `!`cmd`` to `!{cmd}`, and the plugin root to the path the
+ * skill lands at - is what stops the two from drifting into different
+ * instructions.
  */
-export function renderGeminiCommand(markdown) {
+export function renderGeminiCommand(markdown, options = {}) {
   const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(markdown);
   const description = front
     ? (/^description:\s*(.+)$/m.exec(front[1])?.[1]?.trim() ?? "")
     : "";
   const body = (front ? markdown.slice(front[0].length) : markdown).trim();
   const prompt = body
+    // Claude Code substitutes the plugin root and runs `!`cmd`` before the
+    // model sees the prompt. Gemini spells that `!{cmd}` and has no plugin
+    // root, so the path the skill will actually sit at is written in.
+    .replaceAll(
+      "${CLAUDE_PLUGIN_ROOT}/skills/" + (options.skill ?? "mutex"),
+      options.skillDir ?? ".",
+    )
+    .replace(/!`([^`]*)`/g, "!{$1}")
     .replaceAll("$ARGUMENTS", "{{args}}")
     // A TOML basic multi-line string, so a backslash or a stray triple quote in
     // the prose cannot end it early or be read as an escape.
@@ -116,7 +126,7 @@ export function renderGeminiCommand(markdown) {
  * home. Copied bytes and rendered commands go through the same map, so
  * `--check` reports staleness for both without knowing the difference.
  */
-export function plannedFiles(root, skill, target) {
+export function plannedFiles(root, skill, target, agentHome = "") {
   const planned = new Map();
 
   const source = path.join(root, "skills", skill);
@@ -142,6 +152,7 @@ export function plannedFiles(root, skill, target) {
         Buffer.from(
           renderGeminiCommand(
             fs.readFileSync(path.join(commands, entry), "utf8"),
+            { skill, skillDir: path.join(agentHome, target.skills, skill) },
           ),
         ),
       );
@@ -202,7 +213,7 @@ export function installAgentSkills(options = {}) {
       continue;
     }
 
-    const planned = plannedFiles(root, skill, target);
+    const planned = plannedFiles(root, skill, target, agentHome);
     const changed = [...planned]
       .filter(([relative, contents]) => {
         try {

@@ -136,7 +136,14 @@ describe("the repository's own packaging", () => {
       .map((entry) => entry.replace(/\.md$/, ""));
 
     expect(commands).toEqual(
-      expect.arrayContaining(["lock", "unlock", "extend", "status", "help"]),
+      expect.arrayContaining([
+        "preflight",
+        "lock",
+        "unlock",
+        "extend",
+        "status",
+        "help",
+      ]),
     );
     // Starting or stopping the pooled server, choosing profiles and deleting
     // expired locks stay the user's to run, so they get no command.
@@ -247,6 +254,23 @@ describe("validateAgentPlugins", () => {
     const root = build({ helpLists: "/mutex:something-else" });
     expect(validateAgentPlugins({ root }).errors).toEqual([
       expect.stringContaining("help.md does not list /mutex:lock"),
+    ]);
+  });
+
+  /**
+   * The commands exist to be one deterministic invocation. One that runs the
+   * helper without declaring it asks for permission every time, which is the
+   * stall they were written to remove.
+   */
+  it("catches a command that runs the helper without declaring it", () => {
+    const root = build();
+    fs.writeFileSync(
+      path.join(root, "commands", "lock.md"),
+      "---\nname: lock\ndescription: Take a lock\n---\n\nRun agent-lock.mjs lock.\n",
+    );
+
+    expect(validateAgentPlugins({ root }).errors).toEqual([
+      expect.stringContaining("runs the helper without allowed-tools"),
     ]);
   });
 
@@ -405,6 +429,17 @@ describe("installAgentSkills", () => {
     expect(lock).toMatch(/^description = "/);
     expect(lock).toContain("{{args}}");
     expect(lock).not.toContain("$ARGUMENTS");
+
+    // Nothing Claude-only survives: the plugin root becomes the path the skill
+    // was installed at, and pre-execution becomes Gemini's own syntax.
+    for (const file of fs.readdirSync(rendered)) {
+      const toml = fs.readFileSync(path.join(rendered, file), "utf8");
+      expect(toml).not.toContain("CLAUDE_PLUGIN_ROOT");
+      expect(toml).not.toMatch(/!`/);
+      if (toml.includes("agent-lock.mjs")) {
+        expect(toml).toContain(path.join(root, ".gemini/skills/mutex"));
+      }
+    }
   });
 
   it("does not give Hermes commands it cannot read", () => {

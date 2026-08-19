@@ -278,6 +278,11 @@ function validateCommands(root, codex, errors) {
     if (!/^description:\s*\S/m.test(front[1])) {
       errors.push(`commands/${entry} has no description`);
     }
+    // A command that runs the helper without saying so asks the user for
+    // permission every time, which is the stall these commands exist to avoid.
+    if (text.includes("agent-lock.mjs") && !/^allowed-tools:/m.test(front[1])) {
+      errors.push(`commands/${entry} runs the helper without allowed-tools`);
+    }
   }
 
   const help = names.includes("help")
@@ -367,7 +372,9 @@ function validateHooks(root, errors) {
   }
   let hooks;
   try {
-    hooks = JSON.parse(fs.readFileSync(file, "utf8"));
+    // The same rule the manifests get: a repeated key here would resolve
+    // last-wins and hide whichever hook was meant.
+    hooks = parseStrictJson(fs.readFileSync(file, "utf8"));
   } catch (error) {
     errors.push(`invalid JSON in ${HOOKS}: ${error.message}`);
     return;

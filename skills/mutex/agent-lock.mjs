@@ -412,12 +412,16 @@ export function runMutex(args, options = {}) {
 /**
  * Which profile mutex would use, for the report only.
  *
- * A deliberately small reader for three keys, and best-effort by design: it
+ * A deliberately small reader for four keys, and best-effort by design: it
  * decides what the report *says*, never what it concludes. The verdict below
  * comes from running a command, because a profiles file that parses is not the
  * same as a database that answers.
+ *
+ * `requested` is `-p`, which selects a profile for one command without
+ * enabling it - so a preflight run that way has to report the profile it
+ * actually used, not the one that happens to be enabled.
  */
-export function readEnabledProfile(file) {
+export function readEnabledProfile(file, requested = null) {
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
@@ -425,6 +429,7 @@ export function readEnabledProfile(file) {
     return null;
   }
 
+  const profiles = [];
   let current = null;
   let enabled = null;
   for (const line of text.split(/\r?\n/)) {
@@ -437,6 +442,7 @@ export function readEnabledProfile(file) {
         bindAddress: null,
         sslNegotiation: null,
       };
+      profiles.push(current);
       continue;
     }
     if (!current) {
@@ -458,6 +464,10 @@ export function readEnabledProfile(file) {
     } else if (key === "enabled" && value === "true") {
       enabled = current;
     }
+  }
+
+  if (requested) {
+    return profiles.find(({ name }) => name === requested) ?? null;
   }
   return enabled;
 }
@@ -481,11 +491,12 @@ export function preflight(options = {}) {
       : path.join(home, ".config", "releasetools-mutex"),
     "profiles.toml",
   );
-  const profile = readEnabledProfile(profilesPath);
+  const profile = readEnabledProfile(profilesPath, options.profile ?? null);
   const context = {
     profilesPath,
     profilesFile: fs.existsSync(profilesPath),
     profile,
+    requestedProfile: options.profile ?? null,
     databaseUrl: Boolean(env.MUTEX_DATABASE_URL),
     owner: resolveOwner(env, options.host ?? os.hostname()),
     session: sessionId(env),
@@ -515,7 +526,9 @@ export function preflight(options = {}) {
       reason: "ready",
       mode: profile?.mode ?? "direct",
       message: profile
-        ? `mutex answered through the '${profile.name}' profile (${profile.mode})`
+        ? `mutex answered through the '${profile.name}' profile (${profile.mode})${
+            options.profile ? ", selected with -p" : ""
+          }`
         : "mutex answered directly, using $MUTEX_DATABASE_URL",
       locks: Array.isArray(probe.json?.locks) ? probe.json.locks.length : null,
       ...context,
@@ -582,7 +595,11 @@ function describeExpiry(entry, now = Date.now()) {
   if (left === null) {
     return entry.expiresAt ?? "(unknown)";
   }
-  return `${entry.expiresAt} (in ${formatRemaining(left)})`;
+  // formatRemaining says "ago" itself once the expiry has passed, so only a
+  // future one takes "in" - otherwise it reads "in 31h 38m ago".
+  return left >= 0
+    ? `${entry.expiresAt} (in ${formatRemaining(left)})`
+    : `${entry.expiresAt} (${formatRemaining(left)})`;
 }
 
 function reportMissingCli(options) {
@@ -871,7 +888,85 @@ export function commandUnlock(id, options = {}) {
   return result.status;
 }
 
-/** What this machine thinks it holds, and for how much longer. */
+/**
+ * What is held, from the table rather than from the local note.
+ *
+ * One round trip, and it answers the question a person actually asks - "what
+ * am I holding?" - by splitting the list on this session's own name. The local
+ * record cannot answer it: a lock taken from another terminal, or by the
+ * Action, is just as much in the way.
+ */
+export function commandStatus(identifier, options = {}) {
+  const env = options.env ?? process.env;
+  const stdout = options.stdout ?? process.stdout;
+  const now = options.now ?? Date.now();
+  const mine = resolveOwner(env, options.host ?? os.hostname());
+  const profile = options.profile ? ["-p", options.profile] : [];
+
+  if (identifier) {
+    const result = runMutex(
+      ["status", identifier, "--json", ...profile],
+      options,
+    );
+    if (result.missing) {
+      return reportMissingCli(options);
+    }
+    const record = result.json?.lock ?? null;
+    if (options.json) {
+      write(
+        stdout,
+        JSON.stringify({ ...(result.json ?? {}), owner: mine }, null, 2),
+      );
+      return result.status;
+    }
+    write(
+      stdout,
+      record
+        ? `${identifier}: ${record.expired ? "expired" : "held"} by ${
+            record.owner === mine
+              ? "you"
+              : (record.owner ?? "nobody in particular")
+          }, ${describeExpiry({ expiresAt: record.expiresAt }, now)}${
+            record.reason ? ` - "${record.reason}"` : ""
+          }`
+        : `${identifier}: not held.`,
+    );
+    return result.status;
+  }
+
+  const result = runMutex(["list", "--json", ...profile], options);
+  if (result.missing) {
+    return reportMissingCli(options);
+  }
+  const locks = Array.isArray(result.json?.locks) ? result.json.locks : [];
+  const yours = locks.filter((lock) => lock.owner === mine);
+  const others = locks.filter((lock) => lock.owner !== mine);
+
+  if (options.json) {
+    write(stdout, JSON.stringify({ owner: mine, yours, others }, null, 2));
+    return result.status;
+  }
+
+  const line = (lock) =>
+    `  ${lock.id}  ${lock.expired ? "expired" : "held"}` +
+    `${lock.owner && lock.owner !== mine ? ` by ${lock.owner}` : ""}` +
+    `, ${describeExpiry(lock, now)}${lock.reason ? ` - "${lock.reason}"` : ""}`;
+
+  write(
+    stdout,
+    [
+      yours.length > 0
+        ? [`Yours (${mine}):`, ...yours.map(line)].join("\n")
+        : `Nothing held by ${mine}.`,
+      others.length > 0 ? ["Others:", ...others.map(line)].join("\n") : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  return result.status;
+}
+
+/** What this machine has written down that it holds, without asking the table. */
 export function commandShow(options = {}) {
   const env = options.env ?? process.env;
   const file = options.stateFile ?? statePath(env, options.home);
@@ -1005,12 +1100,14 @@ export function commandPreflight(options = {}) {
     ? `${report.profile.name} (${report.profile.mode}${
         report.profile.bindAddress ? `, ${report.profile.bindAddress}` : ""
       })`
-    : "none - zero-configuration direct access";
+    : report.requestedProfile
+      ? `'${report.requestedProfile}' is not defined in that file`
+      : "none - zero-configuration direct access";
   const lines = [
     report.ok ? `ready: ${report.message}` : `not ready: ${report.message}`,
     `  mutex:              ${report.version ?? "(not found)"}`,
     `  profiles file:      ${report.profilesFile ? report.profilesPath : `none (${report.profilesPath})`}`,
-    `  enabled profile:    ${profile}`,
+    `  ${report.requestedProfile ? "profile (-p):     " : "enabled profile:  "}  ${profile}`,
     `  MUTEX_DATABASE_URL: ${report.databaseUrl ? "set" : "not set"}`,
     `  locks taken as:     ${report.owner}${
       report.ownerDeclared
@@ -1056,7 +1153,8 @@ Commands:
   lock <id>        Take a lock, and record what was taken
   renew <id>       Extend a recorded lock, keeping its owner
   unlock <id>      Hand a recorded lock back
-  show             What this machine holds, and for how much longer
+  status [id]      What you hold, from the table - or who holds one lock
+  show             What this machine wrote down, without asking the table
   statusline       One line for a status line; empty when nothing is held
   nudge            Claude Code UserPromptSubmit hook: warn before a lock lapses
   forget <id>      Drop a recorded lock without touching the lock itself
@@ -1155,6 +1253,8 @@ export function main(argv, options = {}) {
       return commandRenew(id, shared);
     case "unlock":
       return commandUnlock(id, shared);
+    case "status":
+      return commandStatus(id, shared);
     case "show":
       return commandShow(shared);
     case "statusline":

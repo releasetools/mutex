@@ -2,12 +2,19 @@
 name: extend
 description: Extend a mutex lock you already hold, before it expires
 argument-hint: "<lock-id> [seconds, default 3600]"
+allowed-tools:
+  - Bash(node ${CLAUDE_PLUGIN_ROOT}/skills/mutex/agent-lock.mjs:*)
+  - Bash(node "${CLAUDE_PLUGIN_ROOT}/skills/mutex/agent-lock.mjs":*)
 ---
 
-Extend a lock this session holds, following the mutex skill. `$ARGUMENTS` names
-the lock, optionally followed by how many seconds to extend it by.
+Run this once, with the first word of `$ARGUMENTS` as the id and a number
+after it, if given, as the seconds:
 
-Renewing only ever adds time, and it is strict: the id and the owner must both
-match, and an expired lock is refused rather than re-taken, because somebody
-else may already have it. If that is what comes back, say the guard has lapsed
-before doing anything else.
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/skills/mutex/agent-lock.mjs" extend <id> --expiration <seconds>
+```
+
+Say in one line when it now expires. Renewing only adds time, and it is strict:
+the id and the owner must match, and an expired lock is refused rather than
+re-taken because somebody else may already have it. If that is the answer, say
+the guard has lapsed before anything else.

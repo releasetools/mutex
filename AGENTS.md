@@ -50,11 +50,13 @@ The pre-commit hook builds and runs the tests, but a manual `npm run lint && npm
 | `src/main.ts`     | The Action's entry point; `src/post.ts` auto-releases at the end of a job |
 | `src/cli/`        | The `mutex` CLI                                                           |
 | `skills/mutex/`   | The agent skill, and the helper it runs                                   |
-| `commands/`       | The plugin's slash commands, which defer to the skill                     |
+| `commands/`       | The plugin's slash commands: one invocation each, not instructions        |
 
 `src/mutex.ts` and `src/database.ts` take a `Logger` and emit events rather than calling into `@actions/core`. Keep it that way: it is what lets the Action and the CLI share them, and it keeps the CLI bundle free of the Actions toolkit.
 
 `skills/` and `commands/` are read by four different agents: through `.claude-plugin/` and `.codex-plugin/` for two of them, and by copying for the rest - Gemini's commands are rendered from the same markdown, since it reads TOML. One rule holds it together, and `npm run plugin:validate` enforces it - **`skills/` is the only copy of any skill**, and both manifests carry the same version. A second copy under a product directory is how two agents start following different instructions out of one repository, and none of these tools says anything when the packaging is wrong: a skill they cannot find looks exactly like a model choosing not to use it.
+
+The commands and the skill answer different questions, and mixing them is what made the first version slow. A command is one deterministic invocation: the plugin root gives it the helper's path, `allowed-tools` stops it asking permission, and `` !`cmd` `` runs it before the model is asked anything, so the whole thing costs one turn. The skill is for the judgement a command cannot make - whether to wait for a contended lock, whether to break one, what to say when a guard has lapsed. A command that merely says "follow the skill" pays for the skill to load, four round trips, and a search for a file it was already told the path of: measured at 53s against 10s for the same answer.
 
 The plugin carries its own version, independent of the CLI's: Claude Code and Codex install it from the repository rather than from npm or a version tag, so the manifests and `hooks/` are not published. `skills/` is, next to `scripts/install-agent-skills.mjs`, because the agents that have no manifest install the skill by copying it out of wherever the package landed - which for most people is a global npm installation and no checkout at all. Those two keep their relative positions in the published tree; `package-release.test.ts` asserts an installer run out of an assembled tree.
 

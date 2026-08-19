@@ -27,6 +27,7 @@ const {
   commandRenew,
   commandShow,
   commandUnlock,
+  commandStatus,
   detectAgent,
   DEFAULT_EXPIRATION_SECONDS,
   sessionId,
@@ -235,6 +236,25 @@ describe("what the deadline looks like", () => {
     expect(formatRemaining(42)).toBe("42s");
     expect(formatRemaining(600)).toBe("10m");
     expect(formatRemaining(3660)).toBe("1h 1m");
+  });
+
+  it("does not say a lock expired 'in' an hour ago", () => {
+    const out = capture();
+    commandShow({
+      stateFile: (() => {
+        const box = sandbox();
+        remember(box.stateFile, {
+          id: "staging",
+          owner: "o",
+          expiresAt: new Date(Date.now() - 3600 * 1000).toISOString(),
+        });
+        return box.stateFile;
+      })(),
+      stdout: out.stream,
+    });
+
+    expect(out.text).toContain("(1h 0m ago)");
+    expect(out.text).not.toContain("in 1h");
   });
 
   it("says nothing at all when nothing is held", () => {
@@ -582,6 +602,75 @@ describe("taking, extending and handing back", () => {
   });
 });
 
+describe("what is held", () => {
+  const roots: string[] = [];
+  const build = () => {
+    const box = sandbox();
+    roots.push(box.root);
+    return box;
+  };
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * "What am I holding?" cannot be answered from the local note: a lock taken
+   * from another terminal, or by the Action, is just as much in the way.
+   */
+  it("splits the table on this session's own name", () => {
+    const { root } = build();
+    const env = { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "abc" };
+    const mine = resolveOwner(env);
+    const soon = new Date(Date.now() + 600 * 1000).toISOString();
+    const mutex = stubMutex(root, {
+      list: {
+        stdout: JSON.stringify({
+          command: "list",
+          locks: [
+            { id: "staging", owner: mine, expiresAt: soon, expired: false },
+            { id: "deploy", owner: "alice", expiresAt: soon, expired: false },
+          ],
+        }),
+      },
+    });
+    const out = capture();
+
+    commandStatus(undefined, {
+      env,
+      executable: mutex.executable,
+      stdout: out.stream,
+    });
+
+    expect(out.text).toContain(`Yours (${mine}):`);
+    expect(out.text).toContain("staging");
+    expect(out.text).toContain("Others:");
+    expect(out.text).toContain("deploy  held by alice");
+    // One round trip, not one per lock.
+    expect(
+      mutex.argv.filter((argument: string) => argument === "list"),
+    ).toHaveLength(1);
+  });
+
+  it("says plainly when this session holds nothing", () => {
+    const { root } = build();
+    const mutex = stubMutex(root, {
+      list: { stdout: JSON.stringify({ command: "list", locks: [] }) },
+    });
+    const out = capture();
+
+    commandStatus(undefined, {
+      env: { CLAUDE_CODE_SESSION_ID: "abc" },
+      executable: mutex.executable,
+      stdout: out.stream,
+    });
+
+    expect(out.text).toMatch(/^Nothing held by /);
+  });
+});
+
 describe("preflight", () => {
   const roots: string[] = [];
   const build = () => {
@@ -660,6 +749,36 @@ describe("preflight", () => {
     });
     expect(shared.owner).toBe("claude@workstation");
     expect(shared.session).toBeNull();
+  });
+
+  /**
+   * `-p` selects a profile for one command without enabling it, so a preflight
+   * run that way has to report the profile it used rather than the one that
+   * happens to be enabled.
+   */
+  it("reports the profile -p asked for, not the enabled one", () => {
+    const { root } = build();
+    fs.mkdirSync(path.join(root, "releasetools-mutex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "releasetools-mutex", "profiles.toml"),
+      '[server]\nmode = "server"\nenabled = true\nbind_address = "localhost:5625"\nworking_dir = "/tmp"\n\n[direct]\nmode = "direct"\nenabled = false\n',
+    );
+    const mutex = stubMutex(root, {
+      version: { stdout: "1.4.0\n" },
+      list: { stdout: JSON.stringify({ command: "list", locks: [] }) },
+    });
+
+    const report = preflight({
+      executable: mutex.executable,
+      env: { XDG_CONFIG_HOME: root, MUTEX_DATABASE_URL: "postgres://host/db" },
+      home: root,
+      profile: "direct",
+    });
+
+    expect(report.profile.name).toBe("direct");
+    expect(report.requestedProfile).toBe("direct");
+    expect(report.message).toContain("selected with -p");
+    expect(mutex.argv).toContain("-p");
   });
 
   it("separates a missing connection string from a server that is not running", () => {
