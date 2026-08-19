@@ -664,7 +664,7 @@ describe("what is held", () => {
    * "What am I holding?" cannot be answered from the local note: a lock taken
    * from another terminal, or by the Action, is just as much in the way.
    */
-  it("splits the table on this session's own name", () => {
+  it("asks the table for this session's locks by name", () => {
     const { root } = build();
     const env = { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "abc" };
     const mine = resolveOwner(env);
@@ -673,9 +673,9 @@ describe("what is held", () => {
       list: {
         stdout: JSON.stringify({
           command: "list",
+          owner: mine,
           locks: [
             { id: "staging", owner: mine, expiresAt: soon, expired: false },
-            { id: "deploy", owner: "alice", expiresAt: soon, expired: false },
           ],
         }),
       },
@@ -690,12 +690,54 @@ describe("what is held", () => {
 
     expect(out.text).toContain(`Yours - ${mine}`);
     expect(out.text).toContain("staging");
-    expect(out.text).toContain("Everything else");
-    expect(out.text).toMatch(/deploy\s+alice/);
+    // The database does the narrowing, and the session names itself rather
+    // than leaving the answer to whatever $MUTEX_OWNER happens to say.
+    expect(mutex.argv).toContain("--owner");
+    expect(mutex.argv).toContain(mine);
+    // Nobody else's locks were fetched, so none can be reported.
+    expect(out.text).not.toContain("Everything else");
     // One round trip, not one per lock.
     expect(
       mutex.argv.filter((argument: string) => argument === "list"),
     ).toHaveLength(1);
+  });
+
+  it("splits the whole table on this session's own name for --all", () => {
+    const { root } = build();
+    const env = { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "abc" };
+    const mine = resolveOwner(env);
+    const soon = new Date(Date.now() + 600 * 1000).toISOString();
+    const mutex = stubMutex(root, {
+      list: {
+        stdout: JSON.stringify({
+          command: "list",
+          owner: null,
+          locks: [
+            { id: "staging", owner: mine, expiresAt: soon, expired: false },
+            { id: "deploy", owner: "alice", expiresAt: soon, expired: false },
+          ],
+        }),
+      },
+    });
+    const out = capture();
+
+    commandStatus(undefined, {
+      env,
+      all: true,
+      executable: mutex.executable,
+      stdout: out.stream,
+    });
+
+    expect(out.text).toContain(`Yours - ${mine}`);
+    expect(out.text).toContain("staging");
+    expect(out.text).toContain("Everything else");
+    expect(out.text).toMatch(/deploy\s+alice/);
+    // Still one round trip: --all names nobody rather than asking twice.
+    expect(
+      mutex.argv.filter((argument: string) => argument === "list"),
+    ).toHaveLength(1);
+    expect(mutex.argv).toContain("--owner");
+    expect(mutex.argv).not.toContain(mine);
   });
 
   it("says plainly when this session holds nothing", () => {
