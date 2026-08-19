@@ -415,7 +415,6 @@ jobs:
           set -euo pipefail
 
           expected="${VERSION#v}"
-          config="${MISE_VERIFY_ROOT}/mise.toml"
           mkdir -p \
             "$MISE_VERIFY_ROOT" \
             "$MISE_DATA_DIR" \
@@ -427,7 +426,7 @@ jobs:
           # does not add the runtime the package needs. Declaring both in one
           # command makes mise install Node first. The low-download exception
           # is scoped to mutex and leaves the guard in place for dependencies.
-          mise --cd "$MISE_VERIFY_ROOT" use --path "$config" --pin \
+          mise --cd "$MISE_VERIFY_ROOT" use --global \
             node@24 \
             "npm:@releasetools/mutex[allow_low_downloads=true]@${expected}"
 
