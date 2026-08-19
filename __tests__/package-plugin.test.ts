@@ -121,6 +121,11 @@ describe("packagePlugin", () => {
     roots.push(out);
     return out;
   };
+  const elsewhere = () => {
+    const other = temporary("elsewhere-");
+    roots.push(other);
+    return other;
+  };
 
   afterEach(() => {
     for (const root of roots.splice(0)) {
@@ -203,6 +208,27 @@ describe("packagePlugin", () => {
       expect(fs.existsSync(path.join(out, "notes.md"))).toBe(true);
     });
 
+    /**
+     * The marker says "this is my own previous output, empty it". Asking
+     * `existsSync` about it would let a link at that path answer for whatever
+     * it points at, which is the safeguard talked out of refusing.
+     */
+    it("is not talked round by a marker that is a link", () => {
+      const root = build();
+      const out = into();
+      fs.writeFileSync(path.join(out, "notes.md"), "not a plugin\n");
+      fs.mkdirSync(path.join(out, ".claude-plugin"), { recursive: true });
+      fs.symlinkSync(
+        path.join(root, ".claude-plugin", "plugin.json"),
+        path.join(out, ".claude-plugin", "plugin.json"),
+      );
+
+      expect(() => packagePlugin({ root, out })).toThrow(
+        /refusing to empty it/,
+      );
+      expect(fs.existsSync(path.join(out, "notes.md"))).toBe(true);
+    });
+
     it("refuses a path that is not a directory", () => {
       const out = path.join(into(), "file");
       fs.writeFileSync(out, "");
@@ -230,6 +256,24 @@ describe("packagePlugin", () => {
 
     expect(() => packagePlugin({ root, out: into() })).toThrow(
       /not a regular file/,
+    );
+  });
+
+  /**
+   * The entries inside a copied directory were checked; the directory itself
+   * was not. `skills` pointing somewhere else is not one stray file in the
+   * artifact - it is a different tree in place of the allowlisted one, and
+   * `readdirSync` follows the link without comment.
+   */
+  it("refuses an allowlisted directory that is a link somewhere else", () => {
+    const root = build();
+    const other = elsewhere();
+    fs.writeFileSync(path.join(other, "not-a-skill.md"), "not ours\n");
+    fs.rmSync(path.join(root, "skills"), { recursive: true });
+    fs.symlinkSync(other, path.join(root, "skills"));
+
+    expect(() => packagePlugin({ root, out: into() })).toThrow(
+      /skills is not a regular directory/,
     );
   });
 
