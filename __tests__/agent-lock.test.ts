@@ -29,6 +29,7 @@ const {
   commandUnlock,
   detectAgent,
   DEFAULT_EXPIRATION_SECONDS,
+  sessionId,
   formatRemaining,
   forget,
   preflight,
@@ -178,12 +179,42 @@ describe("who the lock belongs to", () => {
     );
   });
 
-  it("otherwise generates a name that two sessions cannot share", () => {
-    const first = resolveOwner({ CLAUDECODE: "1" }, "workstation.local");
-    const second = resolveOwner({ CLAUDECODE: "1" }, "workstation.local");
+  it("otherwise names the agent, the host and the session", () => {
+    const env = { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "22ca1fea-a521" };
 
-    expect(first).toMatch(/^claude@workstation:[0-9a-f]{4}$/);
-    expect(first).not.toBe(second);
+    expect(resolveOwner(env, "workstation.local")).toBe(
+      "claude@workstation:22ca1fea-a521",
+    );
+  });
+
+  /**
+   * The whole point of deriving it: the name has to be the same one three tool
+   * calls later, or the release is refused. It used to end in random bytes.
+   */
+  it("is the same name every time one session asks", () => {
+    const env = { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "abc" };
+
+    expect(resolveOwner(env, "host")).toBe(resolveOwner(env, "host"));
+    expect(resolveOwner(env, "host")).not.toBe(
+      resolveOwner({ ...env, CLAUDE_CODE_SESSION_ID: "def" }, "host"),
+    );
+  });
+
+  it("falls back to agent and host when nothing names a session", () => {
+    expect(resolveOwner({ CLAUDECODE: "1" }, "workstation.local")).toBe(
+      "claude@workstation",
+    );
+  });
+
+  it("reads the session id each agent publishes, and any it does not", () => {
+    expect(sessionId({ CLAUDE_CODE_SESSION_ID: "c1" })).toBe("c1");
+    expect(sessionId({ CODEX_THREAD_ID: "t1" })).toBe("t1");
+    expect(sessionId({ HERMES_SESSION_ID: "h1" })).toBe("h1");
+    expect(sessionId({ GEMINI_CONVERSATION_SESSION_ID: "g1" })).toBe("g1");
+    expect(sessionId({ MUTEX_SESSION_ID: "mine", CODEX_THREAD_ID: "t1" })).toBe(
+      "mine",
+    );
+    expect(sessionId({ PATH: "/usr/bin" })).toBeNull();
   });
 
   it("names the agent it is running inside, and falls back quietly", () => {
@@ -375,6 +406,7 @@ describe("taking, extending and handing back", () => {
     remember(stateFile, {
       id: "staging",
       owner: "claude@host:8f3a",
+      session: "8f3a",
       expiresAt: new Date(Date.now() + 60 * 1000).toISOString(),
       nudged: [600, 120],
     });
@@ -398,6 +430,7 @@ describe("taking, extending and handing back", () => {
 
     const code = commandRenew("staging", {
       stateFile,
+      env: { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "8f3a" },
       executable: mutex.executable,
       stdout: capture().stream,
     });
@@ -426,6 +459,85 @@ describe("taking, extending and handing back", () => {
       }),
     ).toBe(0);
     expect(readState(stateFile).locks).toEqual([]);
+  });
+
+  /**
+   * The name is derived, so losing the note of a lock does not lose the lock:
+   * this is the case the random suffix it replaced could never handle.
+   */
+  it("releases a lock this session took after the note of it is gone", () => {
+    const { root, stateFile } = build();
+    const env = { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "abc" };
+    const mine = resolveOwner(env);
+    const mutex = stubMutex(root, {
+      status: {
+        stdout: JSON.stringify({
+          command: "status",
+          id: "staging",
+          held: true,
+          lock: { id: "staging", owner: mine },
+        }),
+      },
+      unlock: {
+        stdout: JSON.stringify({ command: "unlock", ok: true, id: "staging" }),
+      },
+    });
+
+    const code = commandUnlock("staging", {
+      stateFile,
+      env,
+      executable: mutex.executable,
+      stdout: capture().stream,
+      stderr: capture().stream,
+    });
+
+    expect(code).toBe(0);
+    expect(mutex.argv).toContain(mine);
+  });
+
+  /**
+   * The state file is shared by every session on the machine, so a note that
+   * one session can read is not permission to release what another took.
+   */
+  it("will not release another session's lock through the shared record", () => {
+    const { root, stateFile } = build();
+    remember(stateFile, {
+      id: "deploy",
+      owner: "claude@host:someone-else",
+      session: "someone-else",
+    });
+    const mutex = stubMutex(root, {
+      status: {
+        stdout: JSON.stringify({
+          command: "status",
+          id: "deploy",
+          held: true,
+          lock: { id: "deploy", owner: "claude@host:someone-else" },
+        }),
+      },
+      unlock: {
+        code: 5,
+        stdout: JSON.stringify({
+          command: "unlock",
+          ok: false,
+          id: "deploy",
+          outcome: "owned-by-another",
+        }),
+      },
+    });
+
+    const code = commandUnlock("deploy", {
+      stateFile,
+      env: { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "mine" },
+      executable: mutex.executable,
+      stdout: capture().stream,
+      stderr: capture().stream,
+    });
+
+    expect(code).toBe(5);
+    // Never claimed a name it was not entitled to; mutex refused it, as it
+    // would refuse anyone who did not name the holder.
+    expect(mutex.argv).not.toContain("claude@host:someone-else");
   });
 
   it("keeps the record when a release is refused, because that is when it matters", () => {
@@ -522,6 +634,32 @@ describe("preflight", () => {
       }),
     );
     expect(JSON.stringify(report)).not.toContain("hunter2");
+  });
+
+  it("says which name locks will be taken under, and warns when it is shared", () => {
+    const { root } = build();
+    const mutex = stubMutex(root, {
+      version: { stdout: "1.4.0\n" },
+      list: { stdout: JSON.stringify({ command: "list", locks: [] }) },
+    });
+
+    const named = preflight({
+      executable: mutex.executable,
+      env: { CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "abc" },
+      home: root,
+      host: "workstation.local",
+    });
+    expect(named.owner).toBe("claude@workstation:abc");
+    expect(named.session).toBe("abc");
+
+    const shared = preflight({
+      executable: mutex.executable,
+      env: { CLAUDECODE: "1" },
+      home: root,
+      host: "workstation.local",
+    });
+    expect(shared.owner).toBe("claude@workstation");
+    expect(shared.session).toBeNull();
   });
 
   it("separates a missing connection string from a server that is not running", () => {

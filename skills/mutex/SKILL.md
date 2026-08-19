@@ -125,11 +125,11 @@ node "$AGENT_LOCK" lock staging --reason "migrating the orders table"
 
 Defaults, and when to change them:
 
-| Default             |                                                                                                                                                  |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--expiration 3600` | One hour. Long enough for a conversation, short enough that a dead session is not a lock for the day. Raise it for work that is genuinely longer |
-| `--wait 30`         | Waits half a minute for a held lock, then reports who has it. Raise it only when the user asks to wait; `--try` gives one attempt and no waiting |
-| `--owner`           | Generated once, like `claude@host:8f3a`, and recorded. Naming an owner is what protects the lock - an unowned one is open to anyone              |
+| Default             |                                                                                                                                                                                                           |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--expiration 3600` | One hour. Long enough for a conversation, short enough that a dead session is not a lock for the day. Raise it for work that is genuinely longer                                                          |
+| `--wait 30`         | Waits half a minute for a held lock, then reports who has it. Raise it only when the user asks to wait; `--try` gives one attempt and no waiting                                                          |
+| `--owner`           | This agent, this host and this session, like `claude@workstation:22ca1fea`. The same name every time, so a lock stays releasable. Naming an owner is what protects it - an unowned lock is open to anyone |
 
 The id is the resource, not the task: `staging`, `deploy`, `orders-migration`.
 Whoever else locks that same id is who this excludes, so use the name the
@@ -182,10 +182,15 @@ node "$AGENT_LOCK" unlock staging
 Do this when the guarded work finishes, and also when it fails - a lock held
 after the work stopped blocks everyone else until it expires for nothing.
 
-It uses the recorded owner, so it releases exactly what was taken. If the lock
-lapsed mid-run and somebody else has since taken it, mutex refuses with exit 5
-and their lock is left alone. That is correct: report it rather than working
-around it.
+It releases under the name this session took the lock with. That name is
+derived from the session rather than invented, so it is still the right one
+after the record of the lock is gone. A lock this session did not take is not
+claimed: the helper asks who holds it first, and passes nothing when the answer
+is somebody else - which leaves mutex to refuse, and to say whose it is.
+
+If the lock lapsed mid-run and somebody else has since taken it, mutex refuses
+with exit 5 and their lock is left alone. That is correct: report it rather
+than working around it.
 
 ## The stronger form: wrapping one command
 

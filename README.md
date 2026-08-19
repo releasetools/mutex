@@ -476,13 +476,15 @@ installer renders the same files into `~/.gemini/commands/mutex/` on the way in
 | Step        |                                                                                                                                     |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `preflight` | Once per session: can mutex reach the table here, through a profile or `$MUTEX_DATABASE_URL`. If neither, it says so and stops      |
-| `lock`      | An hour by default rather than the CLI's minute, waiting 30 seconds rather than the whole lease, under a generated owner it records |
+| `lock`      | An hour by default rather than the CLI's minute, waiting 30 seconds rather than the whole lease, under an owner naming this session |
 | `renew`     | Only after asking. Reminders arrive on their own; the decision to extend does not                                                   |
 | `unlock`    | With the owner it recorded, so it releases what it took and nothing else                                                            |
 
 An hour because a conversation is not a CI step: it does not know how long it will take, and a lease that lapses mid-conversation hands the resource to somebody else while the work is still going on.
 
 ### Knowing when the lock runs out
+
+Locks are taken under a name that says who holds them: the agent, the host and the session, as in `claude@workstation:22ca1fea-a521-4d5c-ad62-b6d05809f8ef`. It is derived rather than generated, so it is the same name every time that session asks for it - which is what lets a lock be released after the note of it is lost, and what stops one session from releasing another's. `$MUTEX_OWNER` overrides it. Where nothing in the environment names a session the owner is the agent and host alone, and `/mutex:check` says so, because then every session on that machine can take the others' locks back.
 
 A lock nobody is watching expires quietly, so the helper writes down what it took - the id, the owner and the expiry - in `${XDG_STATE_HOME:-$HOME/.local/state}/releasetools-mutex/agent-locks.json`. Nothing in it is secret, and it is a reminder rather than a source of truth: PostgreSQL still holds the locks, and `mutex status <id>` still names the owner needed to release one.
 

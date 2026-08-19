@@ -16,7 +16,6 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -216,13 +215,61 @@ export function detectAgent(env = process.env) {
 }
 
 /**
- * The name this lock is taken under.
+ * The session this is running in, as the agent knows it.
+ *
+ * Every one of these tools has an id for the conversation and puts it in the
+ * environment; the names differ, so the ones that are known are named and
+ * anything else is found by shape. `MUTEX_SESSION_ID` is the way out for a
+ * tool that does neither.
+ */
+const SESSION_VARIABLES = [
+  "MUTEX_SESSION_ID",
+  "CLAUDE_CODE_SESSION_ID",
+  "CODEX_THREAD_ID",
+  "HERMES_SESSION_ID",
+];
+
+export function sessionId(env = process.env) {
+  for (const name of SESSION_VARIABLES) {
+    const value = env[name]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+
+  // An agent not listed above still has a session; take the first variable of
+  // its own that is shaped like one.
+  for (const name of Object.keys(env).sort()) {
+    if (
+      /^(CLAUDE|CODEX|HERMES|GEMINI|ANTIGRAVITY)_.*(SESSION|THREAD).*ID$/.test(
+        name,
+      )
+    ) {
+      const value = env[name]?.trim();
+      if (value) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The name this lock is taken under: agent, host and session.
  *
  * `$MUTEX_OWNER` wins when it is set, because the CLI already documents it and
- * a workflow that names its locks means it. Otherwise the name is generated
- * with a random suffix, so two agents on one machine - or two sessions in one
- * repository - cannot release each other's locks. Naming an owner is what
- * makes a lock protected: anyone can take an unowned one back.
+ * a workflow that names its locks means it. Otherwise the name says who is
+ * holding the lock in terms somebody can act on - `claude@workstation:<id>`
+ * names a conversation that can be resumed, or abandoned deliberately.
+ *
+ * It is derived rather than generated, so it is the same name every time this
+ * session asks for it. That is what lets a lock be released after the state
+ * file is gone, and what stops one session from releasing another's.
+ *
+ * With no session id in the environment the name is agent and host alone, and
+ * every session on that machine shares it. The preflight says so, because it
+ * is the one case where two of your own sessions can take each other's locks
+ * back.
  */
 export function resolveOwner(env = process.env, host = os.hostname()) {
   const declared = env.MUTEX_OWNER?.trim();
@@ -230,7 +277,9 @@ export function resolveOwner(env = process.env, host = os.hostname()) {
     return declared;
   }
   const machine = host.split(".")[0] || "localhost";
-  return `${detectAgent(env)}@${machine}:${randomBytes(2).toString("hex")}`;
+  const session = sessionId(env);
+  const who = `${detectAgent(env)}@${machine}`;
+  return session ? `${who}:${session}` : who;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +487,9 @@ export function preflight(options = {}) {
     profilesFile: fs.existsSync(profilesPath),
     profile,
     databaseUrl: Boolean(env.MUTEX_DATABASE_URL),
-    owner: env.MUTEX_OWNER?.trim() || null,
+    owner: resolveOwner(env, options.host ?? os.hostname()),
+    session: sessionId(env),
+    ownerDeclared: Boolean(env.MUTEX_OWNER?.trim()),
   };
 
   const version = runMutex(["version"], options);
@@ -590,6 +641,7 @@ export function commandLock(id, options = {}) {
     const entry = {
       id,
       owner,
+      session: sessionId(env),
       reason: options.reason ?? record.reason ?? null,
       createdAt: record.createdAt ?? null,
       expiresAt: payload.expires ?? record.expiresAt ?? null,
@@ -632,6 +684,45 @@ export function commandLock(id, options = {}) {
 }
 
 /**
+ * Which name to release or renew a lock under, when nothing was recorded here.
+ *
+ * Guessing is the wrong move in both directions: this session's name is
+ * refused on a lock somebody took by hand and left unowned, and an unowned
+ * call is refused on a lock this session took before the note of it was lost.
+ *
+ * So it asks. The name is claimed only when the holder is already this
+ * session; anything else is passed as unowned, which leaves the decision where
+ * it belongs - with mutex, whose refusal names the holder and says what to
+ * pass to override it. Breaking somebody else's lock stays deliberate.
+ */
+function ownerFor(identifier, entry, options, env) {
+  if (options.owner) {
+    return options.owner;
+  }
+
+  // A lock this session took is released under exactly the name it was taken
+  // under, whatever that was. The state file is shared by every session on the
+  // machine, so the session has to match: one agent releasing another's lock
+  // through a note it happened to be able to read is the thing being prevented.
+  const session = sessionId(env);
+  if (session && entry?.session === session) {
+    return entry.owner ?? null;
+  }
+
+  const status = runMutex(
+    [
+      "status",
+      identifier,
+      "--json",
+      ...(options.profile ? ["-p", options.profile] : []),
+    ],
+    options,
+  );
+  const holder = status.json?.lock?.owner ?? null;
+  return holder === resolveOwner(env) ? holder : null;
+}
+
+/**
  * Extends a lock this machine already recorded.
  *
  * The owner comes from the state file rather than from whoever is calling,
@@ -644,15 +735,13 @@ export function commandRenew(id, options = {}) {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const entry = findEntry(file, id);
-  const owner =
-    options.owner ?? entry?.owner ?? env.MUTEX_OWNER?.trim() ?? null;
+  const owner = ownerFor(id, entry, options, env);
 
   if (!entry && !options.owner) {
     write(
       stderr,
       `agent-lock: no recorded lock for '${id}'; renewing as ` +
-        `${owner ? `'${owner}'` : "unowned"}. ` +
-        `\`mutex status ${id}\` names the owner it actually has.`,
+        `${owner ? `'${owner}'` : "unowned"}, after asking who holds it.`,
     );
   }
 
@@ -679,7 +768,12 @@ export function commandRenew(id, options = {}) {
   if (result.status === EXIT_OK && payload?.ok) {
     const record = payload.lock ?? {};
     const renewed = {
-      ...(entry ?? { id, owner, agent: detectAgent(env) }),
+      ...(entry ?? {
+        id,
+        owner,
+        session: sessionId(env),
+        agent: detectAgent(env),
+      }),
       owner,
       expiresAt:
         payload.expires ?? record.expiresAt ?? entry?.expiresAt ?? null,
@@ -726,15 +820,13 @@ export function commandUnlock(id, options = {}) {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const entry = findEntry(file, id);
-  const owner =
-    options.owner ?? entry?.owner ?? env.MUTEX_OWNER?.trim() ?? null;
+  const owner = ownerFor(id, entry, options, env);
 
   if (!entry && !options.owner) {
     write(
       stderr,
-      `agent-lock: no recorded lock for '${id}'; unlocking as ` +
-        `${owner ? `'${owner}'` : "unowned"}. ` +
-        `If it is held by somebody else, mutex will refuse and say whose it is.`,
+      `agent-lock: no recorded lock for '${id}'; releasing as ` +
+        `${owner ? `'${owner}'` : "unowned"}, after asking who holds it.`,
     );
   }
 
@@ -920,7 +1012,13 @@ export function commandPreflight(options = {}) {
     `  profiles file:      ${report.profilesFile ? report.profilesPath : `none (${report.profilesPath})`}`,
     `  enabled profile:    ${profile}`,
     `  MUTEX_DATABASE_URL: ${report.databaseUrl ? "set" : "not set"}`,
-    `  MUTEX_OWNER:        ${report.owner ?? "not set"}`,
+    `  locks taken as:     ${report.owner}${
+      report.ownerDeclared
+        ? " (from $MUTEX_OWNER)"
+        : report.session
+          ? ""
+          : " - no session id in the environment, so every session on this machine shares this name and can release its locks"
+    }`,
   ];
   if (report.locks !== null && report.locks !== undefined) {
     lines.push(`  locks in table:     ${report.locks}`);
