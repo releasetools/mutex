@@ -32,6 +32,8 @@ Any other job using `id: staging` now waits. The lock goes back when the job end
 
 ### On the command line
 
+#### With npm
+
 Install the public package from npm. Node.js 24 or newer is required:
 
 ```shell
@@ -54,15 +56,28 @@ npm install --global @releasetools/mutex@1
 npm writes the command to its configured global prefix; a Node version manager
 or user-owned npm prefix keeps the whole installation rootless.
 
-mise can own the package and its Node runtime instead:
+#### With mise
+
+mise can manage both the package and its Node runtime. Its
+[npm backend](https://mise.jdx.dev/dev-tools/backends/npm.html) does not add
+Node automatically, so declare both tools. Because mutex is still below mise's
+default download-count threshold, explicitly approve this package; the
+exception does not apply to its dependencies:
 
 ```shell
-mise use --global "npm:@releasetools/mutex@latest"
+mise use --global node@24 \
+  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
 mutex version
 ```
 
-`mise upgrade` refreshes tools configured with a moving version such as
-`latest`; use `@1.3.0` instead when the installation must stay pinned.
+`allow_low_downloads` requires mise 2026.8.8 or newer. `mise upgrade` refreshes
+tools configured with the moving `latest` version; use an exact package version
+instead when the installation must stay pinned:
+
+```shell
+mise use --global node@24 \
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1.3.1'
+```
 
 ```shell
 MUTEX_DATABASE_URL="postgres://..." mutex lock staging -- ./deploy.sh
@@ -546,6 +561,7 @@ They are separate on purpose. Replacing a release and releasing out of order are
 | Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
 | npm             | Publishes `@releasetools/mutex` with provenance; an older backport gets the `backport` dist-tag instead of moving `latest` backwards                                                            |
 | Verify npm      | Installs the exact version from the public registry and checks `mutex version`                                                                                                                  |
+| Verify mise     | Installs mise-managed Node 24 and the exact public npm package in an isolated configuration, then checks `mutex version` and `mutex help`                                                       |
 | Verify Action   | Uses `releasetools/mutex@v1` for real and checks the version it reports                                                                                                                         |
 
 The first release on a new major seeds `release/<major>` from `main` automatically.
