@@ -52,7 +52,7 @@ export type ProtocolResponse =
 export interface ServerStatus {
   profile: string;
   /**
-   * The mutex the server process is running.
+   * The mutex version the server process is running.
    *
    * Optional because it is not the only thing that answers: `health` survives
    * a version gap on purpose, so a server built before this field existed can
