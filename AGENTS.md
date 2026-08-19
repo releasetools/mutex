@@ -7,6 +7,7 @@ Every user-visible change goes in [RELEASE.md](./RELEASE.md), newest version fir
 - **One line per change.** If a change needs a paragraph, it needs docs in the README instead - link there.
 - **Write for the person who has to decide whether to upgrade.** Say what changed for them, not which files moved.
 - **Plain sentences.** No "feat:"/"fix:" prefixes, no bullet-point telegraphese, no marketing. "Fixed lock expiry on databases whose session time zone is not UTC" beats "TZ handling improvements".
+- **Reads like a person wrote it - every entry, always.** Machine-assembled prose gets rewritten before it merges. A measurement is a clause, not a dangling fragment: "which was about 180 ms per request", not "; against a hosted database that was about 180 ms per request". A consequence takes a finite verb, not an "-ing" tack-on: "which cuts the fixed cost", not "reducing the fixed cost". Every sentence has a subject that can do its verb: "mutex now warns", not "A connection now warns". A sentence carrying three ideas becomes two sentences.
 - **Name the consequence when there is one.** A bug fix should say what was broken, not just what was patched.
 - **Group under a version heading** - `## 1.3.0`, which is what the release reads to fill in the GitHub release body. The version in `package.json` is bumped by the release itself; do not edit it by hand.
 
