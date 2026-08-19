@@ -23,7 +23,9 @@ import { parseIntoClientConfig } from "pg-connection-string";
 import { resolveConnectionString } from "../src/cli/config.js";
 import {
   explainSslFailure,
+  isDirectNegotiationFailure,
   resolveConnection,
+  SslNegotiationOptions,
   SslPosture,
 } from "../src/connection.js";
 import { ConfigurationError } from "../src/cli/exit-codes.js";
@@ -143,8 +145,11 @@ describe("resolveConnection (SSL policy)", () => {
   const NO_ENV: NodeJS.ProcessEnv = {};
   const at = (query: string) =>
     `postgres://u:p@db.example.com:5432/locks${query}`;
-  const resolve = (url: string, options = {}, env = NO_ENV) =>
-    resolveConnection(url, options, env);
+  const resolve = (
+    url: string,
+    options: SslNegotiationOptions = {},
+    env = NO_ENV,
+  ) => resolveConnection(url, options, env);
 
   it("does not let node-postgres emit its sslmode deprecation warning", () => {
     // The warning this whole module exists to answer. It fires at most once
@@ -317,6 +322,7 @@ describe("resolveConnection (SSL policy)", () => {
     for (const [label, url, options] of [
       ["from the URL", at("?sslmode=require&sslnegotiation=direct"), {}],
       ["from a profile", at("?sslmode=require"), { sslNegotiation: "direct" }],
+      ["preferred", at("?sslmode=require"), { preferDirect: true }],
     ] as const) {
       const { config, posture } = resolve(url, options);
 
@@ -326,11 +332,34 @@ describe("resolveConnection (SSL policy)", () => {
   });
 
   it("rejects an sslnegotiation neither mutex nor node-postgres knows", () => {
-    // mutex writes the field itself, so a typo would otherwise be overwritten
-    // and read as though direct negotiation were on.
+    // mutex writes the field itself now, so a typo would otherwise be
+    // overwritten and read as though direct negotiation were on.
     expect(() => resolve(at("?sslmode=require&sslnegotiation=dircet"))).toThrow(
       /Invalid sslnegotiation value/,
     );
+  });
+
+  it("does not ask for direct negotiation without TLS to negotiate", () => {
+    // node-postgres refuses the combination outright, so preferring it must
+    // not break every plaintext database.
+    const { config, posture, warnings } = resolve(
+      "postgres://mutex@localhost:5432/locks",
+      { preferDirect: true },
+    );
+
+    expect(config.sslnegotiation).toBe("postgres");
+    expect(posture.negotiation).toBe("postgres");
+    expect(warnings).toEqual([]);
+  });
+
+  it("says so when a requested direct negotiation cannot be used", () => {
+    const { config, warnings } = resolve(
+      "postgres://mutex@localhost:5432/locks",
+      { sslNegotiation: "direct" },
+    );
+
+    expect(config.sslnegotiation).toBe("postgres");
+    expect(warnings[0]).toContain("does not use TLS");
   });
 
   it("lets a profile override the connection string's sslnegotiation", () => {
@@ -354,6 +383,24 @@ describe("resolveConnection (SSL policy)", () => {
     // nothing else would notice: the connection would simply be slower.
     expect(config).toMatchObject({ sslnegotiation: "direct" });
     expect(posture.negotiation).toBe("direct");
+  });
+});
+
+describe("isDirectNegotiationFailure", () => {
+  it.each([
+    "Client network socket disconnected before secure TLS connection was established",
+    "read ECONNRESET",
+    "write EPROTO 123:error:0A00010B",
+  ])("recognises %s", (message) => {
+    expect(isDirectNegotiationFailure(new Error(message))).toBe(true);
+  });
+
+  it.each([
+    'password authentication failed for user "mutex"',
+    "self-signed certificate in certificate chain",
+    "connection timeout expired",
+  ])("leaves %s alone", (message) => {
+    expect(isDirectNegotiationFailure(new Error(message))).toBe(false);
   });
 });
 

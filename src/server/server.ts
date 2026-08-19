@@ -61,6 +61,10 @@ export async function runServer(
         dbConnectionString: value,
         connectionTimeoutMillis: 10_000,
         sslNegotiation: profile.sslNegotiation,
+        // Long-lived, so its connection is worth keeping past the idle timeout,
+        // and it can afford the one failed connection an old server costs.
+        minPoolSize: 1,
+        preferDirectSsl: true,
       },
       logger,
     ),

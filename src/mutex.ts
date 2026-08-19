@@ -109,6 +109,23 @@ export interface MutexConfig {
    * `sslnegotiation` in the connection string.
    */
   sslNegotiation?: SslNegotiation;
+  /**
+   * Lower bound on pooled connections.
+   *
+   * node-postgres closes a connection ten seconds after it goes idle, and its
+   * default floor is zero, so a process that is asked for a lock now and again
+   * pays a fresh handshake for most of them. The server sets 1 to keep one
+   * open; a CLI process has exited long before the timeout matters.
+   */
+  minPoolSize?: number;
+  /**
+   * Start TLS directly when the connection has it and nothing said otherwise.
+   *
+   * Set by the server, which can afford the one failed connection a server
+   * older than 17 costs; a CLI command would pay it every time and has no
+   * later connection to spend the saving on.
+   */
+  preferDirectSsl?: boolean;
 }
 
 export interface MutexInterface {

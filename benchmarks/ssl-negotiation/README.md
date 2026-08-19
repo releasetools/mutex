@@ -52,15 +52,16 @@ Saving: 26.5 ms per connection (15%)
 
 A direct-profile command opens one connection, so it saves that per command.
 
-A server profile saves it more often than "once at startup" would suggest. The
-pool is built with node-postgres' defaults, where `min` is 0 and
-`idleTimeoutMillis` is 10 seconds, so a connection that goes unused for ten
-seconds is closed and the next lock opens a new one. A server answering
-sporadic requests re-handshakes for most of them.
+A server profile keeps one connection open, so it handshakes at startup and
+then only when the pool grows past one. Direct negotiation is worth that one
+handshake to it, which is why the server tries it without being asked.
 
-That also means the larger saving for a server is not handshaking at all: a
-fresh connection to a hosted database measured about 180 ms, of which direct
-negotiation removes 26.5 ms. Holding one open removes all of it.
+It is worth remembering which of the two matters more. A fresh connection to a
+hosted database measured about 180 ms, of which direct negotiation removes
+26.5 ms; holding the connection open removes all of it. Before the pool had a
+floor, node-postgres' defaults (`min` 0, `idleTimeoutMillis` 10 seconds) closed
+an idle connection after ten seconds, and a server answering sporadic requests
+paid the full handshake for most of them.
 
 ## Checking the version requirement
 
