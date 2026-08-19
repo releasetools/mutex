@@ -211,6 +211,26 @@ describe("resolveConnection (SSL policy)", () => {
     expect(warnings).toEqual([]);
   });
 
+  it("treats an empty sslmode as no sslmode, as node-postgres does", () => {
+    // `?sslmode=` is what templating an unset variable produces. Reading the
+    // empty string as a mode would make TLS mandatory where node-postgres
+    // leaves it absent, and would shadow PGSSLMODE with a value nobody wrote.
+    const { config, posture, warnings } = resolve(at("?sslmode="));
+
+    expect(config.ssl).toBeUndefined();
+    expect(posture).toMatchObject({ declared: null, effective: "plaintext" });
+    expect(warnings).toHaveLength(1);
+  });
+
+  it("still reaches PGSSLMODE past an empty sslmode", () => {
+    const { config, posture } = resolve(at("?sslmode="), {
+      PGSSLMODE: "require",
+    });
+
+    expect(config.ssl).toEqual({});
+    expect(posture).toMatchObject({ declared: "require", promoted: true });
+  });
+
   it("reads PGSSLMODE when the connection string is silent", () => {
     const { config, posture } = resolve(at(""), { PGSSLMODE: "require" });
 

@@ -85,7 +85,11 @@ export function resolveConnection(
     };
   }
 
-  const declared = url.searchParams.get("sslmode") ?? env.PGSSLMODE ?? null;
+  // `||` rather than `??`, deliberately: `?sslmode=` parses as an empty
+  // string, and node-postgres reads that as no mode at all rather than as an
+  // unrecognised one. Accepting it would make TLS mandatory where it used to
+  // be absent, and would shadow `PGSSLMODE` with a value nobody wrote.
+  const declared = url.searchParams.get("sslmode") || env.PGSSLMODE || null;
 
   // An explicit `uselibpqcompat=true` is an informed request for libpq's
   // meanings. Overriding it would defeat the only escape hatch node-postgres
