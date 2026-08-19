@@ -504,14 +504,18 @@ From a checkout, `npm run plugin:install` does the same thing.
 The plugin puts six commands in the slash menu, so the common operations are
 discoverable rather than something you have to describe:
 
-| Command                       |                                                       |
-| ----------------------------- | ----------------------------------------------------- |
-| `/mutex:preflight`            | Can mutex reach its lock table here, and if not, why  |
-| `/mutex:lock <id> [reason]`   | Take a lock, an hour by default                       |
-| `/mutex:status [id]`          | A table of what you hold, and what else is in the way |
-| `/mutex:renew <id> [seconds]` | Extend a lock before it lapses                        |
-| `/mutex:unlock <id>`          | Hand it back                                          |
-| `/mutex:help`                 | What the plugin does, and what it will not            |
+| Command                       |                                                      |
+| ----------------------------- | ---------------------------------------------------- |
+| `/mutex:preflight`            | Can mutex reach its lock table here, and if not, why |
+| `/mutex:lock <id> [reason]`   | Take a lock, an hour by default                      |
+| `/mutex:status [id]`          | A table of what you hold, and on request the rest    |
+| `/mutex:renew <id> [seconds]` | Extend a lock before it lapses                       |
+| `/mutex:unlock <id>`          | Hand it back                                         |
+| `/mutex:help`                 | What the plugin does, and what it will not           |
+
+`/mutex:status` names this session as the owner and lets the database do the
+narrowing, so what comes back is what you hold rather than the whole table; the
+helper's `--all` asks the wider question, and pays for it in rows.
 
 Each one is a single deterministic invocation rather than a description of what
 to do, because the difference is measured in tens of seconds. `/mutex:preflight`

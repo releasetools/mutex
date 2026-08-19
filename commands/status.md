@@ -1,6 +1,6 @@
 ---
 name: status
-description: Show what you are holding, and who holds the rest
+description: Show what you are holding, or who holds a lock you name
 argument-hint: "[lock-id]"
 allowed-tools:
   - Bash(node ${CLAUDE_PLUGIN_ROOT}/skills/mutex/agent-lock.mjs:*)
@@ -15,5 +15,7 @@ columns: it is a table so it can be scanned down, and a paragraph cannot be.
 
 One short line after it is welcome when something needs saying - a lock about to
 lapse, or nothing held at all. If `$ARGUMENTS` named a lock, run the same
-command with that id and print that instead. This is read-only: take, release
-and renew nothing.
+command with that id and print that instead. On its own it asks the table for
+this session's locks and nothing else; add `--all` when the question is what
+else is in the way, and everybody else's arrive in a second table. This is
+read-only: take, release and renew nothing.

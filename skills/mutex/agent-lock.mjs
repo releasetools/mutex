@@ -1085,10 +1085,15 @@ export function renderLockTable(records, options = {}) {
 /**
  * What is held, from the table rather than from the local note.
  *
- * One round trip, and it answers the question a person actually asks - "what
- * am I holding?" - by splitting the list on this session's own name. The local
- * record cannot answer it: a lock taken from another terminal, or by the
- * Action, is just as much in the way.
+ * One round trip either way, and it answers the question a person actually
+ * asks - "what am I holding?" The local record cannot answer it: a lock taken
+ * from another terminal, or by the Action, is just as much in the way.
+ *
+ * The owner is always named rather than left to `$MUTEX_OWNER`, so the answer
+ * is about this session whatever the environment says, and the database does
+ * the narrowing. `--all` asks the wider question instead - the whole table,
+ * split on this session's name - because with hundreds of locks the other
+ * half is noise rather than context, and it costs a table to find that out.
  */
 export function commandStatus(identifier, options = {}) {
   const env = options.env ?? process.env;
@@ -1129,16 +1134,31 @@ export function commandStatus(identifier, options = {}) {
     return result.status;
   }
 
-  const result = runMutex(["list", "--json", ...profile], options);
+  const all = options.all === true;
+  // Naming nobody is how `list` is asked for the whole table; naming this
+  // session is how it is asked for one row per lock actually held here.
+  const result = runMutex(
+    ["list", "--owner", all ? "" : mine, "--json", ...profile],
+    options,
+  );
   if (result.missing) {
     return reportMissingCli(options);
   }
   const locks = Array.isArray(result.json?.locks) ? result.json.locks : [];
-  const yours = locks.filter((lock) => lock.owner === mine);
-  const others = locks.filter((lock) => lock.owner !== mine);
+  const yours = all ? locks.filter((lock) => lock.owner === mine) : locks;
+  const others = all ? locks.filter((lock) => lock.owner !== mine) : [];
 
   if (options.json) {
-    write(stdout, JSON.stringify({ owner: mine, yours, others }, null, 2));
+    // `others` is absent rather than empty when it was not asked for: "none"
+    // and "not looked for" are different answers.
+    write(
+      stdout,
+      JSON.stringify(
+        { owner: mine, yours, ...(all ? { others } : {}) },
+        null,
+        2,
+      ),
+    );
     return result.status;
   }
 
@@ -1356,6 +1376,7 @@ const OPTION_CONFIG = {
   profile: { type: "string", short: "p" },
   try: { type: "boolean" },
   grant: { type: "boolean" },
+  all: { type: "boolean" },
   json: { type: "boolean" },
   "no-color": { type: "boolean" },
   help: { type: "boolean", short: "h" },
@@ -1373,6 +1394,7 @@ Commands:
   renew <id>       Extend a recorded lock, keeping its owner
   unlock <id>      Hand a recorded lock back
   status [id]      What you hold, from the table - or who holds one lock
+                   (--all also lists what everybody else is holding)
   show             What this machine wrote down, without asking the table
   statusline       One line for a status line; empty when nothing is held
   nudge            Claude Code UserPromptSubmit hook: warn before a lock lapses
@@ -1385,6 +1407,7 @@ Options:
       --try                   One attempt, no waiting
   -o, --owner <name>          Override the recorded owner
   -p, --profile <name>        Use one mutex profile for this command
+      --all                   status: the whole table, not only your locks
       --json                  Machine-readable output
       --no-color              No ANSI colour in the status line
   -h, --help                  Show this
@@ -1450,6 +1473,7 @@ export function main(argv, options = {}) {
       profile: values.profile?.trim() || undefined,
       single: values.try === true,
       grant: values.grant === true,
+      all: values.all === true,
       expiration: readSeconds(values.expiration, "expiration"),
       wait: readSeconds(values.wait, "wait"),
     };
