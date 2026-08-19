@@ -71,7 +71,9 @@ export class DatabaseMutex implements LockStore {
     // mutex decides what the connection string's sslmode means rather than
     // inheriting whichever meaning the installed node-postgres holds; see
     // `connection.ts`.
-    const connection = resolveConnection(config.dbConnectionString);
+    const connection = resolveConnection(config.dbConnectionString, {
+      sslNegotiation: config.sslNegotiation,
+    });
     this.posture = connection.posture;
     for (const warning of connection.warnings) {
       log.warning(warning);

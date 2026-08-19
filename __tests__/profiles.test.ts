@@ -73,6 +73,25 @@ bind_address = "localhost:5625"
     ).toThrow(/must not define/);
   });
 
+  it("round-trips ssl_negotiation on either mode", () => {
+    const tuned = { ...direct, sslNegotiation: "direct" as const };
+
+    expect(
+      parseProfiles(formatProfiles([{ ...server, enabled: true }, tuned])),
+    ).toEqual([{ ...server, enabled: true }, tuned]);
+  });
+
+  it("rejects an ssl_negotiation postgres would not accept", () => {
+    expect(() =>
+      parseProfiles(`
+[direct]
+mode = "direct"
+enabled = true
+ssl_negotiation = "fast"
+`),
+    ).toThrow(/ssl_negotiation = "postgres" or "direct"/);
+  });
+
   it("uses -p selection without changing the enabled profile", async () => {
     await writeFile(filePath, formatProfiles([server, direct]));
     expect((await selectProfile("direct", filePath)).profile.name).toBe(

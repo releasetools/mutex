@@ -17,6 +17,7 @@
 
 import { Logger } from "./logger.js";
 import { sleep } from "./helpers.js";
+import { SslNegotiation } from "./connection.js";
 
 /**
  * The two mutex operations, shared by the GitHub Action and the CLI.
@@ -103,6 +104,11 @@ export interface MutexConfig {
   expiration?: number;
   /** Optional pool connection deadline, primarily for the long-lived server. */
   connectionTimeoutMillis?: number;
+  /**
+   * How the TLS handshake starts, when a profile says. Overrides
+   * `sslnegotiation` in the connection string.
+   */
+  sslNegotiation?: SslNegotiation;
 }
 
 export interface MutexInterface {

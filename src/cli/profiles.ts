@@ -21,6 +21,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { CONNECTION_ENV_VAR } from "../constants.js";
+import { SslNegotiation } from "../connection.js";
 import { ConfigurationError, UsageError } from "./exit-codes.js";
 
 export const DEFAULT_BIND_ADDRESS = "localhost:5625";
@@ -34,6 +35,13 @@ export interface MutexProfile {
   enabled: boolean;
   bindAddress?: string;
   workingDir?: string;
+  /**
+   * `direct` skips a round trip in the TLS handshake and needs PostgreSQL 17
+   * or newer. It lives here rather than only in the connection string because
+   * the connection string is a secret, often issued by somebody else, and this
+   * is a property of the server it points at rather than a credential.
+   */
+  sslNegotiation?: SslNegotiation;
 }
 
 export interface ProfilesFile {
@@ -136,6 +144,11 @@ export function formatProfiles(profiles: MutexProfile[]): string {
       if (profile.mode === "server") {
         lines.push(`bind_address = ${JSON.stringify(profile.bindAddress)}`);
         lines.push(`working_dir = ${JSON.stringify(profile.workingDir)}`);
+      }
+      if (profile.sslNegotiation) {
+        lines.push(
+          `ssl_negotiation = ${JSON.stringify(profile.sslNegotiation)}`,
+        );
       }
       return lines.join("\n");
     })
@@ -381,7 +394,13 @@ function validateProfile(
   values: Record<string, string | boolean>,
   filePath: string,
 ): MutexProfile {
-  const allowed = new Set(["mode", "enabled", "bind_address", "working_dir"]);
+  const allowed = new Set([
+    "mode",
+    "enabled",
+    "bind_address",
+    "working_dir",
+    "ssl_negotiation",
+  ]);
   for (const key of Object.keys(values)) {
     if (!allowed.has(key)) {
       throw new ConfigurationError(
@@ -389,6 +408,17 @@ function validateProfile(
       );
     }
   }
+  if (
+    values.ssl_negotiation !== undefined &&
+    values.ssl_negotiation !== "postgres" &&
+    values.ssl_negotiation !== "direct"
+  ) {
+    throw new ConfigurationError(
+      `[${name}] in ${filePath} needs ssl_negotiation = "postgres" or "direct"`,
+      "direct saves a round trip and requires PostgreSQL 17 or newer.",
+    );
+  }
+  const sslNegotiation = values.ssl_negotiation as SslNegotiation | undefined;
   if (values.mode !== "server" && values.mode !== "direct") {
     throw new ConfigurationError(
       `[${name}] in ${filePath} needs mode = "server" or "direct"`,
@@ -406,7 +436,7 @@ function validateProfile(
         `[${name}] is direct and must not define bind_address or working_dir`,
       );
     }
-    return { name, mode: "direct", enabled: values.enabled };
+    return { name, mode: "direct", enabled: values.enabled, sslNegotiation };
   }
 
   if (typeof values.bind_address !== "string" || !values.bind_address) {
@@ -426,6 +456,7 @@ function validateProfile(
     enabled: values.enabled,
     bindAddress: values.bind_address,
     workingDir: values.working_dir,
+    sslNegotiation,
   };
 }
 

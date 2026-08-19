@@ -206,6 +206,19 @@ mutex server status -p server
 
 Selection is explicit. A direct profile never probes the server, and a server profile never falls back to PostgreSQL. Once a profiles file exists, a direct command must select its direct profile and still needs `MUTEX_DATABASE_URL` in that command's environment.
 
+Either kind of profile may also set `ssl_negotiation`, which is how the TLS handshake starts:
+
+```toml
+[direct]
+mode = "direct"
+enabled = true
+ssl_negotiation = "direct"
+```
+
+`direct` opens TLS immediately instead of asking first and waiting for the server's one-byte reply, saving a round trip on every connection mutex opens - about 25 ms against a hosted database, and worth measuring with [`benchmarks/ssl-negotiation`](./benchmarks/ssl-negotiation) before assuming it matters. It requires **PostgreSQL 17 or newer**; older servers read the TLS handshake as a malformed startup packet and close the connection, and mutex says so when a handshake fails that way. The default, `postgres`, works everywhere.
+
+It belongs here rather than only in the connection string because it describes the server rather than the credential, and the connection string is often a secret issued by somebody else. `sslnegotiation=direct` in the connection string does the same thing; when both say something, the profile wins.
+
 Start the server after making `MUTEX_DATABASE_URL` visible to it:
 
 ```shell
