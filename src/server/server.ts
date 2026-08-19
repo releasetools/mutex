@@ -20,7 +20,9 @@ import { LockStore } from "../mutex.js";
 import { MutexProfile } from "../cli/profiles.js";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
+  isLifecycleOperation,
   isOperation,
+  LIFECYCLE_PROTOCOL_VERSION,
   MAX_MESSAGE_BYTES,
   parseTcpAddress,
   PROTOCOL_VERSION,
@@ -178,7 +180,13 @@ export async function runServer(
       respond(socket, failure("invalid mutex protocol request"));
       return;
     }
-    if (raw.version !== PROTOCOL_VERSION) {
+    // Lock work is refused across a version gap, because an answer from a
+    // server that read the request differently is worse than no answer. Being
+    // stopped or asked how it is are the exceptions: they are how the gap is
+    // fixed and how it is seen, and a server that cannot be stopped by the
+    // mutex that just refused it has to be killed by hand instead.
+    const lifecycle = isLifecycleOperation(raw.operation);
+    if (!lifecycle && raw.version !== PROTOCOL_VERSION) {
       respond(
         socket,
         failure(
@@ -198,17 +206,17 @@ export async function runServer(
     }
 
     if (raw.operation === "health") {
-      respond(socket, success(await status()));
+      respond(socket, success(await status(), LIFECYCLE_PROTOCOL_VERSION));
       return;
     }
     if (raw.operation === "stop") {
-      respond(socket, success({ stopping: true }));
+      respond(socket, success({ stopping: true }, LIFECYCLE_PROTOCOL_VERSION));
       socket.once("finish", () => void shutdown());
       return;
     }
 
     const key = nullableStringField(raw.payload, "name");
-    const owner = nullableStringField(raw.payload, "owner");
+    const owner = readOwner(raw.payload);
     const loggedOperation =
       raw.operation === "lock" ? lockCommand(raw.payload) : raw.operation;
     appendOperationLog(
@@ -318,8 +326,15 @@ function respond(socket: Socket, response: ProtocolResponse): void {
   socket.end(`${JSON.stringify(response)}\n`);
 }
 
-function success(result: unknown): ProtocolResponse {
-  return { version: PROTOCOL_VERSION, ok: true, result };
+/**
+ * A reply, stamped with the dialect it is spoken in: lifecycle answers carry
+ * the frozen version, so a client of any age accepts them.
+ */
+function success(
+  result: unknown,
+  version = PROTOCOL_VERSION,
+): ProtocolResponse {
+  return { version, ok: true, result };
 }
 
 function failure(error: string): ProtocolResponse {
@@ -380,6 +395,20 @@ function stringField(
   if (typeof value !== "string")
     throw new Error(`request field '${name}' must be a string`);
   return value;
+}
+
+/**
+ * Who a request names, or null when it names nobody.
+ *
+ * Blank counts as nobody, which is the rule `readOwner` already keeps for the
+ * command line and `Configuration` for the Action's input. The server is the
+ * third way into the same table and has to agree with them: a lock nobody
+ * named is NULL, not a lock owned by a name no caller can retype, since
+ * `mayModify` would then guard it against everybody. On `list` it decides
+ * whether the answer is one owner's locks or the whole table.
+ */
+function readOwner(payload: Record<string, unknown>): string | null {
+  return nullableStringField(payload, "owner")?.trim() || null;
 }
 
 function nullableStringField(

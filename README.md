@@ -161,7 +161,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `mutex unlock <id>`            | Release it                                    |
 | `mutex renew <id>`             | Extend a lock you already hold                |
 | `mutex status <id>`            | Show who holds it                             |
-| `mutex list`                   | List every lock, expired ones included        |
+| `mutex list`                   | List locks, expired ones included             |
 | `mutex list --owner <name>`    | List only that owner's locks                  |
 | `mutex prune`                  | Delete locks that have already expired        |
 | `mutex profile [name]`         | List/select profiles, or enable one by name   |
@@ -249,7 +249,7 @@ mutex server status -p server
 
 Selection is explicit. A direct profile never probes the server, and a server profile never falls back to PostgreSQL. Once a profiles file exists, a direct command must select its direct profile and still needs `MUTEX_DATABASE_URL` in that command's environment.
 
-The CLI and the server each carry a protocol version and refuse each other by name when the two differ, rather than letting one answer a question the other did not ask. `mutex server status` reports the running server's. Upgrading mutex while a server is running is what makes them differ: restart it with `mutex server stop && mutex server start`, or through whichever service manager owns it.
+The CLI and the server each carry a protocol version, and lock commands refuse each other by name when the two differ, rather than letting one answer a question the other did not ask. `mutex server stop` and `mutex server status` are exempt on purpose: they are how a mismatch is seen and how it is fixed, so they work whatever version the other end speaks, and `mutex server status` reports the running server's version. Upgrading mutex while a server is running is what makes them differ: restart it with `mutex server stop && mutex server start`, or through whichever service manager owns it.
 
 Either kind of profile may also set `ssl_negotiation`, which is how the TLS handshake starts:
 
