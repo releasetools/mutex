@@ -8,7 +8,16 @@
  *     http://www.apache.org/licenses/LICENSE-2.0
  */
 
-export const PROTOCOL_VERSION = 1;
+/**
+ * Bumped whenever a request or a response changes meaning, since both ends
+ * compare it and refuse a mismatch by name.
+ *
+ * 2 carries `list`'s owner filter. A version 1 server ignores the field and
+ * answers with the whole table, which the client would then present as one
+ * owner's locks - and a wrong answer is worse than a refusal that says which
+ * process to restart.
+ */
+export const PROTOCOL_VERSION = 2;
 export const MAX_MESSAGE_BYTES = 1024 * 1024;
 export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 

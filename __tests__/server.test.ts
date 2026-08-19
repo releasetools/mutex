@@ -32,6 +32,7 @@ import { TcpMutexStore } from "../src/server/tcp-store.js";
 
 class FakeDatabase implements ServerDatabase {
   acquisitions: Array<{ name: string; expiration: number }> = [];
+  listed: Array<string | null> = [];
   closed = false;
   warmCount = 0;
 
@@ -61,8 +62,9 @@ class FakeDatabase implements ServerDatabase {
     return record(name);
   }
 
-  async listLocks(): Promise<LockRecord[]> {
-    return [record("listed")];
+  async listLocks(owner: string | null = null): Promise<LockRecord[]> {
+    this.listed.push(owner);
+    return [record("listed", owner)];
   }
 
   async pruneExpired(): Promise<LockRecord[]> {
@@ -164,13 +166,16 @@ describe("mutex TCP server", () => {
     expect((await client.renewLock("deploy", 30, "alice")).renewed).toBe(true);
     expect((await client.inspectLock("deploy"))?.id).toBe("deploy");
     expect((await client.listLocks())[0].id).toBe("listed");
+    expect((await client.listLocks("alice"))[0].owner).toBe("alice");
+    // The filter is answered by the store, not by the client after the fact.
+    expect(database.listed).toEqual([null, "alice"]);
     expect(await client.pruneExpired(true)).toEqual([]);
 
     const health = await client.health();
     expect(health).toMatchObject({
       profile: "pooled",
       bindAddress: profile.bindAddress,
-      protocolVersion: 1,
+      protocolVersion: 2,
       pool: { healthy: true, total: 1 },
     });
     await client.stop();
@@ -181,7 +186,7 @@ describe("mutex TCP server", () => {
     const lines = (await readFile(serverPaths(profile).logPath, "utf8"))
       .trimEnd()
       .split("\n");
-    expect(lines).toHaveLength(7);
+    expect(lines).toHaveLength(8);
     expect(lines[0]).toMatch(
       /^\|\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\|lock\|deploy%7Cprod%0Anow\|alice\|127\.0\.0\.1\|host%7Cname%0Aline\|$/,
     );
@@ -194,7 +199,8 @@ describe("mutex TCP server", () => {
     expect(lines[5]).toMatch(
       /^\|\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z\|list\|-\|-\|127\.0\.0\.1\|host%7Cname%0Aline\|$/,
     );
-    expect(lines[6]).toContain("|prune|-|-|127.0.0.1|");
+    expect(lines[6]).toContain("|list|-|alice|127.0.0.1|");
+    expect(lines[7]).toContain("|prune|-|-|127.0.0.1|");
   });
 });
 

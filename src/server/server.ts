@@ -250,7 +250,7 @@ export async function runServer(
         );
         break;
       case "list":
-        result = await database.listLocks();
+        result = await database.listLocks(owner);
         break;
       case "prune":
         result = await database.pruneExpired(

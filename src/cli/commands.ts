@@ -279,13 +279,25 @@ export async function commandStatus(
   return record.expired ? EXIT_UNAVAILABLE : EXIT_OK;
 }
 
-/** `mutex list`. */
+/**
+ * `mutex list`, narrowed to one owner when the caller names one.
+ *
+ * Holding nothing is an answer rather than a failure, so an empty list still
+ * exits 0 - and says whose locks it looked for, since "no locks" and "none of
+ * yours" are different things to read off a screen.
+ */
 export async function commandList(ctx: CommandContext): Promise<number> {
-  const records = await ctx.mutex.listLocks();
+  const owner = ctx.options.owner;
+  const records = await ctx.mutex.listLocks(owner);
 
-  ctx.out.result({ command: "list", count: records.length, locks: records }, [
-    ...(records.length === 0 ? ["No locks."] : renderTable(records)),
-  ]);
+  ctx.out.result(
+    { command: "list", owner, count: records.length, locks: records },
+    records.length === 0
+      ? owner
+        ? `No locks owned by '${owner}'.`
+        : "No locks."
+      : renderTable(records),
+  );
   return EXIT_OK;
 }
 

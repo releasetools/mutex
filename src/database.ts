@@ -203,11 +203,22 @@ export class DatabaseMutex implements LockStore {
     });
   }
 
-  /** Returns every lock in the table, expired ones included. */
-  async listLocks(): Promise<LockRecord[]> {
+  /**
+   * Returns locks in the table, expired ones included.
+   *
+   * Naming an owner narrows it to that owner's rows, and does so in SQL: the
+   * answer's size should be the number of locks that match rather than the
+   * size of the table, which is the whole reason for asking the database
+   * instead of filtering afterwards. Naming nobody returns everything.
+   */
+  async listLocks(owner: string | null = null): Promise<LockRecord[]> {
     return this.withSchemaRetry("Listing locks", async () => {
       const result = await this.pool.query(
-        format(`SELECT ${LOCK_COLUMNS} FROM %I ORDER BY id;`, TABLE_NAME),
+        format(
+          `SELECT ${LOCK_COLUMNS} FROM %I${owner === null ? "" : " WHERE owner = $1"} ORDER BY id;`,
+          TABLE_NAME,
+        ),
+        owner === null ? [] : [owner],
       );
       return result.rows.map(toLockRecord);
     });

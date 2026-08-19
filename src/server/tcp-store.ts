@@ -72,8 +72,8 @@ export class TcpMutexStore implements LockStore {
     return this.request<LockRecord | null>("status", { name });
   }
 
-  listLocks(): Promise<LockRecord[]> {
-    return this.request<LockRecord[]>("list", {});
+  listLocks(owner: string | null = null): Promise<LockRecord[]> {
+    return this.request<LockRecord[]>("list", { owner });
   }
 
   pruneExpired(dryRun = false): Promise<LockRecord[]> {

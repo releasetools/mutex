@@ -162,6 +162,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `mutex renew <id>`             | Extend a lock you already hold                |
 | `mutex status <id>`            | Show who holds it                             |
 | `mutex list`                   | List every lock, expired ones included        |
+| `mutex list --owner <name>`    | List only that owner's locks                  |
 | `mutex prune`                  | Delete locks that have already expired        |
 | `mutex profile [name]`         | List/select profiles, or enable one by name   |
 | `mutex server start`           | Start the selected server in the background   |
@@ -179,7 +180,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `-e`, `--expiration <seconds>` | `60`, or `3600` on `renew` | How long the lock lasts                            |
 | `-w`, `--max-wait <seconds>`   | `-1`                       | How long to wait for it. `-1` means `--expiration` |
 | `-i`, `--poll-interval <secs>` | `10`                       | Delay between attempts                             |
-| `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock                             |
+| `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock. On `list`, whose to show   |
 | `--no-renew`                   |                            | Do not renew while a wrapped program runs          |
 | `--dry-run`                    |                            | `prune` only. List what would go, delete nothing   |
 | `-p`, `--profile <name>`       | Enabled profile            | Use a profile for this command without enabling it |
@@ -247,6 +248,8 @@ mutex server status -p server
 ```
 
 Selection is explicit. A direct profile never probes the server, and a server profile never falls back to PostgreSQL. Once a profiles file exists, a direct command must select its direct profile and still needs `MUTEX_DATABASE_URL` in that command's environment.
+
+The CLI and the server each carry a protocol version and refuse each other by name when the two differ, rather than letting one answer a question the other did not ask. `mutex server status` reports the running server's. Upgrading mutex while a server is running is what makes them differ: restart it with `mutex server stop && mutex server start`, or through whichever service manager owns it.
 
 Either kind of profile may also set `ssl_negotiation`, which is how the TLS handshake starts:
 
@@ -372,6 +375,16 @@ Unlocked 'deploy'.
 ```
 
 That is confirmation rather than authorisation, since anyone can read the owner from `mutex status`. It makes breaking a lock deliberate.
+
+`list` reads the same owner, so "what do I hold?" is a question for the database rather than a filter applied to the whole table afterwards:
+
+```shell
+mutex list --owner "$CI_RUN"   # only that owner's locks
+mutex list                     # every lock, or $MUTEX_OWNER's when that is set
+mutex list --owner ''          # names nobody, so every lock again
+```
+
+What crosses the wire is the answer rather than the table, which is what makes it worth asking for. An empty list still exits `0`: holding nothing is an answer, not a failure.
 
 ### Renewing
 
