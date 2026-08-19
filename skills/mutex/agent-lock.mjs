@@ -515,16 +515,16 @@ export function grantPermissions(options = {}) {
 /**
  * Which profile mutex would use, for the report only.
  *
- * A deliberately small reader for four keys, and best-effort by design: it
+ * A deliberately small reader, and best-effort by design: it
  * decides what the report *says*, never what it concludes. The verdict below
  * comes from running a command, because a profiles file that parses is not the
  * same as a database that answers.
  *
- * `requested` is `-p`, which selects a profile for one command without
- * enabling it - so a preflight run that way has to report the profile it
- * actually used, not the one that happens to be enabled.
+ * `requested` is `-p`, which selects a profile for one command without making
+ * it the default - so a preflight run that way has to report the profile it
+ * actually used, not the one that happens to be the default.
  */
-export function readEnabledProfile(file, requested = null) {
+export function readDefaultProfile(file, requested = null) {
   let text;
   try {
     text = fs.readFileSync(file, "utf8");
@@ -534,7 +534,7 @@ export function readEnabledProfile(file, requested = null) {
 
   const profiles = [];
   let current = null;
-  let enabled = null;
+  let defaultProfile = null;
   for (const line of text.split(/\r?\n/)) {
     const stripped = line.split("#")[0].trim();
     const section = /^\[([^\]]+)\]$/.exec(stripped);
@@ -564,15 +564,15 @@ export function readEnabledProfile(file, requested = null) {
       current.bindAddress = value;
     } else if (key === "ssl_negotiation") {
       current.sslNegotiation = value;
-    } else if (key === "enabled" && value === "true") {
-      enabled = current;
+    } else if (key === "default" && value === "true") {
+      defaultProfile = current;
     }
   }
 
   if (requested) {
     return profiles.find(({ name }) => name === requested) ?? null;
   }
-  return enabled;
+  return defaultProfile;
 }
 
 /**
@@ -594,7 +594,7 @@ export function preflight(options = {}) {
       : path.join(home, ".config", "releasetools-mutex"),
     "profiles.toml",
   );
-  const profile = readEnabledProfile(profilesPath, options.profile ?? null);
+  const profile = readDefaultProfile(profilesPath, options.profile ?? null);
   const context = {
     profilesPath,
     profilesFile: fs.existsSync(profilesPath),
@@ -1343,7 +1343,7 @@ export function commandPreflight(options = {}) {
     report.ok ? `ready: ${report.message}` : `not ready: ${report.message}`,
     `  mutex:              ${report.version ?? "(not found)"}`,
     `  profiles file:      ${report.profilesFile ? report.profilesPath : `none (${report.profilesPath})`}`,
-    `  ${report.requestedProfile ? "profile (-p):     " : "enabled profile:  "}  ${profile}`,
+    `  ${report.requestedProfile ? "profile (-p):     " : "default profile:  "}  ${profile}`,
     `  MUTEX_DATABASE_URL: ${report.databaseUrl ? "set" : "not set"}`,
     `  permissions:        ${describePermissions(report.permissions)}`,
     `  locks taken as:     ${report.owner}${

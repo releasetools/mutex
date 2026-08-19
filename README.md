@@ -164,7 +164,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `mutex list`                   | List locks, expired ones included             |
 | `mutex list --owner <name>`    | List only that owner's locks                  |
 | `mutex prune`                  | Delete locks that have already expired        |
-| `mutex profile [name]`         | List/select profiles, or enable one by name   |
+| `mutex profile [name]`         | List profiles, or make one the default        |
 | `mutex server start`           | Start the selected server in the background   |
 | `mutex server run`             | Run it in the foreground for service managers |
 | `mutex server status`          | Show version, protocol, log and pool status   |
@@ -174,20 +174,20 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 
 ### CLI options
 
-| Option                         | Default                    |                                                    |
-| ------------------------------ | -------------------------- | -------------------------------------------------- |
-| `-r`, `--reason <text>`        |                            | Why the lock is being taken                        |
-| `-e`, `--expiration <seconds>` | `60`, or `3600` on `renew` | How long the lock lasts                            |
-| `-w`, `--max-wait <seconds>`   | `-1`                       | How long to wait for it. `-1` means `--expiration` |
-| `-i`, `--poll-interval <secs>` | `10`                       | Delay between attempts                             |
-| `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock. On `list`, whose to show   |
-| `--no-renew`                   |                            | Do not renew while a wrapped program runs          |
-| `--dry-run`                    |                            | `prune` only. List what would go, delete nothing   |
-| `-p`, `--profile <name>`       | Enabled profile            | Use a profile for this command without enabling it |
-| `--json`                       |                            | Machine-readable output                            |
-| `-q`, `--quiet`                |                            | Errors only                                        |
-| `--verbose`                    |                            | Include debug output                               |
-| `-h`, `--help`                 |                            | Show help                                          |
+| Option                         | Default                    |                                                             |
+| ------------------------------ | -------------------------- | ----------------------------------------------------------- |
+| `-r`, `--reason <text>`        |                            | Why the lock is being taken                                 |
+| `-e`, `--expiration <seconds>` | `60`, or `3600` on `renew` | How long the lock lasts                                     |
+| `-w`, `--max-wait <seconds>`   | `-1`                       | How long to wait for it. `-1` means `--expiration`          |
+| `-i`, `--poll-interval <secs>` | `10`                       | Delay between attempts                                      |
+| `-o`, `--owner <name>`         | `$MUTEX_OWNER`, else none  | Who is taking the lock. On `list`, whose to show            |
+| `--no-renew`                   |                            | Do not renew while a wrapped program runs                   |
+| `--dry-run`                    |                            | `prune` only. List what would go, delete nothing            |
+| `-p`, `--profile <name>`       | Default profile            | Use a profile for this command without changing the default |
+| `--json`                       |                            | Machine-readable output                                     |
+| `-q`, `--quiet`                |                            | Errors only                                                 |
+| `--verbose`                    |                            | Include debug output                                        |
+| `-h`, `--help`                 |                            | Show help                                                   |
 
 ### Exit codes
 
@@ -229,18 +229,18 @@ On a terminal, mutex asks for a working directory and suggests `${XDG_CONFIG_HOM
 ```toml
 [server]
 mode = "server"
-enabled = true
+default = true
 bind_address = "localhost:5625"
 working_dir = "/home/alice/.config/releasetools-mutex"
 
 [direct]
 mode = "direct"
-enabled = false
+default = false
 ```
 
-Exactly one profile is enabled. Custom names are allowed. `mutex profile direct` enables an existing profile and disables the others atomically; an unknown name fails and lists the defined names. `mutex profile` shows the list instead of opening the arrow-key selector when stdin is not a terminal.
+Exactly one profile is the default. Custom names are allowed. `default = false` only means that a profile is not selected implicitly; it remains available through `--profile`. `mutex profile direct` makes an existing profile the default and clears the default marker from the others atomically; an unknown name fails and lists the defined names. `mutex profile` shows the list instead of opening the arrow-key selector when stdin is not a terminal.
 
-Use `-p` to override the enabled profile for one command without waiting for a failed connection or changing the file:
+Use `-p` to override the default profile for one command without waiting for a failed connection or changing the file:
 
 ```shell
 mutex status deploy -p direct
@@ -256,7 +256,7 @@ Either kind of profile may also set `ssl_negotiation`, which is how the TLS hand
 ```toml
 [direct]
 mode = "direct"
-enabled = true
+default = true
 ssl_negotiation = "direct"
 ```
 

@@ -131,7 +131,7 @@ describe("mutex TCP server", () => {
     const profile: MutexProfile = {
       name: "pooled",
       mode: "server",
-      enabled: true,
+      isDefault: true,
       bindAddress: `127.0.0.1:${port}`,
       workingDir: temporary,
     };
@@ -228,7 +228,7 @@ describe("mutex TCP server", () => {
     const profile: MutexProfile = {
       name: "pooled",
       mode: "server",
-      enabled: true,
+      isDefault: true,
       bindAddress: `127.0.0.1:${port}`,
       workingDir: temporary,
     };

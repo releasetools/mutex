@@ -58,7 +58,7 @@ cannot parse, and is passed by `/mutex:preflight` alone - never by this skill.
 | `mutex status <id>`                     | Show who holds it                            |
 | `mutex list`                            | List locks, expired ones included            |
 | `mutex prune`                           | Delete locks that have already expired       |
-| `mutex profile [name]`                  | List/select profiles - **the user's to run** |
+| `mutex profile [name]`                  | List/set the default - **the user's to run** |
 | `mutex server start\|run\|status\|stop` | The pooled server - **the user's to run**    |
 | `mutex version`                         | Print the version                            |
 
