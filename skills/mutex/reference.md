@@ -25,20 +25,26 @@ unwatched.
 
 ## The helper
 
-| Command       |                                                         |
-| ------------- | ------------------------------------------------------- |
-| `preflight`   | Can mutex reach the table here, and if not, whose fix   |
-| `lock <id>`   | Take a lock and record it: an hour, waiting 30s         |
-| `extend <id>` | Extend one this session holds                           |
-| `unlock <id>` | Hand it back under the name it was taken with           |
-| `status [id]` | What this session holds, from the table                 |
-| `show`        | What was written down locally, without asking the table |
-| `forget <id>` | Drop a local record without touching the lock           |
-| `statusline`  | One line for a status line; empty when nothing is held  |
-| `nudge`       | The prompt hook that warns before a lock lapses         |
+| Command             |                                                         |
+| ------------------- | ------------------------------------------------------- |
+| `preflight`         | Can mutex reach the table here, and if not, whose fix   |
+| `preflight --grant` | The same, and adds the permission rules to Claude Code  |
+| `lock <id>`         | Take a lock and record it: an hour, waiting 30s         |
+| `extend <id>`       | Extend one this session holds                           |
+| `unlock <id>`       | Hand it back under the name it was taken with           |
+| `status [id]`       | What this session holds, from the table                 |
+| `show`              | What was written down locally, without asking the table |
+| `forget <id>`       | Drop a local record without touching the lock           |
+| `statusline`        | One line for a status line; empty when nothing is held  |
+| `nudge`             | The prompt hook that warns before a lock lapses         |
 
 Options: `--reason`, `--expiration <seconds>`, `--wait <seconds>`, `--try`,
-`--owner <name>`, `--profile <name>`, `--json`, `--no-color`.
+`--owner <name>`, `--profile <name>`, `--grant`, `--json`, `--no-color`.
+
+`--grant` appends `Bash(mutex:*)` and the helper's own invocation to
+`permissions.allow` in `~/.claude/settings.json`, so neither the skill nor a
+hand-run command stops to ask. It only ever appends, refuses a settings file it
+cannot parse, and is passed by `/mutex:preflight` alone - never by this skill.
 
 ## The CLI underneath
 

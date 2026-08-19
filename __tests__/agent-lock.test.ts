@@ -29,6 +29,8 @@ const {
   commandUnlock,
   commandStatus,
   detectAgent,
+  grantPermissions,
+  permissionRules,
   DEFAULT_EXPIRATION_SECONDS,
   sessionId,
   formatRemaining,
@@ -668,6 +670,105 @@ describe("what is held", () => {
     });
 
     expect(out.text).toMatch(/^Nothing held by /);
+  });
+});
+
+describe("permission rules", () => {
+  const roots: string[] = [];
+  const build = () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "perm-")),
+    );
+    fs.mkdirSync(path.join(root, ".claude"));
+    roots.push(root);
+    return root;
+  };
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  const settingsOf = (home: string) =>
+    JSON.parse(
+      fs.readFileSync(path.join(home, ".claude/settings.json"), "utf8"),
+    );
+
+  it("covers both spellings of the helper's own invocation", () => {
+    expect(permissionRules("/plugins/x/agent-lock.mjs")).toEqual([
+      "Bash(mutex:*)",
+      "Bash(node /plugins/x/agent-lock.mjs:*)",
+      'Bash(node "/plugins/x/agent-lock.mjs":*)',
+    ]);
+  });
+
+  it("reports what is missing, and writes nothing without being asked", () => {
+    const home = build();
+    fs.writeFileSync(
+      path.join(home, ".claude/settings.json"),
+      JSON.stringify({ permissions: { allow: ["Bash(cat:*)"] } }),
+    );
+
+    const report = grantPermissions({ home, helper: "/x.mjs" });
+
+    expect(report.missing).toHaveLength(3);
+    expect(settingsOf(home).permissions.allow).toEqual(["Bash(cat:*)"]);
+  });
+
+  it("appends without disturbing anything else, and stays idempotent", () => {
+    const home = build();
+    fs.writeFileSync(
+      path.join(home, ".claude/settings.json"),
+      JSON.stringify({
+        model: "opus",
+        statusLine: { type: "command", command: "x.sh" },
+        permissions: { allow: ["Bash(cat:*)"], deny: ["Bash(rm:*)"] },
+      }),
+    );
+
+    expect(
+      grantPermissions({ home, helper: "/x.mjs", write: true }).added,
+    ).toHaveLength(3);
+    const settings = settingsOf(home);
+    expect(settings.model).toBe("opus");
+    expect(settings.statusLine).toEqual({ type: "command", command: "x.sh" });
+    expect(settings.permissions.deny).toEqual(["Bash(rm:*)"]);
+    expect(settings.permissions.allow).toContain("Bash(cat:*)");
+    // The list was sorted, so it still is.
+    expect([...settings.permissions.allow].sort()).toEqual(
+      settings.permissions.allow,
+    );
+
+    expect(
+      grantPermissions({ home, helper: "/x.mjs", write: true }).added,
+    ).toEqual([]);
+  });
+
+  /**
+   * The cost of being wrong here is somebody's whole configuration, and a
+   * permission prompt is a far cheaper failure than a truncated settings file.
+   */
+  it("refuses a settings file it cannot parse, and leaves it alone", () => {
+    const home = build();
+    const file = path.join(home, ".claude/settings.json");
+    fs.writeFileSync(file, "{ broken");
+
+    expect(
+      grantPermissions({ home, helper: "/x.mjs", write: true }).error,
+    ).toBeTruthy();
+    expect(fs.readFileSync(file, "utf8")).toBe("{ broken");
+  });
+
+  it("says so rather than guessing where another agent keeps its permissions", () => {
+    const home = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), "noclaude-")),
+    );
+    roots.push(home);
+
+    expect(grantPermissions({ home, helper: "/x.mjs", write: true })).toEqual(
+      expect.objectContaining({ supported: false }),
+    );
   });
 });
 

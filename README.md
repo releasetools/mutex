@@ -483,6 +483,7 @@ surface, and gets the skill.
 | Step        |                                                                                                                                     |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `preflight` | Can mutex reach the table here, through a profile or `$MUTEX_DATABASE_URL`. Run when something fails, not before every lock         |
+| permissions | `/mutex:preflight` appends `Bash(mutex:*)` and the helper's own invocation to `permissions.allow`, so the skill never stops to ask  |
 | `lock`      | An hour by default rather than the CLI's minute, waiting 30 seconds rather than the whole lease, under an owner naming this session |
 | `renew`     | Only after asking. Reminders arrive on their own; the decision to extend does not                                                   |
 | `unlock`    | With the owner it recorded, so it releases what it took and nothing else                                                            |

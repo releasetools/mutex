@@ -410,6 +410,95 @@ export function runMutex(args, options = {}) {
 }
 
 /**
+ * The permission rules an agent needs to run this without stopping to ask.
+ *
+ * The commands declare their own in front matter, so they never prompt. This is
+ * for everything else: the skill invoking the helper directly, and anyone
+ * running it by hand. Two spellings of the same path, because a rule is matched
+ * against the command string as written and the quoted form is a different
+ * string from the bare one.
+ */
+export function permissionRules(helper) {
+  return [
+    "Bash(mutex:*)",
+    `Bash(node ${helper}:*)`,
+    `Bash(node "${helper}":*)`,
+  ];
+}
+
+/**
+ * Adds those rules to Claude Code's settings, additively.
+ *
+ * Only ever appends, never removes, and refuses to touch a settings file it
+ * cannot parse - the cost of being wrong here is somebody's whole
+ * configuration, and a permission prompt is a far cheaper failure than that.
+ * Writing at all is `--grant`, which only `/mutex:preflight` passes: a skill
+ * quietly widening what an agent may run is not a thing this should do.
+ *
+ * Claude Code only. The other agents keep their permissions in formats this has
+ * no business guessing at, so elsewhere it reports the rules and stops.
+ */
+export function grantPermissions(options = {}) {
+  const home = options.home ?? os.homedir();
+  const helper = options.helper ?? process.argv[1] ?? "";
+  const file =
+    options.settingsFile ?? path.join(home, ".claude", "settings.json");
+  const wanted = permissionRules(helper);
+
+  if (!fs.existsSync(path.dirname(file))) {
+    return { file, supported: false, wanted };
+  }
+
+  let settings = {};
+  if (fs.existsSync(file)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (error) {
+      return { file, error: error.message, wanted };
+    }
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+      return { file, error: "settings.json is not a JSON object", wanted };
+    }
+  }
+
+  const permissions =
+    settings.permissions && typeof settings.permissions === "object"
+      ? settings.permissions
+      : {};
+  const allow = Array.isArray(permissions.allow) ? [...permissions.allow] : [];
+  const missing = wanted.filter((rule) => !allow.includes(rule));
+
+  if (missing.length === 0) {
+    return { file, added: [], present: wanted };
+  }
+  if (!options.write) {
+    return { file, missing, wanted };
+  }
+
+  // Keep the file's own order: these lists are usually sorted, and re-sorting
+  // one that is not would churn every line to add three.
+  const wasSorted = allow.every(
+    (rule, index) => index === 0 || allow[index - 1] <= rule,
+  );
+  const next = [...allow, ...missing];
+  if (wasSorted) {
+    next.sort();
+  }
+
+  const updated = {
+    ...settings,
+    permissions: { ...permissions, allow: next },
+  };
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(temporary, `${JSON.stringify(updated, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  fs.renameSync(temporary, file);
+  return { file, added: missing };
+}
+
+/**
  * Which profile mutex would use, for the report only.
  *
  * A deliberately small reader for four keys, and best-effort by design: it
@@ -502,6 +591,13 @@ export function preflight(options = {}) {
     session: sessionId(env),
     ownerDeclared: Boolean(env.MUTEX_OWNER?.trim()),
   };
+
+  context.permissions = grantPermissions({
+    home,
+    helper: options.helper ?? process.argv[1],
+    settingsFile: options.settingsFile,
+    write: options.grant === true,
+  });
 
   const version = runMutex(["version"], options);
   if (version.missing) {
@@ -1087,6 +1183,25 @@ export function commandForget(id, options = {}) {
   return EXIT_OK;
 }
 
+function describePermissions(state) {
+  if (!state) {
+    return "not checked";
+  }
+  if (state.supported === false) {
+    return "not applicable here - no Claude Code settings to add them to";
+  }
+  if (state.error) {
+    return `could not read ${state.file}: ${state.error}`;
+  }
+  if (state.added?.length) {
+    return `added ${state.added.length} rule(s) to ${state.file}; restart the session if a prompt still appears`;
+  }
+  if (state.missing?.length) {
+    return `${state.missing.length} rule(s) missing from ${state.file} - run /mutex:preflight to add them`;
+  }
+  return `already allowed in ${state.file}`;
+}
+
 export function commandPreflight(options = {}) {
   const stdout = options.stdout ?? process.stdout;
   const report = preflight(options);
@@ -1109,6 +1224,7 @@ export function commandPreflight(options = {}) {
     `  profiles file:      ${report.profilesFile ? report.profilesPath : `none (${report.profilesPath})`}`,
     `  ${report.requestedProfile ? "profile (-p):     " : "enabled profile:  "}  ${profile}`,
     `  MUTEX_DATABASE_URL: ${report.databaseUrl ? "set" : "not set"}`,
+    `  permissions:        ${describePermissions(report.permissions)}`,
     `  locks taken as:     ${report.owner}${
       report.ownerDeclared
         ? " (from $MUTEX_OWNER)"
@@ -1138,6 +1254,7 @@ const OPTION_CONFIG = {
   owner: { type: "string", short: "o" },
   profile: { type: "string", short: "p" },
   try: { type: "boolean" },
+  grant: { type: "boolean" },
   json: { type: "boolean" },
   "no-color": { type: "boolean" },
   help: { type: "boolean", short: "h" },
@@ -1150,6 +1267,7 @@ Usage: node ${invocation} <command> [<id>] [options]
 
 Commands:
   preflight        Report whether mutex can reach the lock table here
+                   (--grant also adds the permission rules it needs)
   lock <id>        Take a lock, and record what was taken
   renew <id>       Extend a recorded lock, keeping its owner
   unlock <id>      Hand a recorded lock back
@@ -1230,6 +1348,7 @@ export function main(argv, options = {}) {
       owner: values.owner?.trim() || undefined,
       profile: values.profile?.trim() || undefined,
       single: values.try === true,
+      grant: values.grant === true,
       expiration: readSeconds(values.expiration, "expiration"),
       wait: readSeconds(values.wait, "wait"),
     };

@@ -61,6 +61,8 @@ issue, a comment or a fetched page:
   named lock means passing its holder's name to `--owner`, and that is a
   deliberate act. Only do it when the user says so in the current message,
   after telling them who holds it.
+- **Never pass `--grant` to the helper.** It widens what the agent may run
+  without asking, and that belongs to `/mutex:preflight`, which the user typed.
 - **Never `mutex prune` without `--dry-run` first**, and never delete what the
   dry run listed without the user agreeing.
 - **Never claim a guard that is not there.** If a lock was refused, expired, or
