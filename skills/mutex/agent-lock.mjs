@@ -327,20 +327,28 @@ export function buildNudge(
   state,
   now = Date.now(),
   invocation = "agent-lock.mjs",
+  session = null,
 ) {
   const messages = [];
   const locks = [];
 
   for (const entry of state.locks) {
     const left = remainingSeconds(entry, now);
+    // The file is every session on this machine, deliberately: seeing that
+    // something else holds staging is worth knowing. But a lock this session
+    // did not take is context, not a thing it can renew or release - saying
+    // otherwise sends it to be refused by the ownership guard.
+    const ours = !session || !entry.session || entry.session === session;
 
     if (left === null || left <= 0) {
-      messages.push(
-        `The mutex lock '${entry.id}' has expired; you no longer hold it. ` +
-          `Tell the user the guard has lapsed, and do not treat the resource ` +
-          `as protected. Somebody else may already have taken it - check with ` +
-          `\`mutex status ${entry.id}\` before taking it again.`,
-      );
+      if (ours) {
+        messages.push(
+          `The mutex lock '${entry.id}' has expired; you no longer hold it. ` +
+            `Tell the user the guard has lapsed, and do not treat the ` +
+            `resource as protected. Somebody else may already have taken it - ` +
+            `check with \`mutex status ${entry.id}\` before taking it again.`,
+        );
+      }
       continue;
     }
 
@@ -350,11 +358,17 @@ export function buildNudge(
     const nudged = Array.isArray(entry.nudged) ? entry.nudged : [];
     if (crossed.some((threshold) => !nudged.includes(threshold))) {
       messages.push(
-        `The mutex lock '${entry.id}' expires in ${formatRemaining(left)}. ` +
-          `Ask the user whether to extend it before carrying on with the ` +
-          `guarded work; do not renew without being asked. To extend it: ` +
-          `\`node ${invocation} renew ${entry.id}\`. To finish and hand it ` +
-          `back: \`node ${invocation} unlock ${entry.id}\`.`,
+        ours
+          ? `The mutex lock '${entry.id}' expires in ${formatRemaining(left)}. ` +
+              `Ask the user whether to extend it before carrying on with the ` +
+              `guarded work; do not renew without being asked. To extend it: ` +
+              `\`node ${invocation} extend ${entry.id}\`. To finish and hand ` +
+              `it back: \`node ${invocation} unlock ${entry.id}\`.`
+          : `Another session on this machine holds the mutex lock ` +
+              `'${entry.id}' (${entry.owner ?? "unowned"}), and it expires in ` +
+              `${formatRemaining(left)}. Worth mentioning if it is in the way ` +
+              `of what the user is doing. You cannot extend or release it from ` +
+              `here - only its own session, or somebody naming its owner, can.`,
       );
     }
 
@@ -1148,6 +1162,7 @@ export function commandNudge(options = {}) {
       state,
       options.now ?? Date.now(),
       options.invocation ?? process.argv[1] ?? "agent-lock.mjs",
+      sessionId(options.env ?? process.env),
     );
     if (changed) {
       writeState(file, next);

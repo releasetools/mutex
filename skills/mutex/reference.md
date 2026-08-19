@@ -96,6 +96,13 @@ running a command rather than by reading configuration.
 mutex creates its `releasetools_mutex` table on first use, so the first read
 may create an empty one.
 
+## What the local record covers
+
+Every session on the machine writes to one file, on purpose: a lock another
+agent or terminal took is just as much in the way, and worth seeing. What it
+changes is what you may do about it - a lock this session did not take can be
+reported but not extended or released, since the owner will not match.
+
 ## Who the lock belongs to
 
 The owner is the agent, the host and the session:

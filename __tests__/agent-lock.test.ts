@@ -312,6 +312,45 @@ describe("the warning before a lock lapses", () => {
     expect(urgent.state.locks[0].nudged).toEqual([600, 120]);
   });
 
+  /**
+   * Every session on the machine shares the file, which is the point - seeing
+   * that something else holds staging is worth knowing. But this session
+   * cannot renew or release what it did not take, and telling it to try sends
+   * it to be refused by the ownership guard.
+   */
+  it("offers to extend its own lock, and only mentions another session's", () => {
+    const mine = buildNudge(
+      { locks: [{ ...entry(500), session: "abc" }] },
+      Date.now(),
+      "agent-lock.mjs",
+      "abc",
+    );
+    expect(mine.message).toContain("Ask the user whether to extend it");
+    expect(mine.message).toContain("extend staging");
+
+    const theirs = buildNudge(
+      { locks: [{ ...entry(500), session: "someone-else" }] },
+      Date.now(),
+      "agent-lock.mjs",
+      "abc",
+    );
+    expect(theirs.message).toContain("Another session on this machine holds");
+    expect(theirs.message).toContain("cannot extend or release it from here");
+    expect(theirs.message).not.toContain("Ask the user whether to extend");
+  });
+
+  it("does not tell a session that somebody else's lock has lapsed", () => {
+    const { message, state } = buildNudge(
+      { locks: [{ ...entry(-30), session: "someone-else" }] },
+      Date.now(),
+      "agent-lock.mjs",
+      "abc",
+    );
+
+    expect(message).toBe("");
+    expect(state.locks).toEqual([]);
+  });
+
   it("reports a lock that has gone, then stops tracking it", () => {
     const { message, state } = buildNudge({ locks: [entry(-30)] });
     expect(message).toContain("has expired; you no longer hold it");
