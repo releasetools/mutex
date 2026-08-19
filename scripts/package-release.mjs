@@ -50,7 +50,7 @@ const FILES = [
 ];
 
 /** Committed directories, published as they stand. */
-const DIRECTORIES = ["bin", "skills"];
+const DIRECTORIES = ["bin", "commands", "skills"];
 
 /** Directories that do not exist until the build has run. */
 const BUILT_DIRECTORIES = ["dist", "lib"];

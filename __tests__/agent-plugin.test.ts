@@ -25,7 +25,7 @@ import * as packaging from "../scripts/validate-agent-plugins.mjs";
 import * as installer from "../scripts/install-agent-skills.mjs";
 
 const { parseStrictJson, validateAgentPlugins } = packaging;
-const { DEFAULT_TARGETS, installAgentSkills } = installer;
+const { DEFAULT_TARGETS, installAgentSkills, renderGeminiCommand } = installer;
 
 /**
  * The plugin is a directory four different agents read, and none of them says
@@ -59,6 +59,7 @@ function plugin(overrides: Record<string, unknown> = {}) {
   const codex = {
     ...MANIFEST,
     skills: "./skills/",
+    commands: "./commands/",
     ...((overrides.codex as object) ?? {}),
   };
 
@@ -83,6 +84,14 @@ function plugin(overrides: Record<string, unknown> = {}) {
     `---\nname: ${overrides.skillName ?? "mutex"}\ndescription: Takes locks\n---\n\n# mutex\n`,
   );
   write("skills/mutex/agent-lock.mjs", "// helper\n");
+  write(
+    "commands/lock.md",
+    `---\nname: ${overrides.commandName ?? "lock"}\ndescription: ${overrides.commandDescription ?? "Take a lock"}\n---\n\nTake a lock on $ARGUMENTS.\n`,
+  );
+  write(
+    "commands/help.md",
+    `---\nname: help\ndescription: What this plugin does\n---\n\n- ${overrides.helpLists ?? "/mutex:lock"} - take a lock\n`,
+  );
   write(
     "hooks/hooks.json",
     JSON.stringify({
@@ -118,6 +127,22 @@ describe("the repository's own packaging", () => {
         false,
       );
     }
+  });
+
+  it("gives the agents a slash menu, not just a skill", () => {
+    const commands = fs
+      .readdirSync(path.join(REPOSITORY, "commands"))
+      .filter((entry) => entry.endsWith(".md"))
+      .map((entry) => entry.replace(/\.md$/, ""));
+
+    expect(commands).toEqual(
+      expect.arrayContaining(["lock", "unlock", "extend", "status", "help"]),
+    );
+    // Starting or stopping the pooled server, choosing profiles and deleting
+    // expired locks stay the user's to run, so they get no command.
+    expect(commands).not.toEqual(
+      expect.arrayContaining(["server", "profile", "prune"]),
+    );
   });
 
   it("keeps the two manifests on the same version", () => {
@@ -200,11 +225,63 @@ describe("validateAgentPlugins", () => {
     );
   });
 
+  it("catches a command whose front matter disagrees with its filename", () => {
+    const root = build({ commandName: "acquire" });
+    expect(validateAgentPlugins({ root }).errors).toEqual([
+      expect.stringContaining("commands/lock.md is named 'acquire'"),
+    ]);
+  });
+
+  it("catches a command with nothing to show in the menu", () => {
+    const root = build({ commandDescription: "" });
+    expect(validateAgentPlugins({ root }).errors).toEqual([
+      expect.stringContaining("commands/lock.md has no description"),
+    ]);
+  });
+
+  /**
+   * A help text that omits a command is worse than none: it reads as a
+   * complete list, and the command it leaves out is the one nobody finds.
+   */
+  it("catches a help command that has stopped listing one", () => {
+    const root = build({ helpLists: "/mutex:something-else" });
+    expect(validateAgentPlugins({ root }).errors).toEqual([
+      expect.stringContaining("help.md does not list /mutex:lock"),
+    ]);
+  });
+
+  it("catches Codex being pointed somewhere other than commands/", () => {
+    const root = build({ codex: { commands: "./prompts/" } });
+    expect(validateAgentPlugins({ root }).errors).toEqual([
+      expect.stringContaining('"commands": "./commands/"'),
+    ]);
+  });
+
   it("keeps the catalog from pinning a version the manifest owns", () => {
     const root = build({ entry: { version: "0.0.9" } });
     expect(validateAgentPlugins({ root }).errors).toEqual([
       expect.stringContaining("must not pin a plugin version"),
     ]);
+  });
+});
+
+describe("renderGeminiCommand", () => {
+  it("moves the front matter into description and the body into prompt", () => {
+    const rendered = renderGeminiCommand(
+      "---\nname: lock\ndescription: Take a lock\n---\n\nTake a lock on $ARGUMENTS.\n",
+    );
+
+    expect(rendered).toContain('description = "Take a lock"');
+    expect(rendered).toContain("Take a lock on {{args}}.");
+    expect(rendered).not.toContain("name: lock");
+  });
+
+  it("escapes what would otherwise end the string early", () => {
+    const rendered = renderGeminiCommand(
+      '---\ndescription: d\n---\n\nA backslash \\ and a """ inside.\n',
+    );
+
+    expect(rendered).toContain('A backslash \\\\ and a \\"\\"\\" inside.');
   });
 });
 
@@ -307,6 +384,37 @@ describe("installAgentSkills", () => {
         "utf8",
       ),
     ).toBe("an older release");
+  });
+
+  /**
+   * Gemini reads TOML where Claude Code and Codex read the markdown directly,
+   * so its commands are rendered on the way in rather than written twice.
+   */
+  it("renders the same commands into Gemini's dialect", () => {
+    const root = home([".gemini"]);
+    installAgentSkills({ root: REPOSITORY, home: root });
+
+    const rendered = path.join(root, ".gemini/commands/mutex");
+    expect(fs.readdirSync(rendered).sort()).toEqual(
+      fs
+        .readdirSync(path.join(REPOSITORY, "commands"))
+        .map((entry) => entry.replace(/\.md$/, ".toml"))
+        .sort(),
+    );
+    const lock = fs.readFileSync(path.join(rendered, "lock.toml"), "utf8");
+    expect(lock).toMatch(/^description = "/);
+    expect(lock).toContain("{{args}}");
+    expect(lock).not.toContain("$ARGUMENTS");
+  });
+
+  it("does not give Hermes commands it cannot read", () => {
+    const root = home([".hermes"]);
+    installAgentSkills({ root: REPOSITORY, home: root });
+
+    expect(fs.existsSync(path.join(root, ".hermes/commands"))).toBe(false);
+    expect(
+      fs.existsSync(path.join(root, ".hermes/skills/devops/mutex/SKILL.md")),
+    ).toBe(true);
   });
 
   it("refuses an agent it does not know how to install for", () => {

@@ -46,6 +46,10 @@ export const TARGETS = [
     agent: "gemini",
     home: ".gemini",
     skills: "skills",
+    // Gemini reads TOML rather than the markdown Claude Code and Codex share,
+    // so the same command files are rendered on the way in. Subdirectories are
+    // namespaces there, so `commands/mutex/lock.toml` is `/mutex:lock`.
+    commands: "commands",
     note: "Antigravity reads the same directory",
   },
   {
@@ -83,12 +87,68 @@ function filesUnder(root, prefix = "") {
   return files;
 }
 
-function sameContent(source, destination) {
-  try {
-    return fs.readFileSync(source).equals(fs.readFileSync(destination));
-  } catch {
-    return false;
+/**
+ * One command file, in the dialect Gemini reads.
+ *
+ * The markdown is the original: Claude Code and Codex both read `commands/`
+ * directly, and only Gemini needs a translation. Keeping that translation
+ * mechanical - front matter to `description`, body to `prompt`, `$ARGUMENTS` to
+ * `{{args}}` - is what stops the two from drifting into different instructions.
+ */
+export function renderGeminiCommand(markdown) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(markdown);
+  const description = front
+    ? (/^description:\s*(.+)$/m.exec(front[1])?.[1]?.trim() ?? "")
+    : "";
+  const body = (front ? markdown.slice(front[0].length) : markdown).trim();
+  const prompt = body
+    .replaceAll("$ARGUMENTS", "{{args}}")
+    // A TOML basic multi-line string, so a backslash or a stray triple quote in
+    // the prose cannot end it early or be read as an escape.
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"""', '\\"\\"\\"');
+
+  return `description = ${JSON.stringify(description)}\n\nprompt = """\n${prompt}\n"""\n`;
+}
+
+/**
+ * Every file this agent should end up with, keyed by its path under the agent's
+ * home. Copied bytes and rendered commands go through the same map, so
+ * `--check` reports staleness for both without knowing the difference.
+ */
+export function plannedFiles(root, skill, target) {
+  const planned = new Map();
+
+  const source = path.join(root, "skills", skill);
+  for (const relative of filesUnder(source)) {
+    planned.set(
+      path.join(target.skills, skill, relative),
+      fs.readFileSync(path.join(source, relative)),
+    );
   }
+
+  const commands = path.join(root, "commands");
+  if (target.commands && fs.existsSync(commands)) {
+    for (const entry of fs.readdirSync(commands)) {
+      if (!entry.endsWith(".md")) {
+        continue;
+      }
+      planned.set(
+        path.join(
+          target.commands,
+          skill,
+          `${path.basename(entry, ".md")}.toml`,
+        ),
+        Buffer.from(
+          renderGeminiCommand(
+            fs.readFileSync(path.join(commands, entry), "utf8"),
+          ),
+        ),
+      );
+    }
+  }
+
+  return planned;
 }
 
 /**
@@ -123,7 +183,6 @@ export function installAgentSkills(options = {}) {
     throw new Error(`no skill to install at ${source}`);
   }
 
-  const contents = filesUnder(source);
   const results = [];
 
   for (const target of TARGETS.filter((candidate) =>
@@ -143,35 +202,46 @@ export function installAgentSkills(options = {}) {
       continue;
     }
 
-    const changed = contents.filter(
-      (relative) =>
-        !sameContent(
-          path.join(source, relative),
-          path.join(destination, relative),
-        ),
-    );
+    const planned = plannedFiles(root, skill, target);
+    const changed = [...planned]
+      .filter(([relative, contents]) => {
+        try {
+          return !fs
+            .readFileSync(path.join(agentHome, relative))
+            .equals(contents);
+        } catch {
+          return true;
+        }
+      })
+      .map(([relative]) => relative);
+
     const status = !fs.existsSync(destination)
       ? "missing"
       : changed.length > 0
         ? "stale"
         : "current";
 
-    if (write && changed.length > 0) {
+    if (write) {
       for (const relative of changed) {
-        const file = path.join(destination, relative);
+        const file = path.join(agentHome, relative);
         fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.copyFileSync(path.join(source, relative), file);
+        fs.writeFileSync(file, planned.get(relative));
       }
     }
 
-    // Files the destination has and the source does not: an older layout left
-    // behind. Reported rather than deleted, since this writes into directories
-    // it does not own.
-    const extra = fs.existsSync(destination)
-      ? filesUnder(destination).filter(
-          (relative) => !contents.includes(relative),
-        )
-      : [];
+    // Files an earlier layout left behind. Reported rather than deleted, since
+    // this writes into directories it does not own.
+    const roots = [
+      path.join(target.skills, skill),
+      ...(target.commands ? [path.join(target.commands, skill)] : []),
+    ];
+    const extra = roots
+      .filter((relative) => fs.existsSync(path.join(agentHome, relative)))
+      .flatMap((relative) =>
+        filesUnder(path.join(agentHome, relative))
+          .map((found) => path.join(relative, found))
+          .filter((found) => !planned.has(found)),
+      );
 
     results.push({
       agent: target.agent,

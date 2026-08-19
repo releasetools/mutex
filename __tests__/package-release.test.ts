@@ -56,6 +56,7 @@ function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
   write("README.md", "# test");
   write("bin/mutex.js", '#!/usr/bin/env node\nimport "../lib/cli/main.js";\n');
   write("scripts/install-agent-skills.mjs", "// installer");
+  write("commands/lock.md", "---\nname: lock\ndescription: Take a lock\n---\n");
   write("skills/mutex/SKILL.md", "---\nname: mutex\ndescription: locks\n---\n");
   write("skills/mutex/agent-lock.mjs", "// helper");
   write("dist/main/index.js", "// main");
@@ -121,6 +122,7 @@ describe("packageRelease", () => {
         "README.md",
         "action.yml",
         "bin/mutex.js",
+        "commands/lock.md",
         "dist/main/index.js",
         "dist/main/package.json",
         "dist/post/index.js",
@@ -187,6 +189,7 @@ describe("packageRelease", () => {
     const { target } = packageRelease({ root, out: path.join(root, "out") });
     const home = fs.mkdtempSync(path.join(root, "home-"));
     fs.mkdirSync(path.join(home, ".hermes"));
+    fs.mkdirSync(path.join(home, ".gemini"));
 
     const { results } = installAgentSkills({ root: target, home });
 
@@ -195,6 +198,12 @@ describe("packageRelease", () => {
     );
     expect(
       fs.existsSync(path.join(home, ".hermes/skills/devops/mutex/SKILL.md")),
+    ).toBe(true);
+    // The commands are rendered out of `commands/`, so that has to be in the
+    // published tree as well - without it Gemini would install a skill and an
+    // empty slash menu, and say nothing about it.
+    expect(
+      fs.existsSync(path.join(home, ".gemini/commands/mutex/lock.toml")),
     ).toBe(true);
   });
 

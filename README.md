@@ -446,6 +446,31 @@ From a checkout, `npm run plugin:install` does the same thing.
 
 `--check` reports what is missing or out of date and writes nothing, which is what to run after upgrading the CLI. `--target <agent>` names one, including `claude` or `codex` for a plain copy instead of a plugin. An agent whose home directory does not exist is skipped rather than created.
 
+### Commands
+
+The plugin puts six commands in the slash menu, so the common operations are
+discoverable rather than something you have to describe:
+
+| Command                        |                                                      |
+| ------------------------------ | ---------------------------------------------------- |
+| `/mutex:check`                 | Can mutex reach its lock table here, and if not, why |
+| `/mutex:lock <id> [reason]`    | Take a lock, an hour by default                      |
+| `/mutex:status [id]`           | Who holds a lock, and what this session holds        |
+| `/mutex:extend <id> [seconds]` | Extend a lock before it lapses                       |
+| `/mutex:unlock <id>`           | Hand it back                                         |
+| `/mutex:help`                  | What the plugin does, and what it will not           |
+
+Each one defers to the skill rather than restating it, so there is one set of
+rules and one place to change them. There is deliberately no command for
+starting the pooled server, choosing a profile or pruning expired locks: those
+are yours to run, and the plugin says so instead of doing them.
+
+Claude Code and Codex read `commands/` as it stands. Gemini reads TOML, so the
+installer renders the same files into `~/.gemini/commands/mutex/` on the way in
+
+- one source, translated, rather than two that drift. Hermes has no command
+  surface, and gets the skill.
+
 ### What the agent does with it
 
 | Step        |                                                                                                                                     |

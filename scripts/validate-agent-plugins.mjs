@@ -172,6 +172,7 @@ export function validateAgentPlugins({ root = PACKAGE_ROOT, expected } = {}) {
   }
 
   validateSkills(root, errors);
+  validateCommands(root, codex, errors);
   validateNoProductCopies(root, errors);
   validateMarketplace(root, load(MARKETPLACE), errors);
   validateHooks(root, errors);
@@ -227,6 +228,66 @@ function validateSkills(root, errors) {
     }
     if (!/^description:/m.test(front[1])) {
       errors.push(`skills/${directory.name}/SKILL.md has no description`);
+    }
+  }
+}
+
+/**
+ * The commands that show up in an agent's slash menu.
+ *
+ * Claude Code and Codex both read `commands/` from the plugin root - Codex
+ * falls back to it when the manifest names no path, and the manifest names it
+ * anyway so the intent is on the page rather than in another tool's default.
+ *
+ * `help.md` lists them for the user, which is the one piece of this that can
+ * quietly go stale: adding a command is easy, and remembering that a second
+ * file describes it is not. A help text that omits a command is worse than no
+ * help text, because it reads as a complete list.
+ */
+function validateCommands(root, codex, errors) {
+  const directory = path.join(root, "commands");
+  if (!fs.existsSync(directory)) {
+    return;
+  }
+
+  if (codex && codex.commands !== "./commands/") {
+    errors.push(`${CODEX_MANIFEST} must set "commands": "./commands/"`);
+  }
+
+  const names = [];
+  for (const entry of fs.readdirSync(directory).sort()) {
+    if (!entry.endsWith(".md")) {
+      errors.push(`commands/${entry} is not a command file`);
+      continue;
+    }
+
+    const name = path.basename(entry, ".md");
+    names.push(name);
+    const text = fs.readFileSync(path.join(directory, entry), "utf8");
+    const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+    if (!front) {
+      // Codex requires front matter outright; Claude Code shows a command with
+      // no description as a blank row in the menu.
+      errors.push(`commands/${entry} has no front matter`);
+      continue;
+    }
+    const declared = /^name:\s*(.+)$/m.exec(front[1])?.[1]?.trim();
+    if (declared && declared !== name) {
+      errors.push(`commands/${entry} is named '${declared}'`);
+    }
+    if (!/^description:\s*\S/m.test(front[1])) {
+      errors.push(`commands/${entry} has no description`);
+    }
+  }
+
+  const help = names.includes("help")
+    ? fs.readFileSync(path.join(directory, "help.md"), "utf8")
+    : null;
+  if (help) {
+    for (const name of names.filter((candidate) => candidate !== "help")) {
+      if (!help.includes(`/${PLUGIN_NAME}:${name}`)) {
+        errors.push(`commands/help.md does not list /${PLUGIN_NAME}:${name}`);
+      }
     }
   }
 }
