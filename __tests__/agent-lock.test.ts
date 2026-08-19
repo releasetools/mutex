@@ -998,16 +998,16 @@ describe("preflight", () => {
   });
 
   /**
-   * `-p` selects a profile for one command without enabling it, so a preflight
-   * run that way has to report the profile it used rather than the one that
-   * happens to be enabled.
+   * `-p` selects a profile for one command without making it the default, so a
+   * preflight run that way has to report the profile it used rather than the
+   * one that happens to be the default.
    */
-  it("reports the profile -p asked for, not the enabled one", () => {
+  it("reports the profile -p asked for, not the default one", () => {
     const { root } = build();
     fs.mkdirSync(path.join(root, "releasetools-mutex"), { recursive: true });
     fs.writeFileSync(
       path.join(root, "releasetools-mutex", "profiles.toml"),
-      '[server]\nmode = "server"\nenabled = true\nbind_address = "localhost:5625"\nworking_dir = "/tmp"\n\n[direct]\nmode = "direct"\nenabled = false\n',
+      '[server]\nmode = "server"\ndefault = true\nbind_address = "localhost:5625"\nworking_dir = "/tmp"\n\n[direct]\nmode = "direct"\ndefault = false\n',
     );
     const mutex = stubMutex(root, {
       version: { stdout: "1.4.0\n" },
@@ -1052,7 +1052,7 @@ describe("preflight", () => {
     fs.mkdirSync(path.join(root, "releasetools-mutex"), { recursive: true });
     fs.writeFileSync(
       path.join(root, "releasetools-mutex", "profiles.toml"),
-      '[direct]\nmode = "direct"\nenabled = true\nssl_negotiation = "direct"\n',
+      '[direct]\nmode = "direct"\ndefault = true\nssl_negotiation = "direct"\n',
     );
     const mutex = stubMutex(root, {
       version: { stdout: "1.4.0\n" },
@@ -1075,7 +1075,7 @@ describe("preflight", () => {
     fs.mkdirSync(path.join(root, "releasetools-mutex"), { recursive: true });
     fs.writeFileSync(
       path.join(root, "releasetools-mutex", "profiles.toml"),
-      '[server]\nmode = "server"\nenabled = true\nbind_address = "localhost:5625"\nworking_dir = "/tmp"\n\n[direct]\nmode = "direct"\nenabled = false\n',
+      '[server]\nmode = "server"\ndefault = true\nbind_address = "localhost:5625"\nworking_dir = "/tmp"\n\n[direct]\nmode = "direct"\ndefault = false\n',
     );
     const mutex = stubMutex(root, {
       version: { stdout: "1.3.1\n" },

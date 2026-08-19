@@ -115,7 +115,7 @@ describe("parseCommandLine", () => {
     expect(parseCommandLine(["prune", "--dry-run"]).options.dryRun).toBe(true);
   });
 
-  it("parses temporary profile selection without enabling it", () => {
+  it("parses temporary profile selection without changing the default", () => {
     const parsed = parseCommandLine(["lock", "id", "-p", "direct"]);
     expect(parsed.options.profile).toBe("direct");
   });

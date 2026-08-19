@@ -4,6 +4,7 @@ Newest first. One line per change.
 
 ## 1.4.0
 
+- The `enabled` profile setting is now named `default`; existing profiles files must rename it, and profiles with `default = false` remain selectable with `--profile`.
 - Added an agent plugin: a skill that lets a coding agent take a mutex lock around work you ask it to guard, hand it back when the work is done, and warn you before the lease runs out, with `/mutex:lock`, `/mutex:unlock` and four more in the slash menu. Claude Code and Codex install it as a plugin from the repository; Hermes, Gemini and Antigravity copy the skill, which ships with the CLI package so a global installation can seed them. See [Agent plugin](./README.md#agent-plugin).
 - `mutex list` now takes `--owner`, and reads `$MUTEX_OWNER` when the flag is left off, so asking what one owner holds no longer means fetching every lock in the table and filtering them locally. See [Ownership](./README.md#ownership).
 - The mutex server's protocol version is now 2, so a server left running across the upgrade refuses lock commands by name until it is restarted with `mutex server stop && mutex server start`. Stopping and inspecting a server work whatever version it speaks, so the restart that fixes the mismatch never needs `kill` and a pid file.
