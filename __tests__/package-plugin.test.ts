@@ -158,15 +158,59 @@ describe("packagePlugin", () => {
   });
 
   it("empties an output directory left over from last time", () => {
+    const root = build();
     const out = into();
+    packagePlugin({ root, out });
     fs.writeFileSync(
-      path.join(out, "withdrawn.md"),
+      path.join(out, "commands", "withdrawn.md"),
       "from a previous version\n",
     );
 
-    packagePlugin({ root: build(), out });
+    packagePlugin({ root, out });
 
-    expect(fs.existsSync(path.join(out, "withdrawn.md"))).toBe(false);
+    expect(fs.existsSync(path.join(out, "commands", "withdrawn.md"))).toBe(
+      false,
+    );
+  });
+
+  /**
+   * `--out` is deleted before anything is written to it, so a mistyped one is
+   * the most expensive argument this command takes.
+   */
+  describe("refusing to empty the wrong directory", () => {
+    it("refuses a directory that contains the checkout", () => {
+      const root = build();
+      for (const out of [root, path.dirname(root), path.parse(root).root]) {
+        expect(() => packagePlugin({ root, out })).toThrow(
+          /contains the checkout/,
+        );
+      }
+    });
+
+    it("refuses your home directory", () => {
+      expect(() => packagePlugin({ root: build(), out: os.homedir() })).toThrow(
+        /home directory/,
+      );
+    });
+
+    it("refuses a directory holding something it did not put there", () => {
+      const out = into();
+      fs.writeFileSync(path.join(out, "notes.md"), "not a plugin\n");
+
+      expect(() => packagePlugin({ root: build(), out })).toThrow(
+        /refusing to empty it/,
+      );
+      expect(fs.existsSync(path.join(out, "notes.md"))).toBe(true);
+    });
+
+    it("refuses a path that is not a directory", () => {
+      const out = path.join(into(), "file");
+      fs.writeFileSync(out, "");
+
+      expect(() => packagePlugin({ root: build(), out })).toThrow(
+        /is not a directory/,
+      );
+    });
   });
 
   it.each([
@@ -207,13 +251,6 @@ describe("packagePlugin", () => {
 
     expect(() => packagePlugin({ root, out: into() })).toThrow(
       /does not validate[\s\S]*references a missing file: tools\/agent-lock\.mjs/,
-    );
-  });
-
-  it("refuses to assemble the plugin over the checkout", () => {
-    const root = build();
-    expect(() => packagePlugin({ root, out: root })).toThrow(
-      /directory of its own/,
     );
   });
 
