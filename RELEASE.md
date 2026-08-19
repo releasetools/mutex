@@ -11,6 +11,8 @@ Newest first. One line per change.
 - The mutex server now starts TLS directly when the connection is encrypted, without being configured to, and falls back permanently after the first refusal; against PostgreSQL 16 or older that costs one failed connection at startup and nothing afterwards.
 - An `sslnegotiation` in the connection string that is neither `postgres` nor `direct` is now rejected by name, rather than being silently ignored.
 - Profiles accept `ssl_negotiation = "direct"`, which removes a round trip from the TLS handshake and needs PostgreSQL 17 or newer; measured 26.5 ms per connection against a hosted database, with a benchmark runner to measure your own.
+- Documented a clean mise installation that installs the required Node runtime and explicitly approves the new package below mise's download threshold, instead of depending on Node already being present.
+- Releases now install the exact public npm package through an isolated mise-managed Node runtime, so a broken mise installation leaves the originating release run red.
 - Pooled CLI commands now start without loading the PostgreSQL client or mutex server lifecycle code, reducing the fixed cost of each short-lived command; remote server status measured 81.5 ms instead of 316.6 ms for direct access.
 - Lock, unlock, and renew now normally complete in one PostgreSQL round trip without changing ownership, expiry, or fencing behavior; the remote pooled lock/unlock cycle measured 166.7 ms, down from 369.7 ms.
 - Added a reusable direct-versus-server benchmark runner that writes its results outside the repository by default.
