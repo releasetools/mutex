@@ -51,6 +51,14 @@ export type ProtocolResponse =
 
 export interface ServerStatus {
   profile: string;
+  /**
+   * The mutex version the server process is running.
+   *
+   * Optional because it is not the only thing that answers: `health` survives
+   * a version gap on purpose, so a server built before this field existed can
+   * still reply, and the reply simply does not carry one.
+   */
+  version?: string;
   pid: number;
   uptimeSeconds: number;
   bindAddress: string;

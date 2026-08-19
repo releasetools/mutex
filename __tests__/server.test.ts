@@ -27,7 +27,11 @@ import {
   ServerDatabase,
   serverPaths,
 } from "../src/server/server.js";
-import { serverCommand } from "../src/server/lifecycle.js";
+import {
+  describeServerVersion,
+  serverCommand,
+} from "../src/server/lifecycle.js";
+import { readPackageVersion } from "../src/version.js";
 import { TcpMutexStore } from "../src/server/tcp-store.js";
 import {
   LIFECYCLE_PROTOCOL_VERSION,
@@ -181,6 +185,9 @@ describe("mutex TCP server", () => {
     const health = await client.health();
     expect(health).toMatchObject({
       profile: "pooled",
+      // The server says which mutex it is running, so a stale one can be told
+      // apart from the CLI asking it.
+      version: readPackageVersion(),
       bindAddress: profile.bindAddress,
       protocolVersion: 2,
       pool: { healthy: true, total: 1 },
@@ -299,6 +306,20 @@ async function rawRequest(
     });
   });
 }
+
+describe("what a server says it is running", () => {
+  it("names its version, and this one when they differ", () => {
+    expect(describeServerVersion("1.4.0", "1.4.0")).toBe("1.4.0");
+    expect(describeServerVersion("1.3.1", "1.4.0")).toBe(
+      "1.3.1 (this mutex is 1.4.0)",
+    );
+    // Health survives a version gap, so the answer can come from a server too
+    // old to carry the field. Not reporting one means it is not this one.
+    expect(describeServerVersion(undefined, "1.4.0")).toBe(
+      "not reported (this mutex is 1.4.0)",
+    );
+  });
+});
 
 async function waitForServer(client: TcpMutexStore): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt++) {

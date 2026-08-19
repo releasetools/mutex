@@ -17,6 +17,7 @@ import { DatabaseMutex } from "../database.js";
 import { describeError } from "../helpers.js";
 import { Logger } from "../logger.js";
 import { LockStore } from "../mutex.js";
+import { readPackageVersion } from "../version.js";
 import { MutexProfile } from "../cli/profiles.js";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
@@ -138,10 +139,16 @@ export async function runServer(
     socket.once("close", () => sockets.delete(socket));
   });
 
+  // Read once: a long-running process does not change version, and health is
+  // asked often enough while a server is starting to make it worth not
+  // walking the filesystem for an answer that cannot have moved.
+  const version = readPackageVersion();
+
   const status = async (): Promise<ServerStatus> => {
     await database.warm();
     return {
       profile: profile.name,
+      version,
       pid: process.pid,
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
       bindAddress: profile.bindAddress!,

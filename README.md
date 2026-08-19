@@ -167,7 +167,7 @@ The lock is held for exactly as long as `deploy.sh` runs, and released however i
 | `mutex profile [name]`         | List/select profiles, or enable one by name   |
 | `mutex server start`           | Start the selected server in the background   |
 | `mutex server run`             | Run it in the foreground for service managers |
-| `mutex server status`          | Show server, protocol, log and pool status    |
+| `mutex server status`          | Show version, protocol, log and pool status   |
 | `mutex server stop`            | Gracefully stop it                            |
 | `mutex help [command]`         | Show help                                     |
 | `mutex version`                | Print the version                             |
@@ -249,7 +249,7 @@ mutex server status -p server
 
 Selection is explicit. A direct profile never probes the server, and a server profile never falls back to PostgreSQL. Once a profiles file exists, a direct command must select its direct profile and still needs `MUTEX_DATABASE_URL` in that command's environment.
 
-The CLI and the server each carry a protocol version, and lock commands refuse each other by name when the two differ, rather than letting one answer a question the other did not ask. `mutex server stop` and `mutex server status` are exempt on purpose: they are how a mismatch is seen and how it is fixed, so they work whatever version the other end speaks, and `mutex server status` reports the running server's version. Upgrading mutex while a server is running is what makes them differ: restart it with `mutex server stop && mutex server start`, or through whichever service manager owns it.
+The CLI and the server each carry a protocol version, and lock commands refuse each other by name when the two differ, rather than letting one answer a question the other did not ask. `mutex server stop` and `mutex server status` are exempt on purpose: they are how a mismatch is seen and how it is fixed, so they work whatever version the other end speaks, and `mutex server status` reports the version and protocol the running server was built with, next to this one when they differ. Upgrading mutex while a server is running is what makes them differ: restart it with `mutex server stop && mutex server start`, or through whichever service manager owns it.
 
 Either kind of profile may also set `ssl_negotiation`, which is how the TLS handshake starts:
 

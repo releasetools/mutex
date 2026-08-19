@@ -24,6 +24,7 @@ import {
 import { ConfigurationError, EXIT_OK } from "../cli/exit-codes.js";
 import { runServer, serverPaths } from "./server.js";
 import { TcpMutexStore } from "./tcp-store.js";
+import { readPackageVersion } from "../version.js";
 
 export type ServerAction = "start" | "run" | "status" | "stop";
 
@@ -146,6 +147,23 @@ async function startServer(
   );
 }
 
+/**
+ * The version the server is running, next to this one when they differ.
+ *
+ * The comparison is the point: a server keeps running the code it started
+ * with, so after an upgrade the process answering here is the old one until
+ * somebody restarts it - which is what a protocol mismatch is, seen from the
+ * other side. A server too old to report a version is by definition not this
+ * one, so it is named as the difference it is rather than left blank.
+ */
+export function describeServerVersion(
+  reported: string | undefined,
+  mine = readPackageVersion(),
+): string {
+  const server = reported ?? "not reported";
+  return server === mine ? server : `${server} (this mutex is ${mine})`;
+}
+
 async function showStatus(
   profile: MutexProfile,
   json: boolean,
@@ -162,6 +180,7 @@ async function showStatus(
     process.stdout.write(
       [
         `Profile: ${status.profile}`,
+        `Version: ${describeServerVersion(status.version)}`,
         `PID: ${status.pid}`,
         `Uptime: ${status.uptimeSeconds}s`,
         `Address: ${status.bindAddress}`,
