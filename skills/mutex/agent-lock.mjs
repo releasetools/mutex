@@ -1,0 +1,1085 @@
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { parseArgs } from "node:util";
+
+/**
+ * The half of the mutex skill that has to be deterministic.
+ *
+ * An agent can read the CLI's output and reason about it, but three things
+ * cannot be left to reasoning:
+ *
+ * - **The owner has to survive the session.** `unlock` and `renew` only work
+ *   when the name matches exactly, so the name used to take a lock is
+ *   generated once here and read back from the state file, rather than
+ *   retyped from memory three tool calls later.
+ * - **Expiry has to be visible without asking.** A lock is a promise with a
+ *   deadline. Anything that has to be queried is a deadline nobody sees, so
+ *   what was acquired is written to a small local file that a status line or a
+ *   hook can read in a millisecond, with no database round trip.
+ * - **A lock must not be forgotten.** Wrapping the acquisition is what keeps
+ *   the file honest: there is no path where the lock is taken and the record
+ *   of it is not.
+ *
+ * The state file is a cache and never the truth. PostgreSQL holds the locks;
+ * losing this file loses the reminder, not the lock, and `mutex status <id>`
+ * still names the owner needed to release it.
+ */
+
+/**
+ * An hour, where the CLI defaults to a minute.
+ *
+ * The CLI answers to CI, where a step knows how long it runs. A person working
+ * through an agent does not, and a lease that lapses mid-conversation hands
+ * the resource to somebody else while the work is still going on. An hour is
+ * long enough to be about the work rather than about the clock, and short
+ * enough that a session that dies holding one is not a lock for the rest of
+ * the day.
+ */
+export const DEFAULT_EXPIRATION_SECONDS = 3600;
+
+/**
+ * How long to wait for a held lock before giving up, in seconds.
+ *
+ * The CLI's default is the whole lease - an hour here - which for an agent
+ * means a tool call that hangs for an hour and a user watching a spinner. Ask
+ * for it, wait half a minute, and report back who has it instead.
+ */
+export const DEFAULT_WAIT_SECONDS = 30;
+
+/**
+ * When to speak up about a lock that is running out, in seconds remaining.
+ *
+ * Each threshold fires once per lock, so a decision not to renew is not
+ * re-litigated on every prompt: ten minutes is time to finish or extend, two
+ * minutes is the last honest moment to say the guard is about to lapse.
+ */
+export const NUDGE_THRESHOLDS_SECONDS = [600, 120];
+
+/** The CLI's exit codes, which this script passes through unchanged. */
+const EXIT_OK = 0;
+const EXIT_ERROR = 1;
+const EXIT_USAGE = 2;
+const EXIT_NO_MUTEX = 127;
+
+const STATE_FILENAME = "agent-locks.json";
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+/** Where the reminder lives. State, not configuration: XDG says so. */
+export function stateDirectory(env = process.env, home = os.homedir()) {
+  return env.XDG_STATE_HOME
+    ? path.join(path.resolve(env.XDG_STATE_HOME), "releasetools-mutex")
+    : path.join(home, ".local", "state", "releasetools-mutex");
+}
+
+export function statePath(env = process.env, home = os.homedir()) {
+  return path.join(stateDirectory(env, home), STATE_FILENAME);
+}
+
+/**
+ * Reads the recorded locks, tolerating every way the file can be wrong.
+ *
+ * A status line and a prompt hook both read this on paths where throwing would
+ * be worse than forgetting: a corrupt cache must not break the terminal or
+ * refuse a prompt, so anything unreadable is simply no locks.
+ */
+export function readState(file) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    const locks = Array.isArray(parsed?.locks) ? parsed.locks : [];
+    return {
+      locks: locks.filter((entry) => entry && typeof entry.id === "string"),
+    };
+  } catch {
+    return { locks: [] };
+  }
+}
+
+/** Replaces the file atomically, so a reader never sees half a write. */
+export function writeState(file, state) {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  fs.renameSync(temporary, file);
+}
+
+export function remember(file, entry) {
+  const state = readState(file);
+  state.locks = [...state.locks.filter((held) => held.id !== entry.id), entry];
+  writeState(file, state);
+  return state;
+}
+
+export function forget(file, id) {
+  const state = readState(file);
+  const remaining = state.locks.filter((held) => held.id !== id);
+  const removed = remaining.length !== state.locks.length;
+  if (removed) {
+    writeState(file, { locks: remaining });
+  }
+  return removed;
+}
+
+export function findEntry(file, id) {
+  return readState(file).locks.find((held) => held.id === id) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Time
+// ---------------------------------------------------------------------------
+
+/** Seconds left on a recorded lock, or null when the expiry is unreadable. */
+export function remainingSeconds(entry, now = Date.now()) {
+  const expiry = Date.parse(entry?.expiresAt ?? "");
+  return Number.isNaN(expiry) ? null : Math.round((expiry - now) / 1000);
+}
+
+export function liveLocks(state, now = Date.now()) {
+  return state.locks.filter((entry) => (remainingSeconds(entry, now) ?? 0) > 0);
+}
+
+/**
+ * A duration a person reads at a glance.
+ *
+ * Minutes above a minute, deliberately: a status line that counts seconds
+ * changes on every redraw and stops being read.
+ */
+export function formatRemaining(seconds) {
+  if (seconds < 0) {
+    return `${formatRemaining(-seconds)} ago`;
+  }
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+/**
+ * Which agent is running, for the human reading `mutex list`.
+ *
+ * Prefix matching rather than named variables, because every one of these
+ * tools ships its own set and they change; being wrong here costs a cosmetic
+ * prefix, since what makes an owner unique is the suffix below.
+ */
+export function detectAgent(env = process.env) {
+  if (env.MUTEX_AGENT_NAME?.trim()) {
+    return env.MUTEX_AGENT_NAME.trim();
+  }
+  const prefixes = [
+    ["CLAUDE", "claude"],
+    ["CODEX", "codex"],
+    ["HERMES", "hermes"],
+    ["ANTIGRAVITY", "antigravity"],
+    ["GEMINI", "gemini"],
+  ];
+  const keys = Object.keys(env);
+  for (const [prefix, name] of prefixes) {
+    // A plain prefix, not `PREFIX_`: the commonest marker of them all is
+    // `CLAUDECODE`, which an underscore-anchored match misses entirely.
+    if (keys.some((key) => key.startsWith(prefix))) {
+      return name;
+    }
+  }
+  return "agent";
+}
+
+/**
+ * The name this lock is taken under.
+ *
+ * `$MUTEX_OWNER` wins when it is set, because the CLI already documents it and
+ * a workflow that names its locks means it. Otherwise the name is generated
+ * with a random suffix, so two agents on one machine - or two sessions in one
+ * repository - cannot release each other's locks. Naming an owner is what
+ * makes a lock protected: anyone can take an unowned one back.
+ */
+export function resolveOwner(env = process.env, host = os.hostname()) {
+  const declared = env.MUTEX_OWNER?.trim();
+  if (declared) {
+    return declared;
+  }
+  const machine = host.split(".")[0] || "localhost";
+  return `${detectAgent(env)}@${machine}:${randomBytes(2).toString("hex")}`;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * The status line segment: what is held, and how long it lasts.
+ *
+ * Empty when nothing is held, so appending it to an existing status line costs
+ * nothing on the sessions that never take a lock.
+ */
+export function renderStatusline(state, now = Date.now(), options = {}) {
+  const held = liveLocks(state, now);
+  if (held.length === 0) {
+    return "";
+  }
+
+  const soonest = Math.min(
+    ...held.map((entry) => remainingSeconds(entry, now) ?? 0),
+  );
+  const text = `🔒 ${held
+    .map(
+      (entry) => `${entry.id} ${formatRemaining(remainingSeconds(entry, now))}`,
+    )
+    .join(", ")}`;
+
+  if (options.color === false) {
+    return text;
+  }
+  const [warn, urgent] = NUDGE_THRESHOLDS_SECONDS;
+  const colour = soonest <= urgent ? 31 : soonest <= warn ? 33 : 36;
+  return `\x1b[${colour}m${text}\x1b[0m`;
+}
+
+/**
+ * What to tell the agent, unprompted, about a lock that is running out.
+ *
+ * Returns the message and the state to persist. Expired locks are reported
+ * once and then dropped: the lock is gone from the agent's hands whether or
+ * not anyone noticed, and saying so is the point - continuing to act as though
+ * a lapsed guard still holds is the failure this exists to prevent.
+ */
+export function buildNudge(
+  state,
+  now = Date.now(),
+  invocation = "agent-lock.mjs",
+) {
+  const messages = [];
+  const locks = [];
+
+  for (const entry of state.locks) {
+    const left = remainingSeconds(entry, now);
+
+    if (left === null || left <= 0) {
+      messages.push(
+        `The mutex lock '${entry.id}' has expired; you no longer hold it. ` +
+          `Tell the user the guard has lapsed, and do not treat the resource ` +
+          `as protected. Somebody else may already have taken it - check with ` +
+          `\`mutex status ${entry.id}\` before taking it again.`,
+      );
+      continue;
+    }
+
+    const crossed = NUDGE_THRESHOLDS_SECONDS.filter(
+      (threshold) => left <= threshold,
+    );
+    const nudged = Array.isArray(entry.nudged) ? entry.nudged : [];
+    if (crossed.some((threshold) => !nudged.includes(threshold))) {
+      messages.push(
+        `The mutex lock '${entry.id}' expires in ${formatRemaining(left)}. ` +
+          `Ask the user whether to extend it before carrying on with the ` +
+          `guarded work; do not renew without being asked. To extend it: ` +
+          `\`node ${invocation} renew ${entry.id}\`. To finish and hand it ` +
+          `back: \`node ${invocation} unlock ${entry.id}\`.`,
+      );
+    }
+
+    locks.push({
+      ...entry,
+      nudged: [...new Set([...nudged, ...crossed])].sort((a, b) => b - a),
+    });
+  }
+
+  const next = { locks };
+  return {
+    message: messages.join("\n\n"),
+    state: next,
+    changed: JSON.stringify(next) !== JSON.stringify(state),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The CLI underneath
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs the real `mutex`, and returns what it said.
+ *
+ * Never a shell, and arguments always as an array - the same rule the CLI
+ * keeps for the programs it wraps. stderr is inherited rather than captured,
+ * so contention reports and warnings reach the agent as they happen instead of
+ * arriving after the fact.
+ */
+export function runMutex(args, options = {}) {
+  const result = spawnSync(options.executable ?? "mutex", args, {
+    stdio: ["ignore", "pipe", "inherit"],
+    encoding: "utf8",
+    env: options.env ?? process.env,
+  });
+
+  if (result.error) {
+    const code = result.error.code;
+    if (code === "ENOENT") {
+      return { missing: true, status: EXIT_NO_MUTEX, stdout: "", json: null };
+    }
+    throw result.error;
+  }
+
+  const stdout = result.stdout ?? "";
+  let json = null;
+  try {
+    json = JSON.parse(stdout);
+  } catch {
+    json = null;
+  }
+  return { missing: false, status: result.status ?? EXIT_ERROR, stdout, json };
+}
+
+/**
+ * Which profile mutex would use, for the report only.
+ *
+ * A deliberately small reader for three keys, and best-effort by design: it
+ * decides what the report *says*, never what it concludes. The verdict below
+ * comes from running a command, because a profiles file that parses is not the
+ * same as a database that answers.
+ */
+export function readEnabledProfile(file) {
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+
+  let current = null;
+  let enabled = null;
+  for (const line of text.split(/\r?\n/)) {
+    const stripped = line.split("#")[0].trim();
+    const section = /^\[([^\]]+)\]$/.exec(stripped);
+    if (section) {
+      current = {
+        name: section[1].trim(),
+        mode: null,
+        bindAddress: null,
+        sslNegotiation: null,
+      };
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    const setting = /^([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(.+)$/.exec(stripped);
+    if (!setting) {
+      continue;
+    }
+    const [, key, raw] = setting;
+    const value =
+      raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+    if (key === "mode") {
+      current.mode = value;
+    } else if (key === "bind_address") {
+      current.bindAddress = value;
+    } else if (key === "ssl_negotiation") {
+      current.sslNegotiation = value;
+    } else if (key === "enabled" && value === "true") {
+      enabled = current;
+    }
+  }
+  return enabled;
+}
+
+/**
+ * Can this machine reach the lock table at all, and how.
+ *
+ * Deliberately decided by running a command rather than by reading
+ * configuration: profiles select server or direct access explicitly and never
+ * fall back to each other, so the only honest answer to "does this work" comes
+ * from the CLI itself. `list` is the cheapest read that proves the whole path.
+ *
+ * It reports whether the connection string is set, never what it is.
+ */
+export function preflight(options = {}) {
+  const env = options.env ?? process.env;
+  const home = options.home ?? os.homedir();
+  const profilesPath = path.join(
+    env.XDG_CONFIG_HOME
+      ? path.join(path.resolve(env.XDG_CONFIG_HOME), "releasetools-mutex")
+      : path.join(home, ".config", "releasetools-mutex"),
+    "profiles.toml",
+  );
+  const profile = readEnabledProfile(profilesPath);
+  const context = {
+    profilesPath,
+    profilesFile: fs.existsSync(profilesPath),
+    profile,
+    databaseUrl: Boolean(env.MUTEX_DATABASE_URL),
+    owner: env.MUTEX_OWNER?.trim() || null,
+  };
+
+  const version = runMutex(["version"], options);
+  if (version.missing) {
+    return {
+      ok: false,
+      reason: "cli-missing",
+      message: "the mutex CLI is not on PATH",
+      remedy:
+        "Install it with `npm install --global @releasetools/mutex@1` (Node.js 24 or newer), then run the preflight again.",
+      ...context,
+    };
+  }
+  context.version = version.stdout.trim();
+
+  const probe = runMutex(
+    ["list", "--json", ...(options.profile ? ["-p", options.profile] : [])],
+    options,
+  );
+  if (probe.status === EXIT_OK) {
+    return {
+      ok: true,
+      reason: "ready",
+      mode: profile?.mode ?? "direct",
+      message: profile
+        ? `mutex answered through the '${profile.name}' profile (${profile.mode})`
+        : "mutex answered directly, using $MUTEX_DATABASE_URL",
+      locks: Array.isArray(probe.json?.locks) ? probe.json.locks.length : null,
+      ...context,
+    };
+  }
+
+  // Exit 3 is the CLI saying it has no usable connection string, and its own
+  // stderr has already said which half is missing. Everything else is a path
+  // that exists but does not answer - most often a server profile whose server
+  // is not running, which is a different fix from a missing secret.
+  const configuration = probe.status === 3;
+  return {
+    ok: false,
+    reason: configuration ? "no-connection" : "unreachable",
+    mode: profile?.mode ?? "direct",
+    message: configuration
+      ? "mutex has no usable connection string"
+      : `mutex could not reach the lock table (exit ${probe.status})`,
+    remedy: remedyFor(profile, configuration),
+    ...context,
+  };
+}
+
+/**
+ * What to do about it, in the user's terms.
+ *
+ * Explicit about who acts: starting a server, exporting a secret and writing a
+ * profiles file are all the user's to do. The skill's job is to say which one
+ * is missing, not to reach for the secret itself.
+ */
+function remedyFor(profile, configuration) {
+  if (profile?.mode === "server") {
+    return configuration
+      ? `The '${profile.name}' profile is a server profile, so only the server needs the connection string. Ask the user to start it with \`mutex server start\` in an environment where $MUTEX_DATABASE_URL is visible.`
+      : `The '${profile.name}' profile expects a server at ${profile.bindAddress ?? "its bind address"} and nothing answered there. Ask the user to start it with \`mutex server start\` in an environment where $MUTEX_DATABASE_URL is visible; \`mutex server status\` reports whether it is up. A server profile never falls back to opening the database itself.`;
+  }
+  if (profile?.mode === "direct") {
+    if (configuration) {
+      return `The '${profile.name}' profile is direct, so this command needs $MUTEX_DATABASE_URL in its own environment. Ask the user to export it - never write it into a file, an argument or a profile.`;
+    }
+    // mutex names the setting behind a failed handshake in its own error, so
+    // point at that rather than guessing over it.
+    const negotiation =
+      profile.sslNegotiation === "direct"
+        ? ` This profile sets \`ssl_negotiation = "direct"\`, which needs PostgreSQL 17 or newer; against anything older the handshake fails.`
+        : "";
+    return `The '${profile.name}' profile opens the database itself, so nothing here is waiting on a server. Read mutex's own error above - it names the setting behind a failed TLS handshake - and report it.${negotiation}`;
+  }
+  return configuration
+    ? "Export $MUTEX_DATABASE_URL for this command, or ask the user to run `mutex profile` themselves to configure the pooled server. Never put a connection string in an argument: it would be readable from `ps` and left in shell history."
+    : "Ask the user how mutex reaches the database here; `mutex server status` reports whether a local server is up.";
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+function write(stream, text) {
+  stream.write(text.endsWith("\n") ? text : `${text}\n`);
+}
+
+function describeExpiry(entry, now = Date.now()) {
+  const left = remainingSeconds(entry, now);
+  if (left === null) {
+    return entry.expiresAt ?? "(unknown)";
+  }
+  return `${entry.expiresAt} (in ${formatRemaining(left)})`;
+}
+
+function reportMissingCli(options) {
+  write(
+    options.stderr ?? process.stderr,
+    "agent-lock: the mutex CLI is not on PATH.\n" +
+      "  Install it with: npm install --global @releasetools/mutex@1",
+  );
+  return EXIT_NO_MUTEX;
+}
+
+/**
+ * Takes a lock and writes down what was taken.
+ *
+ * The CLI is always asked for JSON, whatever this script was asked for: the
+ * expiry and the owner have to be recorded exactly, and re-reading a rendered
+ * report to find them is how a state file starts lying.
+ */
+export function commandLock(id, options = {}) {
+  const env = options.env ?? process.env;
+  const file = options.stateFile ?? statePath(env, options.home);
+  const owner = options.owner ?? resolveOwner(env);
+  const expiration = options.expiration ?? DEFAULT_EXPIRATION_SECONDS;
+  const stdout = options.stdout ?? process.stdout;
+
+  // try-lock is a single attempt by definition and refuses the waiting
+  // options, so the two forms cannot share one argument list.
+  const args = options.single
+    ? ["try-lock", id, "-e", String(expiration), "-o", owner, "--json"]
+    : [
+        "lock",
+        id,
+        "-e",
+        String(expiration),
+        "-w",
+        String(options.wait ?? DEFAULT_WAIT_SECONDS),
+        "-o",
+        owner,
+        "--json",
+      ];
+  if (options.reason) {
+    args.push("-r", options.reason);
+  }
+  if (options.profile) {
+    args.push("-p", options.profile);
+  }
+
+  const result = runMutex(args, options);
+  if (result.missing) {
+    return reportMissingCli(options);
+  }
+
+  const payload = result.json;
+  if (result.status === EXIT_OK && payload?.ok) {
+    const record = payload.lock ?? {};
+    const entry = {
+      id,
+      owner,
+      reason: options.reason ?? record.reason ?? null,
+      createdAt: record.createdAt ?? null,
+      expiresAt: payload.expires ?? record.expiresAt ?? null,
+      profile: options.profile ?? null,
+      agent: detectAgent(env),
+      cwd: options.cwd ?? process.cwd(),
+      recordedAt: new Date().toISOString(),
+      nudged: [],
+    };
+    remember(file, entry);
+
+    if (options.json) {
+      write(stdout, JSON.stringify({ ...payload, state: entry }, null, 2));
+    } else {
+      write(
+        stdout,
+        `Acquired '${id}' as '${owner}'.\n` +
+          `  expires: ${describeExpiry(entry)}\n` +
+          `  release: node ${options.invocation ?? "agent-lock.mjs"} unlock ${id}`,
+      );
+    }
+    return EXIT_OK;
+  }
+
+  if (options.json) {
+    write(stdout, JSON.stringify(payload ?? { ok: false, id }, null, 2));
+  } else {
+    const holder = payload?.holder;
+    write(
+      stdout,
+      `Could not acquire '${id}'${payload?.status ? `: ${payload.status}` : ""}.` +
+        (holder
+          ? `\n  held by: ${holder.owner ?? "(unowned)"}` +
+            `\n  expires: ${describeExpiry(holder)}` +
+            (holder.reason ? `\n  reason:  ${holder.reason}` : "")
+          : ""),
+    );
+  }
+  return result.status;
+}
+
+/**
+ * Extends a lock this machine already recorded.
+ *
+ * The owner comes from the state file rather than from whoever is calling,
+ * because renewing is strict: the id and the owner both have to match, and a
+ * near-miss is refused rather than quietly turned into a new lock.
+ */
+export function commandRenew(id, options = {}) {
+  const env = options.env ?? process.env;
+  const file = options.stateFile ?? statePath(env, options.home);
+  const stdout = options.stdout ?? process.stdout;
+  const stderr = options.stderr ?? process.stderr;
+  const entry = findEntry(file, id);
+  const owner =
+    options.owner ?? entry?.owner ?? env.MUTEX_OWNER?.trim() ?? null;
+
+  if (!entry && !options.owner) {
+    write(
+      stderr,
+      `agent-lock: no recorded lock for '${id}'; renewing as ` +
+        `${owner ? `'${owner}'` : "unowned"}. ` +
+        `\`mutex status ${id}\` names the owner it actually has.`,
+    );
+  }
+
+  const args = [
+    "renew",
+    id,
+    "-e",
+    String(options.expiration ?? DEFAULT_EXPIRATION_SECONDS),
+    "--json",
+  ];
+  if (owner) {
+    args.push("-o", owner);
+  }
+  if (options.profile ?? entry?.profile) {
+    args.push("-p", options.profile ?? entry.profile);
+  }
+
+  const result = runMutex(args, options);
+  if (result.missing) {
+    return reportMissingCli(options);
+  }
+
+  const payload = result.json;
+  if (result.status === EXIT_OK && payload?.ok) {
+    const record = payload.lock ?? {};
+    const renewed = {
+      ...(entry ?? { id, owner, agent: detectAgent(env) }),
+      owner,
+      expiresAt:
+        payload.expires ?? record.expiresAt ?? entry?.expiresAt ?? null,
+      createdAt: record.createdAt ?? entry?.createdAt ?? null,
+      recordedAt: new Date().toISOString(),
+      // A renewed lock is a fresh deadline, so the reminders start again.
+      nudged: [],
+    };
+    remember(file, renewed);
+
+    if (options.json) {
+      write(stdout, JSON.stringify({ ...payload, state: renewed }, null, 2));
+    } else {
+      write(
+        stdout,
+        `${payload.extended === false ? "Kept" : "Renewed"} '${id}'.\n` +
+          `  expires: ${describeExpiry(renewed)}`,
+      );
+    }
+    return EXIT_OK;
+  }
+
+  if (options.json) {
+    write(stdout, JSON.stringify(payload ?? { ok: false, id }, null, 2));
+  } else {
+    write(
+      stdout,
+      `Could not renew '${id}'${payload?.outcome ? ` (${payload.outcome})` : ""}.`,
+    );
+  }
+  return result.status;
+}
+
+/**
+ * Hands a lock back.
+ *
+ * A refusal is left recorded on purpose: exit 5 means the lock is somebody
+ * else's now, and forgetting it here would hide that from the status line at
+ * the moment it matters most.
+ */
+export function commandUnlock(id, options = {}) {
+  const env = options.env ?? process.env;
+  const file = options.stateFile ?? statePath(env, options.home);
+  const stdout = options.stdout ?? process.stdout;
+  const stderr = options.stderr ?? process.stderr;
+  const entry = findEntry(file, id);
+  const owner =
+    options.owner ?? entry?.owner ?? env.MUTEX_OWNER?.trim() ?? null;
+
+  if (!entry && !options.owner) {
+    write(
+      stderr,
+      `agent-lock: no recorded lock for '${id}'; unlocking as ` +
+        `${owner ? `'${owner}'` : "unowned"}. ` +
+        `If it is held by somebody else, mutex will refuse and say whose it is.`,
+    );
+  }
+
+  const args = ["unlock", id, "--json"];
+  if (owner) {
+    args.push("-o", owner);
+  }
+  if (options.profile ?? entry?.profile) {
+    args.push("-p", options.profile ?? entry.profile);
+  }
+
+  const result = runMutex(args, options);
+  if (result.missing) {
+    return reportMissingCli(options);
+  }
+
+  const payload = result.json;
+  if (result.status === EXIT_OK) {
+    forget(file, id);
+    if (options.json) {
+      write(stdout, JSON.stringify(payload ?? { ok: true, id }, null, 2));
+    } else {
+      write(
+        stdout,
+        payload?.outcome === "not-found"
+          ? `'${id}' was not held; nothing to unlock.`
+          : `Unlocked '${id}'.`,
+      );
+    }
+    return EXIT_OK;
+  }
+
+  if (options.json) {
+    write(stdout, JSON.stringify(payload ?? { ok: false, id }, null, 2));
+  } else {
+    write(
+      stdout,
+      `Could not unlock '${id}'${payload?.outcome ? ` (${payload.outcome})` : ""}. ` +
+        `The lock stays held until it expires.`,
+    );
+  }
+  return result.status;
+}
+
+/** What this machine thinks it holds, and for how much longer. */
+export function commandShow(options = {}) {
+  const env = options.env ?? process.env;
+  const file = options.stateFile ?? statePath(env, options.home);
+  const stdout = options.stdout ?? process.stdout;
+  const now = options.now ?? Date.now();
+  const state = readState(file);
+
+  if (options.json) {
+    write(
+      stdout,
+      JSON.stringify(
+        {
+          stateFile: file,
+          locks: state.locks.map((entry) => ({
+            ...entry,
+            remainingSeconds: remainingSeconds(entry, now),
+            expired: (remainingSeconds(entry, now) ?? 0) <= 0,
+          })),
+        },
+        null,
+        2,
+      ),
+    );
+    return EXIT_OK;
+  }
+
+  if (state.locks.length === 0) {
+    write(stdout, `No locks recorded in ${file}.`);
+    return EXIT_OK;
+  }
+
+  for (const entry of state.locks) {
+    const left = remainingSeconds(entry, now);
+    write(
+      stdout,
+      `${entry.id}\n` +
+        `  owner:   ${entry.owner ?? "(none)"}\n` +
+        `  state:   ${(left ?? 0) > 0 ? "held" : "expired - you no longer hold it"}\n` +
+        `  expires: ${describeExpiry(entry, now)}\n` +
+        `  taken:   ${entry.recordedAt ?? "(unknown)"} in ${entry.cwd ?? "(unknown)"}`,
+    );
+  }
+  return EXIT_OK;
+}
+
+/** One line for a status line. Nothing at all when nothing is held. */
+export function commandStatusline(options = {}) {
+  const file =
+    options.stateFile ?? statePath(options.env ?? process.env, options.home);
+  const stdout = options.stdout ?? process.stdout;
+  const env = options.env ?? process.env;
+  const segment = renderStatusline(readState(file), options.now ?? Date.now(), {
+    color: options.color !== false && !env.NO_COLOR,
+  });
+  if (segment) {
+    write(stdout, segment);
+  }
+  return EXIT_OK;
+}
+
+/**
+ * The unprompted half: a Claude Code `UserPromptSubmit` hook.
+ *
+ * Never fails and never blocks a prompt. A reminder that a lock is running out
+ * is worth having; a hook that can refuse the user's next message because a
+ * cache file was malformed is not.
+ */
+export function commandNudge(options = {}) {
+  const stdout = options.stdout ?? process.stdout;
+  try {
+    const file =
+      options.stateFile ?? statePath(options.env ?? process.env, options.home);
+    const state = readState(file);
+    if (state.locks.length === 0) {
+      return EXIT_OK;
+    }
+
+    const {
+      message,
+      state: next,
+      changed,
+    } = buildNudge(
+      state,
+      options.now ?? Date.now(),
+      options.invocation ?? process.argv[1] ?? "agent-lock.mjs",
+    );
+    if (changed) {
+      writeState(file, next);
+    }
+    if (message) {
+      write(
+        stdout,
+        JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: "UserPromptSubmit",
+            additionalContext: message,
+          },
+        }),
+      );
+    }
+  } catch {
+    // Deliberately silent: see above.
+  }
+  return EXIT_OK;
+}
+
+/** Drops a recorded lock without touching the lock itself. */
+export function commandForget(id, options = {}) {
+  const file =
+    options.stateFile ?? statePath(options.env ?? process.env, options.home);
+  const stdout = options.stdout ?? process.stdout;
+  write(
+    stdout,
+    forget(file, id)
+      ? `Forgot '${id}'. The lock itself is untouched and still expires on its own.`
+      : `No recorded lock for '${id}'.`,
+  );
+  return EXIT_OK;
+}
+
+export function commandPreflight(options = {}) {
+  const stdout = options.stdout ?? process.stdout;
+  const report = preflight(options);
+
+  if (options.json) {
+    write(stdout, JSON.stringify(report, null, 2));
+    return report.ok ? EXIT_OK : EXIT_ERROR;
+  }
+
+  const profile = report.profile
+    ? `${report.profile.name} (${report.profile.mode}${
+        report.profile.bindAddress ? `, ${report.profile.bindAddress}` : ""
+      })`
+    : "none - zero-configuration direct access";
+  const lines = [
+    report.ok ? `ready: ${report.message}` : `not ready: ${report.message}`,
+    `  mutex:              ${report.version ?? "(not found)"}`,
+    `  profiles file:      ${report.profilesFile ? report.profilesPath : `none (${report.profilesPath})`}`,
+    `  enabled profile:    ${profile}`,
+    `  MUTEX_DATABASE_URL: ${report.databaseUrl ? "set" : "not set"}`,
+    `  MUTEX_OWNER:        ${report.owner ?? "not set"}`,
+  ];
+  if (report.locks !== null && report.locks !== undefined) {
+    lines.push(`  locks in table:     ${report.locks}`);
+  }
+  if (report.remedy) {
+    lines.push(`  remedy: ${report.remedy}`);
+  }
+  write(stdout, lines.join("\n"));
+  return report.ok ? EXIT_OK : EXIT_ERROR;
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+const OPTION_CONFIG = {
+  reason: { type: "string", short: "r" },
+  expiration: { type: "string", short: "e" },
+  wait: { type: "string", short: "w" },
+  owner: { type: "string", short: "o" },
+  profile: { type: "string", short: "p" },
+  try: { type: "boolean" },
+  json: { type: "boolean" },
+  "no-color": { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+};
+
+export function usage(invocation = "agent-lock.mjs") {
+  return `agent-lock - the mutex skill's helper: takes locks and remembers them
+
+Usage: node ${invocation} <command> [<id>] [options]
+
+Commands:
+  preflight        Report whether mutex can reach the lock table here
+  lock <id>        Take a lock, and record what was taken
+  renew <id>       Extend a recorded lock, keeping its owner
+  unlock <id>      Hand a recorded lock back
+  show             What this machine holds, and for how much longer
+  statusline       One line for a status line; empty when nothing is held
+  nudge            Claude Code UserPromptSubmit hook: warn before a lock lapses
+  forget <id>      Drop a recorded lock without touching the lock itself
+
+Options:
+  -r, --reason <text>         Why the lock is being taken
+  -e, --expiration <seconds>  How long it lasts (default: ${DEFAULT_EXPIRATION_SECONDS})
+  -w, --wait <seconds>        How long to wait for it (default: ${DEFAULT_WAIT_SECONDS})
+      --try                   One attempt, no waiting
+  -o, --owner <name>          Override the recorded owner
+  -p, --profile <name>        Use one mutex profile for this command
+      --json                  Machine-readable output
+      --no-color              No ANSI colour in the status line
+  -h, --help                  Show this
+
+Everything it does goes through the mutex CLI, which reads its connection
+string from $MUTEX_DATABASE_URL and from nowhere else. This script never sees
+it, never prints it, and never passes it as an argument.
+`;
+}
+
+/** A whole number of seconds, and nothing else pretending to be one. */
+function readSeconds(value, name) {
+  if (value === undefined) {
+    return undefined;
+  }
+  const text = String(value).startsWith("=")
+    ? String(value).slice(1)
+    : String(value);
+  if (!/^\d+$/.test(text) || Number(text) <= 0) {
+    throw new Error(
+      `--${name} must be a whole number of seconds above 0, not '${value}'`,
+    );
+  }
+  return Number(text);
+}
+
+export function main(argv, options = {}) {
+  const stdout = options.stdout ?? process.stdout;
+  const stderr = options.stderr ?? process.stderr;
+  const invocation = options.invocation ?? "agent-lock.mjs";
+
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: argv,
+      options: OPTION_CONFIG,
+      allowPositionals: true,
+      strict: true,
+    });
+  } catch (error) {
+    write(stderr, `agent-lock: ${error.message}`);
+    return EXIT_USAGE;
+  }
+
+  const { values, positionals } = parsed;
+  const command = positionals[0] ?? "help";
+  const id = positionals[1];
+
+  if (values.help || command === "help") {
+    write(stdout, usage(invocation));
+    return EXIT_OK;
+  }
+
+  let shared;
+  try {
+    shared = {
+      ...options,
+      invocation,
+      json: values.json === true,
+      color: values["no-color"] !== true,
+      reason: values.reason,
+      owner: values.owner?.trim() || undefined,
+      profile: values.profile?.trim() || undefined,
+      single: values.try === true,
+      expiration: readSeconds(values.expiration, "expiration"),
+      wait: readSeconds(values.wait, "wait"),
+    };
+  } catch (error) {
+    write(stderr, `agent-lock: ${error.message}`);
+    return EXIT_USAGE;
+  }
+
+  const needsId = ["lock", "renew", "unlock", "forget"];
+  if (needsId.includes(command) && !id) {
+    write(stderr, `agent-lock: '${command}' needs a lock id`);
+    return EXIT_USAGE;
+  }
+
+  switch (command) {
+    case "preflight":
+      return commandPreflight(shared);
+    case "lock":
+      return commandLock(id, shared);
+    case "renew":
+      return commandRenew(id, shared);
+    case "unlock":
+      return commandUnlock(id, shared);
+    case "show":
+      return commandShow(shared);
+    case "statusline":
+      return commandStatusline(shared);
+    case "nudge":
+      return commandNudge(shared);
+    case "forget":
+      return commandForget(id, shared);
+    default:
+      write(
+        stderr,
+        `agent-lock: unknown command '${command}'\n\n${usage(invocation)}`,
+      );
+      return EXIT_USAGE;
+  }
+}
+
+// Run directly, rather than imported by a test.
+if (
+  process.argv[1] &&
+  import.meta.url.endsWith(path.basename(process.argv[1]))
+) {
+  process.exitCode = main(process.argv.slice(2), {
+    invocation: process.argv[1],
+  });
+}

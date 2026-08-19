@@ -7,6 +7,8 @@ Only one CI job at a time gets to touch a shared resource. mutex keeps advisory 
 
 Two front ends sit over one table: a GitHub Action for locking inside a workflow, and a `mutex` CLI for everywhere else. A lock taken by either excludes the other. The Action comments on the pull request when a lock is taken and given back, and can post the same to Slack.
 
+A third way in drives the CLI rather than the table: an [agent plugin](#agent-plugin) that lets a coding agent hold a lock around work you ask it to guard.
+
 ## Quickstart
 
 You need a PostgreSQL database. [Neon](https://neon.new) has a free tier if you do not already have one. mutex creates its own table on first use.
@@ -409,6 +411,86 @@ fi
 ```
 
 `--quiet` silences the ordinary report and leaves the exit code to answer. It does not silence a lock not acquired, a release refused, or a lock left held: those go to stderr whatever the verbosity. `--json` is unaffected by both.
+
+## Agent plugin
+
+`skills/mutex/` is an agent skill: what a coding agent needs to know to guard an operation with a lock, and a helper it runs to take one. It is deliberately narrow. It takes a lock when the user asks for one, hands it back when the work is done, and speaks up before the lease runs out. It never volunteers a lock, never breaks somebody else's, never runs `mutex profile` or `mutex server` on its own, and never reads the connection string.
+
+One directory serves every agent. Claude Code and Codex install it as a plugin and read `skills/` through the manifests in `.claude-plugin/` and `.codex-plugin/`. Hermes, Gemini and Antigravity discover skills by walking a directory under their own home, so they get a copy of the same files.
+
+### Claude Code
+
+```shell
+claude plugin marketplace add releasetools/mutex
+claude plugin install mutex@releasetools-mutex
+```
+
+The same two steps work as `/plugin marketplace add` and `/plugin install` inside a session.
+
+### Codex
+
+```shell
+codex plugin marketplace add releasetools/mutex
+codex plugin add mutex@releasetools-mutex
+```
+
+### Hermes, Gemini and Antigravity
+
+These read a skills directory rather than a plugin manifest, so the skill is copied into each. It ships with the CLI package, so there is nothing else to fetch:
+
+```shell
+node "$(npm root -g)/@releasetools/mutex/scripts/install-agent-skills.mjs"
+```
+
+From a checkout, `npm run plugin:install` does the same thing.
+
+`--check` reports what is missing or out of date and writes nothing, which is what to run after upgrading the CLI. `--target <agent>` names one, including `claude` or `codex` for a plain copy instead of a plugin. An agent whose home directory does not exist is skipped rather than created.
+
+### What the agent does with it
+
+| Step        |                                                                                                                                     |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `preflight` | Once per session: can mutex reach the table here, through a profile or `$MUTEX_DATABASE_URL`. If neither, it says so and stops      |
+| `lock`      | An hour by default rather than the CLI's minute, waiting 30 seconds rather than the whole lease, under a generated owner it records |
+| `renew`     | Only after asking. Reminders arrive on their own; the decision to extend does not                                                   |
+| `unlock`    | With the owner it recorded, so it releases what it took and nothing else                                                            |
+
+An hour because a conversation is not a CI step: it does not know how long it will take, and a lease that lapses mid-conversation hands the resource to somebody else while the work is still going on.
+
+### Knowing when the lock runs out
+
+A lock nobody is watching expires quietly, so the helper writes down what it took - the id, the owner and the expiry - in `${XDG_STATE_HOME:-$HOME/.local/state}/releasetools-mutex/agent-locks.json`. Nothing in it is secret, and it is a reminder rather than a source of truth: PostgreSQL still holds the locks, and `mutex status <id>` still names the owner needed to release one.
+
+Two things read it, both without touching the database:
+
+- **A status line segment**, printing `🔒 staging 42m` in cyan, amber under ten minutes and red under two. A global CLI installation has the helper at `$(npm root -g)/@releasetools/mutex/skills/mutex/agent-lock.mjs`; otherwise find the copy the agent installed:
+
+  ```shell
+  find ~/.claude/plugins ~/.hermes/skills ~/.gemini/skills -name agent-lock.mjs 2>/dev/null | head -1
+  ```
+
+  Then append it to whatever status line you already have:
+
+  ```shell
+  # at the end of your status line script
+  held=$(node /path/to/skills/mutex/agent-lock.mjs statusline)
+  [ -n "$held" ] && printf " | %s" "$held"
+  ```
+
+  It prints nothing at all when nothing is held, so it costs nothing on the sessions that never take a lock.
+
+- **A prompt hook**, which asks the agent to check with you at ten minutes and again at two, and says so once when a lock has expired. It ships in `hooks/hooks.json` and needs no wiring in Claude Code. Anywhere else that can run a command between turns, the same warning comes from `node .../agent-lock.mjs nudge`.
+
+Neither needs the agent to be asked how long is left, which is the point: a deadline that has to be queried is a deadline nobody sees.
+
+### Working on the plugin
+
+```shell
+npm run plugin:validate   # manifests, skill front matter, hook targets
+npm run plugin:install    # copy the skill into every agent installed here
+```
+
+`npm test` runs the validation too. The rule it exists to keep: `skills/` is the only copy of any skill, and the two manifests agree on the version, so no two agents can read different instructions out of the same repository.
 
 ## Development
 

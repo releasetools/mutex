@@ -20,6 +20,10 @@ import os from "node:os";
 import path from "node:path";
 // @ts-expect-error - build tooling, deliberately plain JS with no types
 import { packageRelease } from "../scripts/package-release.mjs";
+// @ts-expect-error - build tooling, deliberately plain JS with no types
+import * as installer from "../scripts/install-agent-skills.mjs";
+
+const { installAgentSkills } = installer;
 
 /**
  * The published tree is a subset of the repository, so neither the Action nor
@@ -51,6 +55,9 @@ function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
   write("LICENSE", "Apache 2.0");
   write("README.md", "# test");
   write("bin/mutex.js", '#!/usr/bin/env node\nimport "../lib/cli/main.js";\n');
+  write("scripts/install-agent-skills.mjs", "// installer");
+  write("skills/mutex/SKILL.md", "---\nname: mutex\ndescription: locks\n---\n");
+  write("skills/mutex/agent-lock.mjs", "// helper");
   write("dist/main/index.js", "// main");
   write("dist/main/package.json", '{"type":"module"}');
   write("dist/post/index.js", "// post");
@@ -120,6 +127,9 @@ describe("packageRelease", () => {
         "dist/post/package.json",
         "lib/cli/main.js",
         "package.json",
+        "scripts/install-agent-skills.mjs",
+        "skills/mutex/SKILL.md",
+        "skills/mutex/agent-lock.mjs",
       ].sort(),
     );
   });
@@ -164,6 +174,38 @@ describe("packageRelease", () => {
     expect(manifest.private).toBeUndefined();
     expect(manifest.scripts).toBeUndefined();
     expect(manifest.devDependencies).toBeUndefined();
+  });
+
+  /**
+   * The skill ships with the CLI because copying it out of a global install is
+   * how Hermes, Gemini and Antigravity get it - there is no checkout to copy
+   * from. That only works while the installer and the skill keep the same
+   * relative positions in the published tree that they have here.
+   */
+  it("publishes the skill, and an installer that can still find it", () => {
+    const root = build();
+    const { target } = packageRelease({ root, out: path.join(root, "out") });
+    const home = fs.mkdtempSync(path.join(root, "home-"));
+    fs.mkdirSync(path.join(home, ".hermes"));
+
+    const { results } = installAgentSkills({ root: target, home });
+
+    expect(results[0]).toEqual(
+      expect.objectContaining({ agent: "hermes", status: "written" }),
+    );
+    expect(
+      fs.existsSync(path.join(home, ".hermes/skills/devops/mutex/SKILL.md")),
+    ).toBe(true);
+  });
+
+  it("refuses a checkout with no skill, without blaming the build", () => {
+    const root = build({
+      omit: ["skills/mutex/SKILL.md", "skills/mutex/agent-lock.mjs"],
+    });
+
+    expect(() => packageRelease({ root, out: path.join(root, "out") })).toThrow(
+      "missing skills/ - cannot publish without it",
+    );
   });
 
   /**
