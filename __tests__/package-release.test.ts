@@ -20,11 +20,6 @@ import os from "node:os";
 import path from "node:path";
 // @ts-expect-error - build tooling, deliberately plain JS with no types
 import { packageRelease } from "../scripts/package-release.mjs";
-// @ts-expect-error - build tooling, deliberately plain JS with no types
-import * as installer from "../scripts/install-agent-skills.mjs";
-
-const { installAgentSkills } = installer;
-
 /**
  * The published tree is a subset of the repository, so neither the Action nor
  * a CLI installed from a tag is exercised by running the repository itself.
@@ -39,26 +34,46 @@ runs:
   post: "dist/post/index.js"
 `;
 
+/**
+ * A checkout, with a checkout of the marketplace beside it.
+ *
+ * That is where the skill comes from now: it is written and released in
+ * releasetools/agent-plugins, and copied in here so the npm package can still
+ * seed the agents that read no manifest. `packageRelease` looks next door by
+ * default, which is how a working copy is usually laid out.
+ */
 function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pkg-")));
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pkg-")));
+  const root = path.join(base, "mutex");
   const omit = new Set(overrides.omit ?? []);
 
-  const write = (relative: string, contents: string) => {
+  const writeIn = (where: string, relative: string, contents: string) => {
     if (omit.has(relative)) {
       return;
     }
-    fs.mkdirSync(path.join(root, path.dirname(relative)), { recursive: true });
-    fs.writeFileSync(path.join(root, relative), contents);
+    fs.mkdirSync(path.join(where, path.dirname(relative)), { recursive: true });
+    fs.writeFileSync(path.join(where, relative), contents);
   };
+  const write = (relative: string, contents: string) =>
+    writeIn(root, relative, contents);
+  const marketplace = (relative: string, contents: string) =>
+    writeIn(path.join(base, "agent-plugins"), relative, contents);
+
+  marketplace("scripts/install-agent-skills.mjs", "// installer");
+  marketplace(
+    "plugins/mutex/commands/lock.md",
+    "---\nname: lock\ndescription: Take a lock\n---\n",
+  );
+  marketplace(
+    "plugins/mutex/skills/mutex/SKILL.md",
+    "---\nname: mutex\ndescription: locks\n---\n",
+  );
+  marketplace("plugins/mutex/skills/mutex/agent-lock.mjs", "// helper");
 
   write("action.yml", overrides.actionYml ?? ACTION_YML);
   write("LICENSE", "Apache 2.0");
   write("README.md", "# test");
   write("bin/mutex.js", '#!/usr/bin/env node\nimport "../lib/cli/main.js";\n');
-  write("scripts/install-agent-skills.mjs", "// installer");
-  write("commands/lock.md", "---\nname: lock\ndescription: Take a lock\n---\n");
-  write("skills/mutex/SKILL.md", "---\nname: mutex\ndescription: locks\n---\n");
-  write("skills/mutex/agent-lock.mjs", "// helper");
   write("dist/main/index.js", "// main");
   write("dist/main/package.json", '{"type":"module"}');
   write("dist/post/index.js", "// post");
@@ -102,7 +117,7 @@ describe("packageRelease", () => {
 
   const build = (overrides?: Parameters<typeof repository>[0]) => {
     const root = repository(overrides);
-    roots.push(root);
+    roots.push(path.dirname(root));
     return root;
   };
   const elsewhere = () => {
@@ -186,41 +201,19 @@ describe("packageRelease", () => {
   });
 
   /**
-   * The skill ships with the CLI because copying it out of a global install is
-   * how Hermes, Gemini and Antigravity get it - there is no checkout to copy
-   * from. That only works while the installer and the skill keep the same
-   * relative positions in the published tree that they have here.
+   * A release that quietly shipped without the skill would seed nothing for
+   * three agents and say so nowhere.
    */
-  it("publishes the skill, and an installer that can still find it", () => {
-    const root = build();
-    const { target } = packageRelease({ root, out: path.join(root, "out") });
-    const home = fs.mkdtempSync(path.join(root, "home-"));
-    fs.mkdirSync(path.join(home, ".hermes"));
-    fs.mkdirSync(path.join(home, ".gemini"));
-
-    const { results } = installAgentSkills({ root: target, home });
-
-    expect(results[0]).toEqual(
-      expect.objectContaining({ agent: "hermes", status: "written" }),
-    );
-    expect(
-      fs.existsSync(path.join(home, ".hermes/skills/devops/mutex/SKILL.md")),
-    ).toBe(true);
-    // The commands are rendered out of `commands/`, so that has to be in the
-    // published tree as well - without it Gemini would install a skill and an
-    // empty slash menu, and say nothing about it.
-    expect(
-      fs.existsSync(path.join(home, ".gemini/commands/mutex/lock.toml")),
-    ).toBe(true);
-  });
-
-  it("refuses a checkout with no skill, without blaming the build", () => {
+  it("refuses when the marketplace is not there to take the skill from", () => {
     const root = build({
-      omit: ["skills/mutex/SKILL.md", "skills/mutex/agent-lock.mjs"],
+      omit: [
+        "plugins/mutex/skills/mutex/SKILL.md",
+        "plugins/mutex/skills/mutex/agent-lock.mjs",
+      ],
     });
 
     expect(() => packageRelease({ root, out: path.join(root, "out") })).toThrow(
-      "missing skills/ - cannot publish without it",
+      /missing plugins\/mutex\/skills in .*agent-plugins/,
     );
   });
 
@@ -300,13 +293,13 @@ describe("packageRelease", () => {
     it("refuses a directory that is a link somewhere else", () => {
       const root = build();
       const other = elsewhere();
-      fs.writeFileSync(path.join(other, "not-a-skill.md"), "not ours\n");
-      fs.rmSync(path.join(root, "skills"), { recursive: true });
-      fs.symlinkSync(other, path.join(root, "skills"));
+      fs.writeFileSync(path.join(other, "not-a-binary"), "not ours\n");
+      fs.rmSync(path.join(root, "bin"), { recursive: true });
+      fs.symlinkSync(other, path.join(root, "bin"));
 
       expect(() =>
         packageRelease({ root, out: path.join(root, "out") }),
-      ).toThrow(/skills is not a regular directory/);
+      ).toThrow(/bin is not a regular directory/);
     });
   });
 

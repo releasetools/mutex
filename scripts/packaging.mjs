@@ -20,13 +20,13 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * What the two packaging commands need to agree about.
+ * The checks `package-release.mjs` needs before it copies or deletes anything.
  *
- * `package-release.mjs` assembles the Action and the npm package;
- * `package-plugin.mjs` assembles the agent plugin. Both copy a named list out
- * of this repository into a directory they emptied first, and both were written
- * on the assumption that a name on the list is the file it looks like. These
- * are the checks that make that assumption true.
+ * It assembles the Action and the npm package by copying a named list out of
+ * this repository into a directory it emptied first, and it was written on the
+ * assumption that a name on the list is the file it looks like. These are what
+ * make that assumption true. They were shared with the plugin packaging until
+ * the plugin moved to releasetools/agent-plugins.
  */
 
 /**
