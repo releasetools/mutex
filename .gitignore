@@ -198,7 +198,3 @@ out
 /lib/
 /dist/
 /publish/
-
-# The standalone plugin, assembled by `npm run plugin:package` and published
-# to the releasetools marketplace by the release.
-/plugin/

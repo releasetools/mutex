@@ -467,9 +467,9 @@ fi
 
 ## Agent plugin
 
-`skills/mutex/` is an agent skill: what a coding agent needs to know to guard an operation with a lock, and a helper it runs to take one. It is deliberately narrow. It takes a lock when the user asks for one, hands it back when the work is done, and speaks up before the lease runs out. It never volunteers a lock, never breaks somebody else's, never runs `mutex profile` or `mutex server` on its own, and never reads the connection string.
+The mutex agent plugin is an agent skill: what a coding agent needs to know to guard an operation with a lock, and a helper it runs to take one. It lives in [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which is where to change it. It is deliberately narrow. It takes a lock when the user asks for one, hands it back when the work is done, and speaks up before the lease runs out. It never volunteers a lock, never breaks somebody else's, never runs `mutex profile` or `mutex server` on its own, and never reads the connection string.
 
-One directory serves every agent. Claude Code and Codex install it as a plugin and read `skills/` through the manifests in `.claude-plugin/` and `.codex-plugin/`. Hermes, Gemini and Antigravity discover skills by walking a directory under their own home, so they get a copy of the same files.
+One directory serves every agent. Claude Code and Codex install it as a plugin through their own manifests. Hermes, Gemini and Antigravity discover skills by walking a directory under their own home, so they get a copy of the same files - which travels in the npm package, since a global install is the only checkout most people have.
 
 Installing the plugin installs no `mutex` command and supplies no connection string. It runs the CLI, so [install that first](#quickstart) - the short path is below - and set `MUTEX_DATABASE_URL` yourself; the plugin never reads its value. `/mutex:preflight` reports whether the lock table is reachable, and what is missing when it is not.
 
@@ -505,7 +505,7 @@ These read a skills directory rather than a plugin manifest, so the skill is cop
 node "$(npm root -g)/@releasetools/mutex/scripts/install-agent-skills.mjs"
 ```
 
-From a checkout, `npm run plugin:install` does the same thing.
+From a checkout of the marketplace, `node scripts/install-agent-skills.mjs` does the same thing.
 
 `--check` reports what is missing or out of date and writes nothing, which is what to run after upgrading the CLI. `--target <agent>` names one, including `claude` or `codex` for a plain copy instead of a plugin. An agent whose home directory does not exist is skipped rather than created.
 
@@ -589,17 +589,15 @@ Worth it if you keep long locks and like seeing them; the hook covers the case t
 
 ### Working on the plugin
 
+The plugin is in [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins) - its source, its version, its tests and its validation. Change it there, bump the version in both manifests, and the merge is the release.
+
+It carries a version of its own because it is installed from that marketplace rather than from npm or a version tag, so it moves when the plugin changes and not when this CLI does. What this repository still does is carry the skill in the npm package, so that the agents with no plugin manifest can be seeded from a global install:
+
 ```shell
-npm run plugin:validate   # manifests, skill front matter, hook and command targets
-npm run plugin:install    # copy the skill into every agent installed here
-npm run plugin:package -- --out /tmp/mutex-plugin   # what the marketplace publishes
+npm run package:release -- --marketplace ../agent-plugins
 ```
 
-`npm test` runs the validation too. The rule it exists to keep: `skills/` is the only copy of any skill, and the two manifests agree on the version, so no two agents can read different instructions out of the same repository.
-
-To try a change before it is published, point the agent at the checkout instead of the marketplace - `claude --plugin-dir .`, or `codex plugin marketplace add .` from a directory carrying a catalog of your own.
-
-The plugin's version lives in both manifests and is bumped by hand, independently of the Action and the CLI: it changes when `skills/`, `commands/`, `hooks/` or [PLUGIN.md](./PLUGIN.md) change, and not because a release happened. Every release assembles the plugin, and publishes it to the marketplace only when that version is not already there - so bumping the manifests is what publishes, and cutting a release is when it goes out.
+That copies `skills/`, `commands/` and the installer out of a checkout of the marketplace, and refuses to build without one.
 
 ## Development
 

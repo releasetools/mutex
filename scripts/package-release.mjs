@@ -41,26 +41,42 @@ import { isRealDirectory, isRegularFile, refuseToEmpty } from "./packaging.mjs";
  */
 
 /** Copied verbatim into the published tree. */
-const FILES = [
-  "action.yml",
-  "LICENSE",
-  "README.md",
-  // Hermes, Gemini and Antigravity install the skill by copying it, and a
-  // global install is the only checkout most people have.
-  "scripts/install-agent-skills.mjs",
-];
+const FILES = ["action.yml", "LICENSE", "README.md"];
 
 /** Committed directories, published as they stand. */
-const DIRECTORIES = ["bin", "commands", "skills"];
+const DIRECTORIES = ["bin"];
+
+/**
+ * Taken from a checkout of releasetools/agent-plugins, as `[from, to]`.
+ *
+ * The agent plugin is written and released there, not here. It still travels in
+ * the npm package because Hermes, Gemini and Antigravity read no plugin
+ * manifest - they discover skills by walking a directory under their own home,
+ * and for most people a global install is the only checkout there is. So the
+ * installer and the files it copies ship together, fetched at release time
+ * rather than committed in two places.
+ */
+const FROM_MARKETPLACE = [
+  ["plugins/mutex/skills", "skills"],
+  ["plugins/mutex/commands", "commands"],
+  ["scripts/install-agent-skills.mjs", "scripts/install-agent-skills.mjs"],
+];
 
 /** Directories that do not exist until the build has run. */
 const BUILT_DIRECTORIES = ["dist", "lib"];
 
 const CLI_DEPENDENCIES = ["pg", "pg-format"];
 
-export function packageRelease({ root = process.cwd(), out } = {}) {
+export function packageRelease({
+  root = process.cwd(),
+  out,
+  marketplace,
+} = {}) {
   const source = path.resolve(root);
   const target = path.resolve(out ?? path.join(source, "publish"));
+  const plugins = path.resolve(
+    marketplace ?? path.join(source, "..", "agent-plugins"),
+  );
 
   const manifest = readJson(path.join(source, "package.json"));
   if (!manifest.version) {
@@ -106,6 +122,23 @@ export function packageRelease({ root = process.cwd(), out } = {}) {
         );
       }
       fs.cpSync(from, path.join(target, dir), { recursive: true });
+    }
+  }
+
+  // A release that quietly shipped without the skill would seed nothing for
+  // three agents and say so nowhere, so a missing marketplace stops it here.
+  for (const [relative, destination] of FROM_MARKETPLACE) {
+    const from = path.join(plugins, relative);
+    const to = path.join(target, destination);
+    if (isRealDirectory(from)) {
+      fs.cpSync(from, to, { recursive: true });
+    } else if (isRegularFile(from)) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(from, to);
+    } else {
+      throw new Error(
+        `missing ${relative} in ${plugins} - pass --marketplace <a checkout of releasetools/agent-plugins>`,
+      );
     }
   }
 
@@ -212,7 +245,11 @@ if (
   import.meta.url.endsWith(path.basename(process.argv[1]))
 ) {
   const { values } = parseArgs({
-    options: { root: { type: "string" }, out: { type: "string" } },
+    options: {
+      root: { type: "string" },
+      out: { type: "string" },
+      marketplace: { type: "string" },
+    },
   });
 
   try {

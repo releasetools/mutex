@@ -52,23 +52,36 @@ The pre-commit hook builds and runs the tests, but a manual `npm run lint && npm
 | `src/database.ts` | The PostgreSQL lock store                                                 |
 | `src/main.ts`     | The Action's entry point; `src/post.ts` auto-releases at the end of a job |
 | `src/cli/`        | The `mutex` CLI                                                           |
-| `skills/mutex/`   | The agent skill, and the helper it runs                                   |
-| `commands/`       | The plugin's slash commands: one invocation each, not instructions        |
-| `PLUGIN.md`       | The plugin's own README, published as its `README.md` in the marketplace  |
 
 `src/mutex.ts` and `src/database.ts` take a `Logger` and emit events rather than calling into `@actions/core`. Keep it that way: it is what lets the Action and the CLI share them, and it keeps the CLI bundle free of the Actions toolkit.
 
-`skills/` and `commands/` are read by four different agents: through `.claude-plugin/` and `.codex-plugin/` for two of them, and by copying for the rest - Gemini's commands are rendered from the same markdown, since it reads TOML. One rule holds it together, and `npm run plugin:validate` enforces it - **`skills/` is the only copy of any skill**, and both manifests carry the same version. A second copy under a product directory is how two agents start following different instructions out of one repository, and none of these tools says anything when the packaging is wrong: a skill they cannot find looks exactly like a model choosing not to use it.
+The agent plugin is not here. It is written and released in
+[releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), where
+Claude Code and Codex install it as `mutex@releasetools`, and where its own
+version, tests and validation live. It used to be assembled here and published
+across, which coupled a one-line fix to the skill to somebody cutting a CLI
+release.
 
-The commands and the skill answer different questions, and mixing them is what made the first version slow. A command is one deterministic invocation: the plugin root gives it the helper's path, `allowed-tools` stops it asking permission, and `` !`cmd` `` runs it before the model is asked anything, so the whole thing costs one turn. The skill is for the judgement a command cannot make - whether to wait for a contended lock, whether to break one, what to say when a guard has lapsed. A command that merely says "follow the skill" pays for the skill to load, four round trips, and a search for a file it was already told the path of: measured at 53s against 10s for the same answer.
+What remains here is one dependency, in the other direction. The npm package
+still carries `skills/`, `commands/` and `scripts/install-agent-skills.mjs`,
+because Hermes, Gemini and Antigravity read no plugin manifest - they walk a
+directory under their own home, and for most people a global install is the only
+checkout there is. `package-release.mjs` copies those three out of a checkout of
+the marketplace, which the release workflow checks out beside this one and
+`--marketplace` names:
 
-The plugin carries its own version, independent of the CLI's, and it ships by a different road. `scripts/package-plugin.mjs` assembles the standalone plugin - the two manifests, `commands/`, `hooks/`, `skills/`, `LICENSE`, and `PLUGIN.md` as its `README.md` - and the release publishes that into [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), where Claude Code and Codex install it as `mutex@releasetools`. So the manifests and `hooks/` are not in the npm package: nothing installs the plugin from npm.
+```shell
+npm run package:release -- --marketplace ../agent-plugins
+```
 
-`skills/` is in the npm package, next to `scripts/install-agent-skills.mjs`, because the agents that have no manifest install the skill by copying it out of wherever the package landed - which for most people is a global npm installation and no checkout at all. Those two keep their relative positions in the published tree; `package-release.test.ts` asserts an installer run out of an assembled tree.
+It defaults to a sibling `../agent-plugins`, and refuses to build without one: a
+release that quietly shipped no skill would seed nothing for three agents and
+say so nowhere.
 
-The copy list in `package-plugin.mjs` is an allowlist rather than the repository minus exclusions, because what surrounds it - tests, the build tree, benchmark runners that take a connection string - is not something to publish by forgetting to exclude it. It refuses a symlink, and it runs the `plugin:validate` checks against the assembled tree, so a command naming a helper the list does not copy fails there rather than in somebody's session.
-
-Bumping the version in both manifests is what publishes. Every release assembles the plugin and publishes it only when the marketplace does not already carry that version, so an ordinary release of the Action changes nothing there. The marketplace refuses a version that goes backwards, and refuses to change one already published - somebody has installed it - so a mistake is corrected by bumping rather than by replacing.
+The seam worth remembering is the CLI's own surface. `agent-lock.mjs` over there
+knows this CLI's exit codes, subcommands and flags, and nothing in either
+repository tests the two together - so renaming a flag here is a broken plugin
+there, and the only thing that catches it is somebody remembering.
 
 ## Conventions
 
