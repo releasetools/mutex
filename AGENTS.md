@@ -78,10 +78,31 @@ It defaults to a sibling `../agent-plugins`, and refuses to build without one: a
 release that quietly shipped no skill would seed nothing for three agents and
 say so nowhere.
 
-The seam worth remembering is the CLI's own surface. `agent-lock.mjs` over there
-knows this CLI's exit codes, subcommands and flags, and nothing in either
-repository tests the two together - so renaming a flag here is a broken plugin
-there, and the only thing that catches it is somebody remembering.
+### The seam with the plugin
+
+`agent-lock.mjs` over there drives this CLI: it knows the subcommands, the
+flags, the exit codes and the shape of `--json`. Nothing in either repository
+tests the two together, so a change to that surface here is a broken plugin
+there, and it fails at the moment somebody asks an agent for a lock.
+
+**Before opening a pull request that changes the CLI's surface, check whether
+the plugin uses the part you are changing.**
+
+```shell
+grep -nE '"(lock|unlock|renew|status|list)"|"--[a-z-]+"|\.status ===' \
+  ../agent-plugins/plugins/mutex/skills/mutex/agent-lock.mjs
+```
+
+If it does, open the matching pull request in
+[releasetools/agent-plugins](https://github.com/releasetools/agent-plugins) and
+link the two, because **they have to be merged and released together**. The
+halves reach a user from different places - the CLI from npm, the plugin from
+the marketplace - so a plugin that needs a flag this repository has not
+published yet is a command that fails for everyone until it is.
+
+That has already happened: `/mutex:status` began calling `mutex list --owner`
+while the newest published CLI was 1.3.1, which answers
+`'list' does not take --owner`. Both sides are landing together this time.
 
 ## Conventions
 
