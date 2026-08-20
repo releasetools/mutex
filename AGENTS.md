@@ -19,6 +19,25 @@ Versioning is semver, judged from the **Action's** public surface (its inputs, o
 
 The agent plugin has a version of its own, in both plugin manifests, bumped by hand - see [Layout](#layout). It is not the Action's, and a release does not move it.
 
+## The website
+
+[releasetools/website](https://github.com/releasetools/website) carries
+`docs/mutex.md`, which mirrors the user-facing surface of this repository: the
+CLI's commands, options and exit codes, the environment variables, the Action's
+inputs, profiles and the pooled server, and the troubleshooting notes.
+
+**A release that changes any of those needs a pull request there too.** It is a
+separate repository with its own deploy, so nothing here updates it and nothing
+notices when it drifts - the page just goes on describing a version that no
+longer exists.
+
+There is no version to bump: the page pins the Action as
+`releasetools/mutex@v1`, the floating major, which moves on its own. What goes
+stale is the prose - a renamed flag, a new exit code, a changed default.
+
+RELEASE.md is the checklist. Every line under the version being released is a
+user-visible change, which is the same bar the website documents.
+
 ## Build output
 
 `npm run build` wipes and regenerates `lib/` and `dist/`. **Neither is committed.** The release workflow builds the action and publishes `action.yml` plus `dist/` to `release/<major>` through `releasetools/actions/signed-push`; the version tags point there. So what a consumer of `releasetools/mutex@v1` gets is built on the way past, not carried on `main`.
