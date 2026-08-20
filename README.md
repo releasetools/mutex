@@ -469,6 +469,8 @@ fi
 
 `skills/mutex/` is an agent skill: what a coding agent needs to know to guard an operation with a lock, and a helper it runs to take one. It is deliberately narrow. It takes a lock when the user asks for one, hands it back when the work is done, and speaks up before the lease runs out. It never volunteers a lock, never breaks somebody else's, never runs `mutex profile` or `mutex server` on its own, and never reads the connection string.
 
+`skills/naming/` is the second skill, and it answers the question that comes before any lock exists: which lock an operation takes, what that lock is called, and when no lock is needed at all. The id itself comes from `/mutex:name`, which derives it from the resource, so every agent computes the same one.
+
 One directory serves every agent. Claude Code and Codex install it as a plugin and read `skills/` through the manifests in `.claude-plugin/` and `.codex-plugin/`. Hermes, Gemini and Antigravity discover skills by walking a directory under their own home, so they get a copy of the same files.
 
 Installing the plugin installs no `mutex` command and supplies no connection string. It runs the CLI, so [install that first](#quickstart) - the short path is below - and set `MUTEX_DATABASE_URL` yourself; the plugin never reads its value. `/mutex:preflight` reports whether the lock table is reachable, and what is missing when it is not.
@@ -499,7 +501,7 @@ Both install from [releasetools/agent-plugins](https://github.com/releasetools/a
 
 ### Hermes, Gemini and Antigravity
 
-These read a skills directory rather than a plugin manifest, so the skill is copied into each. It ships with the CLI package, so there is nothing else to fetch:
+These read a skills directory rather than a plugin manifest, so the skills are copied into each. They ship with the CLI package, so there is nothing else to fetch:
 
 ```shell
 node "$(npm root -g)/@releasetools/mutex/scripts/install-agent-skills.mjs"
@@ -544,7 +546,7 @@ instead of doing them.
 Claude Code and Codex read `commands/` as it stands. Gemini reads TOML, so the
 installer renders the same files into `~/.gemini/commands/mutex/` on the way in:
 one source, translated, rather than two that drift. Hermes has no command
-surface, and gets the skill.
+surface, and gets the skills.
 
 ### What the agent does with it
 
@@ -592,7 +594,7 @@ Worth it if you keep long locks and like seeing them; the hook covers the case t
 
 ```shell
 npm run plugin:validate   # manifests, skill front matter, hook and command targets
-npm run plugin:install    # copy the skill into every agent installed here
+npm run plugin:install    # copy the skills into every agent installed here
 npm run plugin:package -- --out /tmp/mutex-plugin   # what the marketplace publishes
 ```
 

@@ -4,6 +4,7 @@ Newest first. One line per change.
 
 ## 1.4.0
 
+- The agent plugin now ships a naming skill, so agents agree on what locks are called and which operations take one: reviewing a PR locks the same id as updating it, and appending a comment locks nothing.
 - The agent plugin now derives lock names from the resource with `/mutex:name`, so every agent computes the same id instead of two agents naming one resource two ways and excluding nobody: `pr 98` in a checkout of this repository prints `gh/releasetools/mutex/pr/98`, on any machine.
 - The `enabled` profile setting is now named `default`; existing `profiles.toml` files need the rename. A profile with `default = false` is still selectable with `--profile`.
 - Added an agent plugin. Ask a coding agent to guard some work and it takes a mutex lock around it, gives the lock back when the work is done, and warns you before the lease runs out; `/mutex:lock`, `/mutex:unlock` and four more appear in the slash menu. Claude Code and Codex install it from the `releasetools` marketplace at [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins); Hermes, Gemini and Antigravity copy the skill, which ships in the CLI package so a global npm installation has a copy to install from. See [Agent plugin](./README.md#agent-plugin).
