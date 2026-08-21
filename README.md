@@ -39,7 +39,7 @@ Any other job using `id: staging` now waits. The lock goes back when the job end
 Install the public package from npm. Node.js 24 or newer is required:
 
 ```shell
-npm install --global @releasetools/mutex@1.3.0
+npm install --global @releasetools/mutex@1.4.0
 mutex version
 ```
 
@@ -49,7 +49,7 @@ global installation automatically. Re-run the install command to update:
 
 ```shell
 # Move an exact installation to a specific newer release.
-npm install --global @releasetools/mutex@1.3.1
+npm install --global @releasetools/mutex@1.4.0
 
 # Refresh an installation that follows the latest v1 release.
 npm install --global @releasetools/mutex@1
@@ -103,7 +103,7 @@ pinned:
 
 ```shell
 mise use --global \
-  'npm:@releasetools/mutex[allow_low_downloads=true]@1.3.1'
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1.4.0'
 ```
 
 ```shell
@@ -705,10 +705,10 @@ and allow `npm publish`.
 
 ### Cutting a release
 
-Add the notes for the new version to [RELEASE.md](./RELEASE.md) under a `## 1.3.0` heading, merge that to `main`, then:
+Add the notes for the new version to [RELEASE.md](./RELEASE.md) under a `## 1.4.0` heading, merge that to `main`, then:
 
 ```shell
-gh workflow run release.yaml -f version=v1.3.0
+gh workflow run release.yaml -f version=v1.4.0
 ```
 
 The release bumps `package.json` itself and pushes that to `main` as a signed commit, so there is no version to remember to edit and no way for `package.json` and the tag to disagree.
@@ -731,7 +731,7 @@ They are separate on purpose. Replacing a release and releasing out of order are
 | Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                                                                           |
 | Build           | `npm ci`, lint, test                                                                                                                                                                            |
 | Package         | `npm run package:release` assembles `publish/`: the Action bundle, compiled CLI, runtime manifest, README, and license                                                                          |
-| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.3.0` and the floating `v1` at it |
+| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.4.0` and the floating `v1` at it |
 | Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
 | npm             | Publishes `@releasetools/mutex` with provenance; an older backport gets the `backport` dist-tag instead of moving `latest` backwards                                                            |
 | Verify npm      | Installs the exact version from the public registry and checks `mutex version`                                                                                                                  |
@@ -752,9 +752,9 @@ npm pack ./publish --dry-run         # shows exactly what npm would receive
 
 ```shell
 git fetch origin 'refs/tags/*:refs/tags/*'
-git show --stat v1.3.0
+git show --stat v1.4.0
 gh api repos/releasetools/mutex/commits/v1 --jq .commit.verification.verified
-npm view @releasetools/mutex@1.3.0 version
+npm view @releasetools/mutex@1.4.0 version
 ```
 
 Each published commit's parent is the previous release, so `release/v1` reads as a history of releases. The source it was built from is a `Source-Commit:` trailer rather than a parent.
