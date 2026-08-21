@@ -92,6 +92,16 @@ With mise activated, `mutex` is available directly. Without shell activation,
 run it through `mise exec -- mutex`. `allow_low_downloads` requires mise 2026.8.8
 or newer.
 
+`mutex version` above can report the release before the newest one. mise hides a
+release younger than `minimum_release_age` where that setting is on, and says so
+rather than leaving it a mystery:
+
+```text
+mise WARN  1 newer npm:@releasetools/mutex release hidden by minimum_release_age
+```
+
+Nothing has gone wrong; the new version arrives once it has aged in.
+
 Update only a moving mutex installation with:
 
 ```shell
