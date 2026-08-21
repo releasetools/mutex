@@ -120,8 +120,12 @@ the marketplace - so a plugin that needs a flag this repository has not
 published yet is a command that fails for everyone until it is.
 
 That has already happened: `/mutex:status` began calling `mutex list --owner`
-while the newest published CLI was 1.3.1, which answers
-`'list' does not take --owner`. Both sides are landing together this time.
+while the newest published CLI was 1.3.1, which answered
+`'list' does not take --owner`. The two shipped together in the end - the plugin
+at 0.1.0 and the CLI at 1.4.0 - so nobody ran into it. Nothing in this
+repository would have caught it; agent-plugins runs a contract suite against the
+published CLI, and this rule is what keeps that from being the thing that finds
+out.
 
 ## Conventions
 
