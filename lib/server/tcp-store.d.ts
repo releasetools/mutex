@@ -10,7 +10,7 @@ export declare class TcpMutexStore implements LockStore {
     releaseLock(name: string, owner?: string | null, fence?: string | null): Promise<UnlockResult>;
     renewLock(name: string, expiration: number, owner?: string | null): Promise<RenewResult>;
     inspectLock(name: string): Promise<LockRecord | null>;
-    listLocks(): Promise<LockRecord[]>;
+    listLocks(owner?: string | null): Promise<LockRecord[]>;
     pruneExpired(dryRun?: boolean): Promise<LockRecord[]>;
     health(): Promise<ServerStatus>;
     stop(): Promise<{

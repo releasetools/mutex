@@ -3,11 +3,29 @@ import { Logger } from "./logger.js";
 export declare class DatabaseMutex implements LockStore {
     private readonly config;
     private readonly log;
-    private readonly pool;
+    private poolConfig;
+    private pool;
+    private posture;
     private closed;
+    /** Direct negotiation is abandoned at most once, and never resumed. */
+    private directRetired;
     /** Schema creation is tried at most once per instance. */
     private schemaAttempted;
     constructor(config: MutexConfig, log?: Logger);
+    private openPool;
+    /**
+     * Gives up on direct SSL negotiation after it fails once.
+     *
+     * A server older than 17 reads the TLS handshake as a malformed startup
+     * packet and closes the connection, and node-postgres does not retry. One
+     * lost connection is a fair price for a process that will open many, so the
+     * pool is rebuilt without it and the caller tries again. Retired for the
+     * life of this instance: a server does not get newer while it runs, and
+     * probing again would cost a failed connection every time.
+     */
+    private retreatFromDirect;
+    /** Runs `attempt`, once more if direct negotiation was what broke it. */
+    private guarded;
     acquireLock(name: string, reason: string, owner?: string | null, expiration?: number, _operation?: "lock" | "try-lock"): Promise<LockResult>;
     releaseLock(name: string, owner?: string | null, fence?: string | null): Promise<UnlockResult>;
     /**
@@ -25,8 +43,15 @@ export declare class DatabaseMutex implements LockStore {
     renewLock(name: string, expiration: number, owner?: string | null): Promise<RenewResult>;
     /** Returns the lock's current row, or null when nothing holds it. */
     inspectLock(name: string): Promise<LockRecord | null>;
-    /** Returns every lock in the table, expired ones included. */
-    listLocks(): Promise<LockRecord[]>;
+    /**
+     * Returns locks in the table, expired ones included.
+     *
+     * Naming an owner narrows it to that owner's rows, and does so in SQL: the
+     * answer's size should be the number of locks that match rather than the
+     * size of the table, which is the whole reason for asking the database
+     * instead of filtering afterwards. Naming nobody returns everything.
+     */
+    listLocks(owner?: string | null): Promise<LockRecord[]>;
     /**
      * Deletes every expired lock. Expired rows are already dead - acquiring
      * overwrites them - so this is only housekeeping and needs no advisory lock.
@@ -45,18 +70,25 @@ export declare class DatabaseMutex implements LockStore {
     private releaseLockInternal;
     private renewLockInternal;
     /**
-     * Takes a transaction-scoped advisory lock on the mutex id, so no other
-     * process can acquire or release the same lock concurrently. Retries once,
-     * since contention here is almost always momentary.
+     * Runs one complete mutation statement, retrying it once when another
+     * transaction briefly holds the advisory lock for this mutex id.
      */
-    private holdAdvisoryLock;
-    private tryAdvisoryLock;
+    private runMutation;
+    private queryMutation;
     /**
      * Runs an operation and, if it fails, makes sure the schema exists before
      * trying once more - the usual cause is a database that has never seen this
      * action before.
      */
     private withSchemaRetry;
+    /**
+     * Adds what mutex knows about the connection to a handshake failure.
+     *
+     * TLS errors describe the certificate, never the setting that demanded one,
+     * so the cause is invisible from the message alone.
+     */
+    private explained;
+    private retryOnceForSchema;
     /**
      * Creates the lock table when missing, and adds the `owner` column to tables
      * created by earlier versions. Both statements are idempotent.

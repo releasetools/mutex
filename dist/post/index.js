@@ -49920,6 +49920,276 @@ class SilentLogger {
     debug() { }
 }
 //# sourceMappingURL=logger.js.map
+// EXTERNAL MODULE: ./node_modules/pg-connection-string/index.js
+var pg_connection_string = __nccwpck_require__(6122);
+;// CONCATENATED MODULE: ./node_modules/pg-connection-string/esm/index.mjs
+// ESM wrapper for pg-connection-string
+
+
+// Re-export the parse function
+/* harmony default export */ const pg_connection_string_esm = (pg_connection_string.parse);
+const esm_parse = pg_connection_string.parse
+const toClientConfig = pg_connection_string.toClientConfig
+const parseIntoClientConfig = pg_connection_string.parseIntoClientConfig
+
+;// CONCATENATED MODULE: ./lib/connection.js
+/*
+ * Copyright (c) 2025-2026 Mihai Bojin
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
+
+/**
+ * Modes whose name promises less than mutex delivers.
+ *
+ * libpq reads all four as "encrypt, but do not check who answered", which is
+ * no protection against an attacker who can answer instead of the server.
+ * node-postgres has always read them as `verify-full`, and announces that in
+ * pg v9 it will adopt libpq's meaning instead - silently weakening every
+ * connection string that says `require`. Deciding here rather than inheriting
+ * whichever meaning the installed parser holds is what makes that upgrade a
+ * no-op.
+ */
+const PROMOTED_MODES = new Set(["allow", "prefer", "require", "verify-ca"]);
+/** Hosts where an unencrypted connection never leaves the machine. */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", ""]);
+/**
+ * Turns a connection string into pool configuration with mutex's own SSL
+ * decision baked in.
+ *
+ * The connection string belongs to whoever set it and is never rewritten in
+ * place: what leaves here is configuration, and the only field mutex overrides
+ * is `ssl`. `sslcert`, `sslkey` and `sslrootcert` are still read and loaded by
+ * node-postgres, so a private CA keeps working.
+ */
+function resolveConnection(connectionString, options = {}, env = process.env) {
+    const warnings = [];
+    const url = asUrl(connectionString);
+    // Not URL-shaped - a bare socket path, which carries no parameters and no
+    // TLS. Hand it over exactly as it arrived.
+    if (!url) {
+        return {
+            config: { connectionString },
+            posture: {
+                declared: null,
+                effective: "plaintext",
+                promoted: false,
+                negotiation: "postgres",
+            },
+            warnings,
+        };
+    }
+    // `||` rather than `??`, deliberately: `?sslmode=` parses as an empty
+    // string, and node-postgres reads that as no mode at all rather than as an
+    // unrecognised one. Accepting it would make TLS mandatory where it used to
+    // be absent, and would shadow `PGSSLMODE` with a value nobody wrote.
+    const declared = url.searchParams.get("sslmode") || env.PGSSLMODE || null;
+    const asked = options.sslNegotiation ?? readNegotiation(url) ?? undefined;
+    const requested = asked ?? (options.preferDirect ? "direct" : "postgres");
+    // An explicit `uselibpqcompat=true` is an informed request for libpq's
+    // meanings. Overriding it would defeat the only escape hatch node-postgres
+    // offers, so mutex steps aside and says what that costs.
+    if (url.searchParams.get("uselibpqcompat") === "true") {
+        if (declared && declared !== "verify-full") {
+            warnings.push(`${CONNECTION_ENV_VAR} sets uselibpqcompat=true, so sslmode=${declared} keeps libpq's meaning and ` +
+                `${declared === "disable" ? "the connection is not encrypted" : "the server certificate is not checked"}. ` +
+                `Drop uselibpqcompat, or use sslmode=verify-full, for a verified connection.`);
+        }
+        const overLibpqTls = declared !== "disable";
+        const libpqNegotiation = usable(requested, overLibpqTls, asked, warnings);
+        return {
+            config: applyNegotiation(parseIntoClientConfig(connectionString), libpqNegotiation),
+            posture: {
+                declared,
+                effective: "libpq",
+                promoted: false,
+                negotiation: libpqNegotiation,
+            },
+            warnings,
+        };
+    }
+    // Parsing with `sslmode` removed leaves the certificate files to
+    // node-postgres and keeps its deprecation warning from firing, since mutex
+    // is about to state the same decision more precisely.
+    const config = parseIntoClientConfig(withoutSslMode(url));
+    const loaded = typeof config.ssl === "object" && config.ssl ? config.ssl : {};
+    let effective;
+    switch (declared) {
+        case null:
+            // Nothing asked for TLS anywhere. Connecting in the clear is what every
+            // version of node-postgres does here, and quietly upgrading it would
+            // break local sockets and test databases that have no certificate.
+            effective = config.ssl ? "verify-full" : "plaintext";
+            break;
+        case "disable":
+            config.ssl = false;
+            effective = "plaintext";
+            break;
+        case "no-verify":
+            config.ssl = { ...loaded, rejectUnauthorized: false };
+            effective = "no-verify";
+            break;
+        default:
+            // `verify-full`, the four promoted modes, and anything unrecognised.
+            // Node's defaults check the chain and the hostname.
+            config.ssl = loaded;
+            effective = "verify-full";
+    }
+    if (effective === "plaintext" && !isLocal(hostOf(url))) {
+        warnings.push(`${CONNECTION_ENV_VAR} connects to ${hostOf(url)} without TLS, so the password and every lock ` +
+            `travel in the clear. Add sslmode=verify-full unless the network is already private.`);
+    }
+    const negotiation = usable(requested, effective !== "plaintext", asked, warnings);
+    return {
+        config: applyNegotiation(config, negotiation),
+        posture: {
+            declared,
+            effective,
+            promoted: declared !== null && PROMOTED_MODES.has(declared),
+            negotiation,
+        },
+        warnings,
+    };
+}
+/**
+ * Drops direct negotiation onto a connection that has no TLS to negotiate.
+ *
+ * node-postgres refuses that combination outright - "sslnegotiation=direct
+ * requires SSL to be enabled" - so leaving it in place would fail every
+ * connection rather than slow one down. Costing nothing to decide here, it is
+ * only worth a word when somebody asked for it rather than inherited it.
+ */
+function usable(requested, encrypted, asked, warnings) {
+    if (requested !== "direct" || encrypted) {
+        return requested;
+    }
+    if (asked === "direct") {
+        warnings.push("Direct SSL negotiation was requested for a connection that does not use TLS, which " +
+            "node-postgres rejects, so it is not being used. Add sslmode=verify-full to enable it.");
+    }
+    return "postgres";
+}
+/**
+ * How a server too old for direct negotiation fails.
+ *
+ * PostgreSQL below 17 reads the TLS handshake as a malformed startup packet
+ * and hangs up, so all that reaches the client is a socket that closed. The
+ * pattern is deliberately broad: mistaking a network blip for an old server
+ * costs one round trip per connection from then on, while missing a real old
+ * server costs every connection.
+ */
+const DIRECT_NEGOTIATION_FAILURE = /socket disconnected|EPROTO|ECONNRESET|wrong version number/i;
+/** True when a failure looks like a server that cannot start TLS directly. */
+function isDirectNegotiationFailure(error) {
+    return DIRECT_NEGOTIATION_FAILURE.test(error instanceof Error ? error.message : String(error));
+}
+/** One line for `--verbose`, and the tail of a TLS failure. */
+function describePosture(posture) {
+    const declared = posture.declared ?? "unset";
+    const negotiation = posture.negotiation === "direct" ? ", direct SSL negotiation" : "";
+    return `sslmode=${declared} applied as ${posture.effective}${negotiation}`;
+}
+/**
+ * Turns a TLS handshake failure into something that names its likely cause.
+ *
+ * Both failures worth explaining are silent about themselves: promoting
+ * `require` to `verify-full` rejects a private CA with a certificate error
+ * that never mentions `sslmode`, and direct negotiation against a server older
+ * than 17 only ever reports a socket that closed.
+ */
+function explainSslFailure(error, posture) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (posture.negotiation === "direct" && isDirectNegotiationFailure(error)) {
+        return (`Direct SSL negotiation is in use and needs PostgreSQL 17 or newer; older servers close the connection ` +
+            `exactly like this. Remove ssl_negotiation from the profile, or sslnegotiation from ${CONNECTION_ENV_VAR}, to rule it out.`);
+    }
+    if (posture.promoted &&
+        /certificate|self-signed|unable to verify|altnames|CERT_/i.test(message)) {
+        return (`${CONNECTION_ENV_VAR} says sslmode=${posture.declared}, which mutex applies as verify-full, so the server's ` +
+            `certificate has to be valid for this hostname. Point sslrootcert at the CA that signed it, or use ` +
+            `sslmode=no-verify to accept it unchecked.`);
+    }
+    return null;
+}
+function applyNegotiation(config, negotiation) {
+    return { ...config, sslnegotiation: negotiation };
+}
+/**
+ * `new URL` rejects the empty-host form that carries the host in a parameter
+ * (`postgres://user:pass@/db?host=/run/postgresql`), which node-postgres
+ * supports. Borrowing its placeholder keeps that form working.
+ */
+const PLACEHOLDER_HOST = "placeholder.invalid";
+function asUrl(connectionString) {
+    // A leading slash is a bare socket path, and spaces or stray percent signs
+    // need the escaping node-postgres does itself. Neither can carry sslmode.
+    if (connectionString.startsWith("/") ||
+        / |%[^a-f0-9]|%[a-f0-9][^a-f0-9]/i.test(connectionString)) {
+        return null;
+    }
+    try {
+        return new URL(connectionString);
+    }
+    catch {
+        try {
+            return new URL(connectionString.replace("@/", `@${PLACEHOLDER_HOST}/`));
+        }
+        catch {
+            return null;
+        }
+    }
+}
+function withoutSslMode(url) {
+    const copy = new URL(url);
+    copy.searchParams.delete("sslmode");
+    if (copy.hostname === PLACEHOLDER_HOST) {
+        copy.host = "";
+    }
+    return copy.toString();
+}
+/**
+ * Reads `sslnegotiation` from the connection string, rejecting what neither
+ * mutex nor node-postgres understands.
+ *
+ * mutex now writes this field itself, so an unrecognised value would otherwise
+ * be quietly overwritten - and a typo would read as "direct negotiation is on"
+ * while nothing had changed. node-postgres rejects the same values, so this
+ * only moves the complaint earlier.
+ */
+function readNegotiation(url) {
+    const value = url.searchParams.get("sslnegotiation");
+    if (!value) {
+        return null;
+    }
+    if (value !== "postgres" && value !== "direct") {
+        throw new Error(`Invalid sslnegotiation value: "${value}". Valid values are "postgres" and "direct".`);
+    }
+    return value;
+}
+/** The `host` parameter wins over the authority, as it does in libpq. */
+function hostOf(url) {
+    const parameter = url.searchParams.get("host");
+    if (parameter) {
+        return parameter;
+    }
+    return url.hostname === PLACEHOLDER_HOST ? "" : url.hostname;
+}
+function isLocal(host) {
+    return (host.startsWith("/") || LOCAL_HOSTS.has(host) || host.endsWith(".localhost"));
+}
+//# sourceMappingURL=connection.js.map
 // EXTERNAL MODULE: ./node_modules/pg-format/lib/index.js
 var pg_format_lib = __nccwpck_require__(8787);
 ;// CONCATENATED MODULE: ./lib/database.js
@@ -49944,6 +50214,7 @@ var pg_format_lib = __nccwpck_require__(8787);
 
 
 
+
 /**
  * The columns every read returns.
  *
@@ -49952,30 +50223,93 @@ var pg_format_lib = __nccwpck_require__(8787);
  * parses them into correct `Date`s no matter what time zone the client or the
  * database session happens to run in.
  */
-const LOCK_COLUMNS = `id, reason, owner,
-        created_at AT TIME ZONE 'UTC' AS created_at,
-        expires_at AT TIME ZONE 'UTC' AS expires_at,
-        (expires_at IS NOT NULL AND expires_at < (NOW() AT TIME ZONE 'UTC')) AS expired`;
+function lockColumns(source = "") {
+    const prefix = source ? `${source}.` : "";
+    return `${prefix}id, ${prefix}reason, ${prefix}owner,
+        ${prefix}created_at AT TIME ZONE 'UTC' AS created_at,
+        ${prefix}expires_at AT TIME ZONE 'UTC' AS expires_at,
+        (${prefix}expires_at IS NOT NULL AND ${prefix}expires_at < (NOW() AT TIME ZONE 'UTC')) AS expired`;
+}
+const LOCK_COLUMNS = lockColumns();
 class DatabaseMutex {
     config;
     log;
+    poolConfig;
     pool;
+    posture;
     closed = false;
+    /** Direct negotiation is abandoned at most once, and never resumed. */
+    directRetired = false;
     /** Schema creation is tried at most once per instance. */
     schemaAttempted = false;
     constructor(config, log = new SilentLogger()) {
         this.config = config;
         this.log = log;
-        // Database configuration using connection string
-        this.pool = new Pool({
-            connectionString: config.dbConnectionString,
-            connectionTimeoutMillis: config.connectionTimeoutMillis,
+        // mutex decides what the connection string's sslmode means rather than
+        // inheriting whichever meaning the installed node-postgres holds; see
+        // `connection.ts`.
+        const connection = resolveConnection(config.dbConnectionString, {
+            sslNegotiation: config.sslNegotiation,
+            preferDirect: config.preferDirectSsl,
         });
+        this.posture = connection.posture;
+        for (const warning of connection.warnings) {
+            log.warning(warning);
+        }
+        log.debug(`Database connection: ${describePosture(connection.posture)}.`);
+        this.poolConfig = {
+            ...connection.config,
+            connectionTimeoutMillis: config.connectionTimeoutMillis,
+            min: config.minPoolSize,
+        };
+        this.pool = this.openPool(this.poolConfig);
+    }
+    openPool(config) {
+        const pool = new Pool(config);
         // Without a listener, an error on an idle client is an unhandled 'error'
         // event and takes the whole process down.
-        this.pool.on("error", (error) => {
+        pool.on("error", (error) => {
             logWarning(this.log, error, "Idle database client error");
         });
+        return pool;
+    }
+    /**
+     * Gives up on direct SSL negotiation after it fails once.
+     *
+     * A server older than 17 reads the TLS handshake as a malformed startup
+     * packet and closes the connection, and node-postgres does not retry. One
+     * lost connection is a fair price for a process that will open many, so the
+     * pool is rebuilt without it and the caller tries again. Retired for the
+     * life of this instance: a server does not get newer while it runs, and
+     * probing again would cost a failed connection every time.
+     */
+    async retreatFromDirect(error) {
+        if (this.directRetired ||
+            this.posture.negotiation !== "direct" ||
+            !isDirectNegotiationFailure(error)) {
+            return false;
+        }
+        this.directRetired = true;
+        this.log.warning("Direct SSL negotiation failed, which is how PostgreSQL below 17 refuses it. " +
+            "Continuing with negotiated SSL, one round trip slower, for the rest of this process.");
+        const retired = this.pool;
+        this.posture = { ...this.posture, negotiation: "postgres" };
+        this.poolConfig = { ...this.poolConfig, sslnegotiation: "postgres" };
+        this.pool = this.openPool(this.poolConfig);
+        await retired.end().catch(() => undefined);
+        return true;
+    }
+    /** Runs `attempt`, once more if direct negotiation was what broke it. */
+    async guarded(attempt) {
+        try {
+            return await attempt();
+        }
+        catch (error) {
+            if (await this.retreatFromDirect(error)) {
+                return attempt();
+            }
+            throw this.explained(error);
+        }
     }
     async acquireLock(name, reason, owner = null, expiration = this.config.expiration ?? 60, _operation = "lock") {
         return this.withSchemaRetry(`Acquiring lock '${name}'`, () => this.acquireLockInternal(name, reason, owner, expiration));
@@ -50005,10 +50339,17 @@ class DatabaseMutex {
             return result.rows.length > 0 ? toLockRecord(result.rows[0]) : null;
         });
     }
-    /** Returns every lock in the table, expired ones included. */
-    async listLocks() {
+    /**
+     * Returns locks in the table, expired ones included.
+     *
+     * Naming an owner narrows it to that owner's rows, and does so in SQL: the
+     * answer's size should be the number of locks that match rather than the
+     * size of the table, which is the whole reason for asking the database
+     * instead of filtering afterwards. Naming nobody returns everything.
+     */
+    async listLocks(owner = null) {
         return this.withSchemaRetry("Listing locks", async () => {
-            const result = await this.pool.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I ORDER BY id;`, TABLE_NAME));
+            const result = await this.pool.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I${owner === null ? "" : " WHERE owner = $1"} ORDER BY id;`, TABLE_NAME), owner === null ? [] : [owner]);
             return result.rows.map(toLockRecord);
         });
     }
@@ -50036,13 +50377,15 @@ class DatabaseMutex {
     }
     /** Opens one connection during server startup so the first lock is warm. */
     async warm() {
-        const client = await this.connect();
-        try {
-            await client.query("SELECT 1");
-        }
-        finally {
-            this.disconnect(client);
-        }
+        return this.guarded(async () => {
+            const client = await this.connect();
+            try {
+                await client.query("SELECT 1");
+            }
+            finally {
+                this.disconnect(client);
+            }
+        });
     }
     poolStatus() {
         return {
@@ -50052,202 +50395,242 @@ class DatabaseMutex {
         };
     }
     async acquireLockInternal(name, reason, owner, expiration) {
-        let client;
-        try {
-            client = await this.connect();
-            await client.query("BEGIN");
-            if (!(await this.holdAdvisoryLock(client, name))) {
-                await client.query("ROLLBACK");
-                return {
-                    acquired: false,
-                    status: "Lock held by another transaction",
-                };
-            }
-            // Insert the lock, or take it over when the existing one has expired.
-            // A row whose expires_at is NULL is never taken over: an unknown
-            // expiry is treated as "still held". Acquiring never extends a lock the
-            // caller already holds - that is `renewLock`'s job.
-            const upsertQuery = pg_format_lib(`INSERT INTO %I (id, reason, owner, expires_at)
-        VALUES ($1, $2, $3, (NOW() AT TIME ZONE 'UTC') + ($4 || ' seconds')::INTERVAL)
+        // A standalone statement is its own transaction. The gate takes a
+        // transaction-scoped advisory lock before the upsert, and Postgres releases
+        // it as the statement finishes. `existing` and `changed` share one snapshot;
+        // RETURNING is how the data-modifying CTE communicates the row it wrote to
+        // the final result.
+        const query = pg_format_lib(`WITH gate AS (
+        SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired
+      ),
+      existing AS (
+        SELECT ${lockColumns("held")}
+        FROM %I AS held
+        CROSS JOIN gate
+        WHERE gate.acquired AND held.id = $1
+      ),
+      changed AS (
+        INSERT INTO %I AS locked (id, reason, owner, expires_at)
+        SELECT
+          $1,
+          $2,
+          $3,
+          (NOW() AT TIME ZONE 'UTC') + ($4 || ' seconds')::INTERVAL
+        FROM gate
+        WHERE gate.acquired
         ON CONFLICT (id) DO UPDATE
         SET
-            expires_at = EXCLUDED.expires_at,
-            reason = EXCLUDED.reason,
-            owner = EXCLUDED.owner,
-            created_at = (NOW() AT TIME ZONE 'UTC')
-        WHERE
-            %I.expires_at < (NOW() AT TIME ZONE 'UTC')
-        RETURNING ${LOCK_COLUMNS};`, TABLE_NAME, TABLE_NAME);
-            const result = await client.query(upsertQuery, [
-                name,
-                reason,
-                owner,
-                expiration,
-            ]);
-            // No row means a valid, unexpired lock already existed.
-            if (result.rowCount === 0) {
-                const holder = await client.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME), [name]);
-                await client.query("ROLLBACK");
-                this.log.info(`Lock for "${name}" exists and has not expired.`);
-                return {
-                    acquired: false,
-                    status: "Lock taken by another process (try again later)",
-                    record: holder.rows.length > 0 ? toLockRecord(holder.rows[0]) : undefined,
-                };
-            }
-            await client.query("COMMIT");
-            this.log.info(`Lock '${name}' acquired successfully.`);
-            const record = toLockRecord(result.rows[0]);
-            const approximate = new Date(Date.now() + expiration * 1000).toISOString();
+          expires_at = EXCLUDED.expires_at,
+          reason = EXCLUDED.reason,
+          owner = EXCLUDED.owner,
+          created_at = (NOW() AT TIME ZONE 'UTC')
+        WHERE locked.expires_at < (NOW() AT TIME ZONE 'UTC')
+        RETURNING ${lockColumns("locked")}
+      )
+      SELECT
+        CASE
+          WHEN NOT gate.acquired THEN 'contended'
+          WHEN changed.id IS NOT NULL THEN 'acquired'
+          ELSE 'held'
+        END AS outcome,
+        CASE WHEN changed.id IS NOT NULL THEN changed.id ELSE existing.id END AS id,
+        CASE WHEN changed.id IS NOT NULL THEN changed.reason ELSE existing.reason END AS reason,
+        CASE WHEN changed.id IS NOT NULL THEN changed.owner ELSE existing.owner END AS owner,
+        CASE WHEN changed.id IS NOT NULL THEN changed.created_at ELSE existing.created_at END AS created_at,
+        CASE WHEN changed.id IS NOT NULL THEN changed.expires_at ELSE existing.expires_at END AS expires_at,
+        CASE WHEN changed.id IS NOT NULL THEN changed.expired ELSE existing.expired END AS expired
+      FROM gate
+      LEFT JOIN existing ON TRUE
+      LEFT JOIN changed ON TRUE;`, TABLE_NAME, TABLE_NAME);
+        const row = await this.runMutation(name, query, [
+            name,
+            reason,
+            owner,
+            expiration,
+        ]);
+        if (row.outcome === "contended") {
             return {
-                acquired: true,
-                status: "Lock acquired",
-                expires: record.expiresAt ?? `approximately ${approximate}`,
-                record,
+                acquired: false,
+                status: "Lock held by another transaction",
             };
         }
-        catch (error) {
-            // Not reported here: `withSchemaRetry` either succeeds on the retry, in
-            // which case this was not a problem, or rethrows for the caller to report.
-            this.log.debug(`An error occurred while acquiring a lock for '${name}'; rolling back: ${describeError(error)}`);
-            await rollback(client, this.log);
-            throw error;
+        if (row.outcome === "held") {
+            this.log.info(`Lock for "${name}" exists and has not expired.`);
+            return {
+                acquired: false,
+                status: "Lock taken by another process (try again later)",
+                record: row.id == null ? undefined : toLockRecord(row),
+            };
         }
-        finally {
-            this.disconnect(client);
-        }
+        const record = toLockRecord(row);
+        const approximate = new Date(Date.now() + expiration * 1000).toISOString();
+        this.log.info(`Lock '${name}' acquired successfully.`);
+        return {
+            acquired: true,
+            status: "Lock acquired",
+            expires: record.expiresAt ?? `approximately ${approximate}`,
+            record,
+        };
     }
     async releaseLockInternal(name, owner, fence) {
-        let client;
-        try {
-            client = await this.connect();
-            await client.query("BEGIN");
-            if (!(await this.holdAdvisoryLock(client, name))) {
-                await client.query("ROLLBACK");
-                return { unlocked: false, outcome: "contended" };
-            }
-            const existing = await client.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME), [name]);
-            if (existing.rows.length === 0) {
-                await client.query("COMMIT");
-                this.log.warning(`Lock '${name}' was not found. No release was necessary.`);
-                return { unlocked: true, outcome: "not-found" };
-            }
-            const record = toLockRecord(existing.rows[0]);
-            if (!mayModify(record, owner)) {
-                await client.query("COMMIT");
-                return { unlocked: false, outcome: "owned-by-another", record };
-            }
-            // The caller knows which acquisition it is releasing, and this is not
-            // it: the lock lapsed and somebody took it over. Ownership cannot catch
-            // this when neither side named an owner, which is the default.
-            if (fence !== null && record.createdAt !== fence) {
-                await client.query("COMMIT");
-                return { unlocked: false, outcome: "superseded", record };
-            }
-            await client.query(pg_format_lib(`DELETE FROM %I WHERE id = $1;`, TABLE_NAME), [
-                name,
-            ]);
-            await client.query("COMMIT");
-            this.log.info(`Lock '${name}' released successfully.`);
-            return { unlocked: true, outcome: "unlocked", record };
+        const query = pg_format_lib(`WITH gate AS (
+        SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired
+      ),
+      existing AS (
+        SELECT ${lockColumns("held")}
+        FROM %I AS held
+        CROSS JOIN gate
+        WHERE gate.acquired AND held.id = $1
+      ),
+      deleted AS (
+        DELETE FROM %I AS locked
+        USING gate, existing
+        WHERE gate.acquired
+          AND locked.id = existing.id
+          AND (existing.owner IS NULL OR existing.owner IS NOT DISTINCT FROM $2::text)
+          AND (
+            $3::text IS NULL
+            OR to_char(
+              existing.created_at AT TIME ZONE 'UTC',
+              'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            ) = $3::text
+          )
+        RETURNING locked.id
+      )
+      SELECT
+        CASE
+          WHEN NOT gate.acquired THEN 'contended'
+          WHEN existing.id IS NULL THEN 'not-found'
+          WHEN NOT (existing.owner IS NULL OR existing.owner IS NOT DISTINCT FROM $2::text) THEN 'owned-by-another'
+          WHEN $3::text IS NOT NULL
+            AND to_char(
+              existing.created_at AT TIME ZONE 'UTC',
+              'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            ) <> $3::text THEN 'superseded'
+          WHEN deleted.id IS NOT NULL THEN 'unlocked'
+          ELSE 'not-found'
+        END AS outcome,
+        existing.id,
+        existing.reason,
+        existing.owner,
+        existing.created_at,
+        existing.expires_at,
+        existing.expired
+      FROM gate
+      LEFT JOIN existing ON TRUE
+      LEFT JOIN deleted ON TRUE;`, TABLE_NAME, TABLE_NAME);
+        const row = await this.runMutation(name, query, [name, owner, fence]);
+        if (row.outcome === "contended") {
+            return { unlocked: false, outcome: "contended" };
         }
-        catch (error) {
-            // Not reported here: `withSchemaRetry` either succeeds on the retry, in
-            // which case this was not a problem, or rethrows for the caller to report.
-            this.log.debug(`An error occurred while releasing a lock for '${name}'; rolling back: ${describeError(error)}`);
-            await rollback(client, this.log);
-            throw error;
+        if (row.outcome === "not-found") {
+            this.log.warning(`Lock '${name}' was not found. No release was necessary.`);
+            return { unlocked: true, outcome: "not-found" };
         }
-        finally {
-            this.disconnect(client);
+        const record = toLockRecord(row);
+        if (!mayModify(record, owner)) {
+            return { unlocked: false, outcome: "owned-by-another", record };
         }
+        if (fence !== null && record.createdAt !== fence) {
+            return { unlocked: false, outcome: "superseded", record };
+        }
+        this.log.info(`Lock '${name}' released successfully.`);
+        return { unlocked: true, outcome: "unlocked", record };
     }
     async renewLockInternal(name, expiration, owner) {
-        let client;
-        try {
-            client = await this.connect();
-            await client.query("BEGIN");
-            if (!(await this.holdAdvisoryLock(client, name))) {
-                await client.query("ROLLBACK");
-                return { renewed: false, outcome: "contended" };
-            }
-            const existing = await client.query(pg_format_lib(`SELECT ${LOCK_COLUMNS} FROM %I WHERE id = $1;`, TABLE_NAME), [name]);
-            if (existing.rows.length === 0) {
-                await client.query("COMMIT");
-                return { renewed: false, outcome: "not-found" };
-            }
-            const record = toLockRecord(existing.rows[0]);
-            // An unowned lock has nobody to wrong, so it stays open - which is what
-            // keeps Action-written locks manageable from the CLI.
-            if (!mayModify(record, owner)) {
-                await client.query("COMMIT");
-                return { renewed: false, outcome: "owned-by-another", record };
-            }
-            // An expired lock may already have been taken over by someone else, so
-            // pushing its expiry forward would re-take it behind their back.
-            if (record.expired) {
-                await client.query("COMMIT");
-                return { renewed: false, outcome: "expired", record };
-            }
-            // UPDATE, never an upsert: a lock that vanished between the read and
-            // here stays gone rather than being recreated.
-            // GREATEST, so a renewal can only push the expiry outwards. Postgres
-            // ignores NULLs here, so a row with no recorded expiry still takes the
-            // computed one rather than staying NULL.
-            const renewed = await client.query(pg_format_lib(`UPDATE %I
-          SET expires_at = GREATEST(
-              (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL,
-              expires_at
-          )
-          WHERE id = $1
-          RETURNING ${LOCK_COLUMNS};`, TABLE_NAME), [name, expiration]);
-            if (renewed.rows.length === 0) {
-                await client.query("COMMIT");
-                return { renewed: false, outcome: "not-found" };
-            }
-            await client.query("COMMIT");
-            const updated = toLockRecord(renewed.rows[0]);
-            const extended = updated.expiresAt !== record.expiresAt;
-            this.log.info(extended
-                ? `Lock '${name}' renewed for ${expiration}s.`
-                : `Lock '${name}' already ran past ${expiration}s; left as it was.`);
-            return {
-                renewed: true,
-                outcome: "renewed",
-                extended,
-                record: updated,
-            };
+        const query = pg_format_lib(`WITH gate AS (
+        SELECT pg_try_advisory_xact_lock(hashtext($1)) AS acquired
+      ),
+      existing AS (
+        SELECT ${lockColumns("held")}
+        FROM %I AS held
+        CROSS JOIN gate
+        WHERE gate.acquired AND held.id = $1
+      ),
+      renewed AS (
+        UPDATE %I AS locked
+        SET expires_at = GREATEST(
+          (NOW() AT TIME ZONE 'UTC') + ($2 || ' seconds')::INTERVAL,
+          locked.expires_at
+        )
+        FROM gate, existing
+        WHERE gate.acquired
+          AND locked.id = existing.id
+          AND (existing.owner IS NULL OR existing.owner IS NOT DISTINCT FROM $3::text)
+          AND NOT existing.expired
+        RETURNING ${lockColumns("locked")}
+      )
+      SELECT
+        CASE
+          WHEN NOT gate.acquired THEN 'contended'
+          WHEN existing.id IS NULL THEN 'not-found'
+          WHEN NOT (existing.owner IS NULL OR existing.owner IS NOT DISTINCT FROM $3::text) THEN 'owned-by-another'
+          WHEN existing.expired THEN 'expired'
+          WHEN renewed.id IS NOT NULL THEN 'renewed'
+          ELSE 'not-found'
+        END AS outcome,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.id ELSE existing.id END AS id,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.reason ELSE existing.reason END AS reason,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.owner ELSE existing.owner END AS owner,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.created_at ELSE existing.created_at END AS created_at,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.expires_at ELSE existing.expires_at END AS expires_at,
+        CASE WHEN renewed.id IS NOT NULL THEN renewed.expired ELSE existing.expired END AS expired,
+        CASE
+          WHEN renewed.id IS NOT NULL THEN renewed.expires_at IS DISTINCT FROM existing.expires_at
+          ELSE FALSE
+        END AS extended
+      FROM gate
+      LEFT JOIN existing ON TRUE
+      LEFT JOIN renewed ON TRUE;`, TABLE_NAME, TABLE_NAME);
+        const row = await this.runMutation(name, query, [name, expiration, owner]);
+        if (row.outcome === "contended") {
+            return { renewed: false, outcome: "contended" };
         }
-        catch (error) {
-            // Not reported here: `withSchemaRetry` either succeeds on the retry, in
-            // which case this was not a problem, or rethrows for the caller to report.
-            this.log.debug(`An error occurred while renewing a lock for '${name}'; rolling back: ${describeError(error)}`);
-            await rollback(client, this.log);
-            throw error;
+        if (row.outcome === "not-found") {
+            return { renewed: false, outcome: "not-found" };
         }
-        finally {
-            this.disconnect(client);
+        const record = toLockRecord(row);
+        if (!mayModify(record, owner)) {
+            return { renewed: false, outcome: "owned-by-another", record };
         }
+        if (record.expired) {
+            return { renewed: false, outcome: "expired", record };
+        }
+        const extended = row.extended === true;
+        this.log.info(extended
+            ? `Lock '${name}' renewed for ${expiration}s.`
+            : `Lock '${name}' already ran past ${expiration}s; left as it was.`);
+        return {
+            renewed: true,
+            outcome: "renewed",
+            extended,
+            record,
+        };
     }
     /**
-     * Takes a transaction-scoped advisory lock on the mutex id, so no other
-     * process can acquire or release the same lock concurrently. Retries once,
-     * since contention here is almost always momentary.
+     * Runs one complete mutation statement, retrying it once when another
+     * transaction briefly holds the advisory lock for this mutex id.
      */
-    async holdAdvisoryLock(client, name) {
-        if (await this.tryAdvisoryLock(client, name)) {
-            return true;
+    async runMutation(name, query, values) {
+        let row = await this.queryMutation(query, values);
+        if (row.outcome !== "contended") {
+            return row;
         }
+        this.log.debug(`Could not acquire advisory lock '${name}'.`);
         await helpers_sleep(1);
-        return this.tryAdvisoryLock(client, name);
-    }
-    async tryAdvisoryLock(client, name) {
-        const result = await client.query("SELECT pg_try_advisory_xact_lock(hashtext($1)) as acquired", [name]);
-        if (!result.rows[0].acquired) {
+        row = await this.queryMutation(query, values);
+        if (row.outcome === "contended") {
             this.log.debug(`Could not acquire advisory lock '${name}'.`);
-            return false;
         }
-        return true;
+        return row;
+    }
+    async queryMutation(query, values) {
+        const result = await this.pool.query(query, values);
+        const row = result.rows[0];
+        if (!row || typeof row.outcome !== "string") {
+            throw new Error(`Database mutation returned no outcome (rows=${result.rows.length})`);
+        }
+        return row;
     }
     /**
      * Runs an operation and, if it fails, makes sure the schema exists before
@@ -50255,6 +50638,21 @@ class DatabaseMutex {
      * action before.
      */
     async withSchemaRetry(operation, run) {
+        return this.guarded(() => this.retryOnceForSchema(operation, run));
+    }
+    /**
+     * Adds what mutex knows about the connection to a handshake failure.
+     *
+     * TLS errors describe the certificate, never the setting that demanded one,
+     * so the cause is invisible from the message alone.
+     */
+    explained(error) {
+        const hint = explainSslFailure(error, this.posture);
+        return hint
+            ? new Error(`${describeError(error)}\n  ${hint}`, { cause: error })
+            : error;
+    }
+    async retryOnceForSchema(operation, run) {
         try {
             return await run();
         }
@@ -50355,17 +50753,6 @@ function mayModify(record, owner) {
         return true;
     }
     return record.owner === owner;
-}
-async function rollback(client, log) {
-    if (!client) {
-        return;
-    }
-    try {
-        await client.query("ROLLBACK");
-    }
-    catch (error) {
-        logWarning(log, error, "Failed to roll back the transaction");
-    }
 }
 function toLockRecord(row) {
     return {

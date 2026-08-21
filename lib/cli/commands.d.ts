@@ -28,7 +28,13 @@ export declare function commandUnlock(ctx: CommandContext, identifier: string): 
 export declare function commandRenew(ctx: CommandContext, identifier: string): Promise<number>;
 /** `mutex status`: exit 0 while the lock is held, 4 once it is free. */
 export declare function commandStatus(ctx: CommandContext, identifier: string): Promise<number>;
-/** `mutex list`. */
+/**
+ * `mutex list`, narrowed to one owner when the caller names one.
+ *
+ * Holding nothing is an answer rather than a failure, so an empty list still
+ * exits 0 - and says whose locks it looked for, since "no locks" and "none of
+ * yours" are different things to read off a screen.
+ */
 export declare function commandList(ctx: CommandContext): Promise<number>;
 /** `mutex prune`. */
 export declare function commandPrune(ctx: CommandContext): Promise<number>;
