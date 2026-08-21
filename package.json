@@ -1,6 +1,6 @@
 {
   "name": "@releasetools/mutex",
-  "version": "1.4.0-pre",
+  "version": "1.4.0",
   "private": true,
   "description": "Advisory locking for CI/CD, backed by a Postgres table. Locks have a TTL and auto-release when the job ends; a GitHub Action and a mutex CLI share the same table, so a lock taken by one blocks the other.",
   "repository": {
