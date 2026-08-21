@@ -39,13 +39,13 @@ Any other job using `id: staging` now waits. The lock goes back when the job end
 Install the public package from npm. Node.js 24 or newer is required:
 
 ```shell
-npm install --global @releasetools/mutex@1.4.0
+npm install --global @releasetools/mutex@1
 mutex version
 ```
 
-Use an exact version as above for a repeatable install, or use `@1` to select
-the newest compatible v1 release at installation time. npm does not update a
-global installation automatically. Re-run the install command to update:
+`@1` picks the newest v1 release at installation time; name an exact version
+instead when the installation has to stay pinned. npm never updates a global
+installation on its own, so re-run the command to move it:
 
 ```shell
 # Move an exact installation to a specific newer release.
