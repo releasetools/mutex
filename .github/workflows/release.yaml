@@ -393,6 +393,13 @@ jobs:
   # neither the assembled workspace tree nor a runner-global Node/npm install.
   # verify-npm runs first, so a package that is still propagating is retried
   # there rather than turning this into a second registry-propagation test.
+  #
+  # The exact version below is load-bearing, not incidental. mise ignores
+  # releases younger than `minimum_release_age`, which defaults to 24 hours, so
+  # `@1` or `@latest` here would install yesterday's mutex and fail this job for
+  # a day after every release - looking exactly like a broken publish. Naming
+  # the version installs it immediately, which is what makes verifying a
+  # release seconds after making it possible at all.
   verify-mise:
     if: needs.publish_npm.outputs.npm_available == 'true'
     needs: [publish_npm, verify-npm]

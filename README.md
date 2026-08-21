@@ -68,7 +68,7 @@ threshold, explicitly approve it; the exception does not apply to dependencies:
 
 ```shell
 mise use --global \
-  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1'
 mutex version
 ```
 
@@ -76,7 +76,7 @@ For a new mise setup, install the runtime and mutex together:
 
 ```shell
 mise use --global node@24 \
-  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1'
 mutex version
 ```
 
@@ -92,15 +92,28 @@ With mise activated, `mutex` is available directly. Without shell activation,
 run it through `mise exec -- mutex`. `allow_low_downloads` requires mise 2026.8.8
 or newer.
 
-`mutex version` above can report the release before the newest one. mise hides a
-release younger than `minimum_release_age` where that setting is on, and says so
-rather than leaving it a mystery:
+`mutex version` above can report the release before the newest one. mise ignores
+releases younger than `minimum_release_age`, which **defaults to 24 hours**, so
+on the day of a release it installs the one before it and says so:
 
 ```text
 mise WARN  1 newer npm:@releasetools/mutex release hidden by minimum_release_age
 ```
 
-Nothing has gone wrong; the new version arrives once it has aged in.
+Nothing has gone wrong, and the new release arrives on its own once it has aged
+in. To have it today, name it exactly - an exact version installs immediately,
+which is how this repository's own release verifies a publication seconds after
+making it:
+
+```shell
+mise use --global \
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1.4.0'
+```
+
+The delay is a supply-chain protection covering every tool mise installs, so
+`minimum_release_age = "0d"` to switch it off, or
+`minimum_release_age_excludes = ["npm:*"]` to exempt this backend, are worth
+setting knowingly rather than to save a day.
 
 Update only a moving mutex installation with:
 
@@ -108,7 +121,8 @@ Update only a moving mutex installation with:
 mise upgrade 'npm:@releasetools/mutex'
 ```
 
-Use an exact package version instead of `latest` when the installation must stay
+`@1` follows the newest v1 release and stops there rather than crossing into a
+future major. Name an exact version instead when the installation must stay
 pinned:
 
 ```shell
@@ -485,7 +499,7 @@ Installing the plugin installs no `mutex` command and supplies no connection str
 
 ```shell
 mise use --global node@24 \
-  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1'
 mutex version
 ```
 
