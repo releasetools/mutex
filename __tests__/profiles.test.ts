@@ -12,22 +12,22 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
-  activateProfile,
   formatProfiles,
   parseProfiles,
   profilesDirectory,
   selectProfile,
+  setDefaultProfile,
 } from "../src/cli/profiles.js";
 import { ConfigurationError, UsageError } from "../src/cli/exit-codes.js";
 
 const server = {
   name: "server",
   mode: "server" as const,
-  enabled: true,
+  isDefault: true,
   bindAddress: "localhost:5625",
   workingDir: "/tmp/mutex-work",
 };
-const direct = { name: "direct", mode: "direct" as const, enabled: false };
+const direct = { name: "direct", mode: "direct" as const, isDefault: false };
 
 describe("mutex profiles", () => {
   let temporary: string;
@@ -53,12 +53,12 @@ describe("mutex profiles", () => {
     ]);
   });
 
-  it("requires exactly one enabled profile", () => {
+  it("requires exactly one default profile", () => {
     expect(() =>
-      parseProfiles(formatProfiles([{ ...server, enabled: false }, direct])),
+      parseProfiles(formatProfiles([{ ...server, isDefault: false }, direct])),
     ).toThrow(ConfigurationError);
     expect(() =>
-      parseProfiles(formatProfiles([server, { ...direct, enabled: true }])),
+      parseProfiles(formatProfiles([server, { ...direct, isDefault: true }])),
     ).toThrow(/exactly one/);
   });
 
@@ -67,44 +67,63 @@ describe("mutex profiles", () => {
       parseProfiles(`
 [direct]
 mode = "direct"
-enabled = true
+default = true
 bind_address = "localhost:5625"
 `),
     ).toThrow(/must not define/);
   });
 
-  it("uses -p selection without changing the enabled profile", async () => {
+  it("round-trips ssl_negotiation on either mode", () => {
+    const tuned = { ...direct, sslNegotiation: "direct" as const };
+
+    expect(
+      parseProfiles(formatProfiles([{ ...server, isDefault: true }, tuned])),
+    ).toEqual([{ ...server, isDefault: true }, tuned]);
+  });
+
+  it("rejects an ssl_negotiation postgres would not accept", () => {
+    expect(() =>
+      parseProfiles(`
+[direct]
+mode = "direct"
+default = true
+ssl_negotiation = "fast"
+`),
+    ).toThrow(/ssl_negotiation = "postgres" or "direct"/);
+  });
+
+  it("uses -p selection without changing the default profile", async () => {
     await writeFile(filePath, formatProfiles([server, direct]));
     expect((await selectProfile("direct", filePath)).profile.name).toBe(
       "direct",
     );
-    expect(parseProfiles(await readFile(filePath, "utf8"))[0].enabled).toBe(
+    expect(parseProfiles(await readFile(filePath, "utf8"))[0].isDefault).toBe(
       true,
     );
   });
 
-  it("activates one profile atomically and rejects unknown names", async () => {
+  it("sets one default atomically and rejects unknown names", async () => {
     await writeFile(filePath, formatProfiles([server, direct]));
-    await activateProfile("direct", filePath);
+    await setDefaultProfile("direct", filePath);
     const profiles = parseProfiles(await readFile(filePath, "utf8"));
-    expect(profiles.map(({ name, enabled }) => [name, enabled])).toEqual([
+    expect(profiles.map(({ name, isDefault }) => [name, isDefault])).toEqual([
       ["server", false],
       ["direct", true],
     ]);
-    await expect(activateProfile("missing", filePath)).rejects.toBeInstanceOf(
+    await expect(setDefaultProfile("missing", filePath)).rejects.toBeInstanceOf(
       UsageError,
     );
   });
 
-  it("can repair a file whose enabled flags are inconsistent", async () => {
+  it("can repair a file whose default flags are inconsistent", async () => {
     await writeFile(
       filePath,
-      formatProfiles([{ ...server, enabled: false }, direct]),
+      formatProfiles([{ ...server, isDefault: false }, direct]),
     );
-    await activateProfile("direct", filePath);
+    await setDefaultProfile("direct", filePath);
     expect(
       parseProfiles(await readFile(filePath, "utf8")).find(
-        (profile) => profile.enabled,
+        (profile) => profile.isDefault,
       )?.name,
     ).toBe("direct");
   });

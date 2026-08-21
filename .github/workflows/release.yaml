@@ -56,6 +56,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: package.json
+          # A release build should not reuse another build's dependency cache.
+          package-manager-cache: false
+
       - name: ✅ Check the version
         id: version
         env:
@@ -120,12 +127,22 @@ jobs:
           prune: "false"
           token: ${{ github.token }}
 
+      # The agent plugin is written and released in agent-plugins, and the npm
+      # package still carries its skill so a global install can seed the agents
+      # that read no manifest. Public repository, so no token is involved.
+      - name: Checkout the marketplace
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository_owner }}/agent-plugins
+          path: agent-plugins
+          persist-credentials: false
+
       - name: 🔨 Lint, test and package
         run: |
           npm ci
           npm run lint
           npm test
-          npm run package:action
+          npm run package:release -- --marketplace agent-plugins
 
       # signed-push commits onto an existing branch, so the release line has to
       # be there. Seeded from main the first time a major is published.
@@ -218,6 +235,231 @@ jobs:
             echo "- \`${VERSION}\` and \`${MAJOR}\` point at it"
             echo "- bumped package.json on main in \`${BUMP_SHA:0:12}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Keep publish authority away from npm ci, tests, and every dependency
+  # lifecycle script they can execute. This job receives only the signed tree
+  # under the version tag and invokes npm directly.
+  publish_npm:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      npm_available: ${{ steps.npm.outputs.available }}
+    steps:
+      - name: Checkout the signed release package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.version }}
+          path: package
+
+      - name: Set up Node.js for npm trusted publishing
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: package/package.json
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      # npm versions cannot be replaced. The command skips one that already
+      # exists (including an overwrite of the Action release), refuses to
+      # create retroactive packages before v1.3.0, and keeps a deliberately
+      # lower backport from moving the registry's `latest` tag backwards.
+      #
+      # NPM_TOKEN is needed only to bootstrap the first package. Once the
+      # package trusts release.yaml on npmjs.com, OIDC wins and this secret can
+      # be deleted; provenance is generated from the same id-token permission.
+      - name: 📦 Publish the CLI to npm
+        id: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        working-directory: package
+        run: |
+          set -euo pipefail
+
+          expected="${VERSION#v}"
+
+          # The npm package begins at v1.3.0. Re-running an older Action
+          # release must not create a package that never existed at the time.
+          case "$VERSION" in
+            v1.0.*|v1.1.*|v1.2.*)
+              echo "npm publishing starts at v1.3.0; skipping ${VERSION}."
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              echo "status=not-applicable" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          name="$(node -p 'require("./package.json").name')"
+          packaged="$(node -p 'require("./package.json").version')"
+          if [ "$name" != "@releasetools/mutex" ]; then
+            echo "::error::Refusing to publish ${name}; expected @releasetools/mutex"
+            exit 1
+          fi
+          if [ "$packaged" != "$expected" ]; then
+            echo "::error::Package version ${packaged} does not match ${VERSION}"
+            exit 1
+          fi
+
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
+          # A successful Action overwrite may be retried after npm already
+          # published. npm versions are immutable, so leave that one alone.
+          if published="$(npm view "${name}@${expected}" version 2>/dev/null)"; then
+            if [ "$published" != "$expected" ]; then
+              echo "::error::npm returned unexpected version ${published}"
+              exit 1
+            fi
+            echo "${name}@${expected} already exists; skipping npm publish."
+            echo "status=existing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Keep a deliberately lower backport from moving latest backwards.
+          tag=latest
+          latest="$(npm view "$name" dist-tags.latest 2>/dev/null || true)"
+          if [ -n "$latest" ] && [ "$latest" != "$expected" ]; then
+            lower="$(printf '%s\n' "$expected" "$latest" | sort -V | head -n 1)"
+            [ "$lower" = "$expected" ] && tag=backport
+          fi
+
+          npm publish . \
+            --access public \
+            --tag "$tag" \
+            --provenance \
+            --registry https://registry.npmjs.org
+          echo "status=published" >> "$GITHUB_OUTPUT"
+
+      - name: 📝 npm summary
+        env:
+          NPM_AVAILABLE: ${{ steps.npm.outputs.available }}
+          NPM_STATUS: ${{ steps.npm.outputs.status }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$NPM_AVAILABLE" = "true" ]; then
+            echo "npm package (${NPM_STATUS}): [\`@releasetools/mutex@${VERSION#v}\`](https://www.npmjs.com/package/@releasetools/mutex/v/${VERSION#v})" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "npm package: not applicable before v1.3.0" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # Install the exact package from the public registry, rather than exercising
+  # publish/ in the workspace, so this proves npm received a runnable CLI.
+  verify-npm:
+    if: needs.publish_npm.outputs.npm_available == 'true'
+    needs: publish_npm
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          # This job intentionally has no checkout, so package.json is unavailable.
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: ✅ Install and verify the npm CLI
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          expected="${VERSION#v}"
+          package="@releasetools/mutex@${expected}"
+
+          # npm may acknowledge a publish before the package is visible to
+          # installs. Retry the exact version for roughly two minutes, asking
+          # npm to revalidate its registry metadata on every attempt.
+          attempt=1
+          max_attempts=12
+          until npm install --global --prefer-online "$package"; do
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "::error::npm could not install ${package} after ${max_attempts} attempts"
+              exit 1
+            fi
+            echo "::notice::npm install attempt ${attempt}/${max_attempts} failed; retrying in 10 seconds"
+            sleep 10
+            attempt=$((attempt + 1))
+          done
+
+          ran="$(mutex version)"
+          if [ "$ran" != "$expected" ]; then
+            echo "::error::npm installed mutex $ran, but this release is $expected"
+            exit 1
+          fi
+          echo "npm installed mutex $ran"
+
+  # Exercise the public npm package through the documented mise path, using
+  # neither the assembled workspace tree nor a runner-global Node/npm install.
+  # verify-npm runs first, so a package that is still propagating is retried
+  # there rather than turning this into a second registry-propagation test.
+  verify-mise:
+    if: needs.publish_npm.outputs.npm_available == 'true'
+    needs: [publish_npm, verify-npm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Set up mise
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: "2026.8.8"
+          # mise-v2026.8.8-linux-x64 from the release's SHASUMS256.txt.
+          sha256: "1fce52a3656cf14bef6feeb9f0b90d545126a0bb598f0a69afbb9e4702f8f3e3"
+          install: "false"
+          cache: "false"
+          add_shims_to_path: "false"
+          env: "false"
+          export_path: "false"
+
+      - name: ✅ Install and verify the mise CLI
+        env:
+          VERSION: ${{ inputs.version }}
+          MISE_VERIFY_ROOT: ${{ runner.temp }}/mutex-mise
+          MISE_DATA_DIR: ${{ runner.temp }}/mutex-mise/data
+          MISE_CACHE_DIR: ${{ runner.temp }}/mutex-mise/cache
+          MISE_CONFIG_DIR: ${{ runner.temp }}/mutex-mise/config
+          MISE_STATE_DIR: ${{ runner.temp }}/mutex-mise/state
+          MISE_GLOBAL_CONFIG_FILE: ${{ runner.temp }}/mutex-mise/config/config.toml
+        run: |
+          set -euo pipefail
+
+          expected="${VERSION#v}"
+          mkdir -p \
+            "$MISE_VERIFY_ROOT" \
+            "$MISE_DATA_DIR" \
+            "$MISE_CACHE_DIR" \
+            "$MISE_CONFIG_DIR" \
+            "$MISE_STATE_DIR"
+
+          # The npm backend installs with mise's embedded package manager, but
+          # does not add the runtime the package needs. Declaring both in one
+          # command makes mise install Node first. The low-download exception
+          # is scoped to mutex and leaves the guard in place for dependencies.
+          mise --cd "$MISE_VERIFY_ROOT" use --global \
+            node@24 \
+            "npm:@releasetools/mutex[allow_low_downloads=true]@${expected}"
+
+          node_path="$(mise --cd "$MISE_VERIFY_ROOT" which node)"
+          mutex_path="$(mise --cd "$MISE_VERIFY_ROOT" which mutex)"
+          for path in "$node_path" "$mutex_path"; do
+            case "$path" in
+              "$MISE_DATA_DIR"/*) ;;
+              *)
+                echo "::error::mise resolved ${path} outside ${MISE_DATA_DIR}"
+                exit 1
+                ;;
+            esac
+          done
+
+          ran="$(mise --cd "$MISE_VERIFY_ROOT" exec -- mutex version)"
+          if [ "$ran" != "$expected" ]; then
+            echo "::error::mise installed mutex $ran, but this release is $expected"
+            exit 1
+          fi
+
+          mise --cd "$MISE_VERIFY_ROOT" exec -- mutex help >/dev/null
+          echo "mise installed mutex $ran at $mutex_path with $node_path"
 
   # Proves the published action works, by using it the way a consumer would.
   #

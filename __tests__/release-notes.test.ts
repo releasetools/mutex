@@ -59,10 +59,23 @@ describe("releaseNotes", () => {
     expect(releaseNotes("## 1.2.0\n\n## 1.1.0\n- x\n", "v1.2.0")).toBeNull();
   });
 
-  /** Guards the file's shape as much as the parser's. */
+  /**
+   * Guards the file's shape as much as the parser's.
+   *
+   * Between releases package.json carries a prerelease - `1.4.0-pre` while
+   * 1.4.0 is being written - and the section it has to find is the release it
+   * is heading for, `## 1.4.0`. Naming the section after the prerelease
+   * instead would hide it from the release, which is dispatched as a plain
+   * `vX.Y.Z` and reads the heading to fill in its body.
+   *
+   * Stripping the suffix belongs here rather than in the parser for the same
+   * reason: `check-release-version.mjs` refuses anything but `vX.Y.Z`, so
+   * nothing in production can ever ask it for a prerelease's notes.
+   */
   it("finds the current version in the real RELEASE.md", () => {
-    const version = JSON.parse(fs.readFileSync("package.json", "utf8"))
-      .version as string;
+    const version = (
+      JSON.parse(fs.readFileSync("package.json", "utf8")).version as string
+    ).replace(/[-+].*$/, "");
 
     const notes = releaseNotes(fs.readFileSync("RELEASE.md", "utf8"), version);
     expect(notes).not.toBeNull();

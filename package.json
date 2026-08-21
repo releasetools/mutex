@@ -1,8 +1,16 @@
 {
-  "name": "mutex",
-  "version": "1.2.2",
+  "name": "@releasetools/mutex",
+  "version": "1.4.0-pre",
   "private": true,
-  "description": "Advisory lock service for CI/CD pipelines. Prevents race conditions by ensuring mutual exclusion: only one job can access shared resources concurrently.",
+  "description": "Advisory locking for CI/CD, backed by a Postgres table. Locks have a TTL and auto-release when the job ends; a GitHub Action and a mutex CLI share the same table, so a lock taken by one blocks the other.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/releasetools/mutex.git"
+  },
+  "homepage": "https://github.com/releasetools/mutex#readme",
+  "bugs": {
+    "url": "https://github.com/releasetools/mutex/issues"
+  },
   "main": "lib/main.js",
   "bin": {
     "mutex": "./bin/mutex.js"
@@ -14,8 +22,9 @@
     "build:watch": "tsc --watch",
     "build": "npm run clean && tsc && npm run package",
     "package": "ncc build lib/main.js -o dist/main && ncc build lib/post.js -o dist/post",
-    "package:action": "npm run build && node scripts/package-action.mjs",
+    "package:release": "npm run build && node scripts/package-release.mjs",
     "cli:link": "npm run build && npm link",
+    "cli:unlink": "npm unlink --global $npm_package_name",
     "mutex": "node ./bin/mutex.js",
     "test": "npm run typecheck && NODE_OPTIONS=--experimental-vm-modules jest",
     "prepare": "husky",
@@ -30,6 +39,7 @@
     "@slack/web-api": "^8.0.0",
     "@types/pg": "^8.15.5",
     "pg": "^8.16.3",
+    "pg-connection-string": "^2.14.0",
     "pg-format": "^1.0.4"
   },
   "devDependencies": {
@@ -45,5 +55,9 @@
     "typescript": "^7.0.0"
   },
   "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "type": "module"
 }

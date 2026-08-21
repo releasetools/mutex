@@ -17,12 +17,58 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
       - name: Run tests
         run: |
           npm install
           npm run build
           npm run lint
           npm test
+
+  postgres-integration:
+    name: PostgreSQL ${{ matrix.postgres }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["14", "15", "16", "17", "18"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}-alpine
+        env:
+          POSTGRES_DB: mutex_test
+          POSTGRES_USER: mutex
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mutex -d mutex_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
+      - name: Run PostgreSQL integration tests
+        env:
+          MUTEX_TEST_DATABASE_URL: postgresql://mutex@localhost:5432/mutex_test
+        run: |
+          npm ci
+          npm test -- __tests__/database.integration.test.ts --runInBand
 
   test01:
     runs-on: ubuntu-latest
@@ -34,6 +80,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
 
       # dist/ is built at release time, not committed, so `uses: ./` below has
       # nothing to run until this step produces it. Local actions are read from
@@ -68,6 +120,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
 
       # dist/ is built at release time, not committed, so `uses: ./` below has
       # nothing to run until this step produces it. Local actions are read from
@@ -113,6 +171,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
 
       # dist/ is built at release time, not committed, so `uses: ./` below has
       # nothing to run until this step produces it. Local actions are read from

@@ -3,6 +3,8 @@ export default {
   testEnvironment: "node",
   clearMocks: true,
   testMatch: ["**/__tests__/**/*.test.ts"],
+  // package:release writes a second package.json with the same npm identity.
+  modulePathIgnorePatterns: ["<rootDir>/publish/"],
   extensionsToTreatAsEsm: [".ts"],
   moduleNameMapper: {
     "^(\\.{1,2}/.*)\\.js$": "$1",

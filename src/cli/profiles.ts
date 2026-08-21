@@ -21,6 +21,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { CONNECTION_ENV_VAR } from "../constants.js";
+import { SslNegotiation } from "../connection.js";
 import { ConfigurationError, UsageError } from "./exit-codes.js";
 
 export const DEFAULT_BIND_ADDRESS = "localhost:5625";
@@ -31,9 +32,16 @@ export type ProfileMode = "server" | "direct";
 export interface MutexProfile {
   name: string;
   mode: ProfileMode;
-  enabled: boolean;
+  isDefault: boolean;
   bindAddress?: string;
   workingDir?: string;
+  /**
+   * `direct` skips a round trip in the TLS handshake and needs PostgreSQL 17
+   * or newer. It lives here rather than only in the connection string because
+   * the connection string is a secret, often issued by somebody else, and this
+   * is a property of the server it points at rather than a credential.
+   */
+  sslNegotiation?: SslNegotiation;
 }
 
 export interface ProfilesFile {
@@ -65,11 +73,11 @@ export function profilesPath(
   return path.join(profilesDirectory(env, home), PROFILES_FILENAME);
 }
 
-/** A deliberately small TOML reader for the four profile keys we own. */
+/** A deliberately small TOML reader for the profile keys we own. */
 export function parseProfiles(
   text: string,
   filePath = PROFILES_FILENAME,
-  requireEnabled = true,
+  requireDefault = true,
 ): MutexProfile[] {
   const sections = new Map<string, Record<string, string | boolean>>();
   let current: Record<string, string | boolean> | null = null;
@@ -115,10 +123,10 @@ export function parseProfiles(
   const profiles = [...sections].map(([name, values]) =>
     validateProfile(name, values, filePath),
   );
-  const enabled = profiles.filter((profile) => profile.enabled);
-  if (requireEnabled && enabled.length !== 1) {
+  const defaults = profiles.filter((profile) => profile.isDefault);
+  if (requireDefault && defaults.length !== 1) {
     throw new ConfigurationError(
-      `${filePath} must enable exactly one profile; found ${enabled.length}`,
+      `${filePath} must define exactly one default profile; found ${defaults.length}`,
       "Run 'mutex profile NAME' to choose one.",
     );
   }
@@ -131,11 +139,16 @@ export function formatProfiles(profiles: MutexProfile[]): string {
       const lines = [
         `[${profile.name}]`,
         `mode = ${JSON.stringify(profile.mode)}`,
-        `enabled = ${profile.enabled}`,
+        `default = ${profile.isDefault}`,
       ];
       if (profile.mode === "server") {
         lines.push(`bind_address = ${JSON.stringify(profile.bindAddress)}`);
         lines.push(`working_dir = ${JSON.stringify(profile.workingDir)}`);
+      }
+      if (profile.sslNegotiation) {
+        lines.push(
+          `ssl_negotiation = ${JSON.stringify(profile.sslNegotiation)}`,
+        );
       }
       return lines.join("\n");
     })
@@ -144,13 +157,13 @@ export function formatProfiles(profiles: MutexProfile[]): string {
 
 export async function loadProfiles(
   filePath = profilesPath(),
-  requireEnabled = true,
+  requireDefault = true,
 ): Promise<ProfilesFile | null> {
   try {
     const text = await readFile(filePath, "utf8");
     return {
       path: filePath,
-      profiles: parseProfiles(text, filePath, requireEnabled),
+      profiles: parseProfiles(text, filePath, requireDefault),
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -191,11 +204,11 @@ export async function ensureProfiles(
     {
       name: "server",
       mode: "server",
-      enabled: true,
+      isDefault: true,
       bindAddress: DEFAULT_BIND_ADDRESS,
       workingDir,
     },
-    { name: "direct", mode: "direct", enabled: false },
+    { name: "direct", mode: "direct", isDefault: false },
   ];
   const formatted = formatProfiles(profiles);
 
@@ -221,7 +234,7 @@ export async function selectProfile(
     if (process.env[CONNECTION_ENV_VAR]) {
       return {
         configPath: null,
-        profile: { name: "direct", mode: "direct", enabled: true },
+        profile: { name: "direct", mode: "direct", isDefault: true },
       };
     }
     throw new ConfigurationError(
@@ -232,7 +245,7 @@ export async function selectProfile(
 
   const profile = requestedName
     ? loaded.profiles.find((candidate) => candidate.name === requestedName)
-    : loaded.profiles.find((candidate) => candidate.enabled);
+    : loaded.profiles.find((candidate) => candidate.isDefault);
   if (!profile) {
     throw new ConfigurationError(
       `profile '${requestedName}' is not defined`,
@@ -242,7 +255,7 @@ export async function selectProfile(
   return { profile, configPath: loaded.path };
 }
 
-export async function activateProfile(
+export async function setDefaultProfile(
   name: string,
   filePath = profilesPath(),
 ): Promise<ProfilesFile> {
@@ -262,7 +275,7 @@ export async function activateProfile(
   }
   const profiles = loaded.profiles.map((profile) => ({
     ...profile,
-    enabled: profile.name === name,
+    isDefault: profile.name === name,
   }));
   await writeAtomic(filePath, formatProfiles(profiles));
   return { path: filePath, profiles };
@@ -272,7 +285,7 @@ export function formatProfileList(profiles: MutexProfile[]): string {
   return `${profiles
     .map(
       (profile) =>
-        `${profile.enabled ? "*" : " "} ${profile.name} (${profile.mode})`,
+        `${profile.isDefault ? "*" : " "} ${profile.name} (${profile.mode})`,
     )
     .join("\n")}\n`;
 }
@@ -288,7 +301,7 @@ export async function chooseProfile(
   }
 
   let selected = Math.max(
-    loaded.profiles.findIndex((profile) => profile.enabled),
+    loaded.profiles.findIndex((profile) => profile.isDefault),
     0,
   );
   readline.emitKeypressEvents(input);
@@ -346,8 +359,8 @@ export async function profileCommand(name: string): Promise<void> {
     if (!(await profileFileExists(filePath))) {
       await ensureProfiles(process.stdin, process.stderr, filePath);
     }
-    await activateProfile(name, filePath);
-    process.stderr.write(`Enabled profile '${name}' in ${filePath}\n`);
+    await setDefaultProfile(name, filePath);
+    process.stderr.write(`Default profile set to '${name}' in ${filePath}\n`);
     return;
   }
   const filePath = profilesPath();
@@ -356,8 +369,10 @@ export async function profileCommand(name: string): Promise<void> {
     (await ensureProfiles(process.stdin, process.stderr, filePath));
   const selected = await chooseProfile(loaded);
   if (selected) {
-    await activateProfile(selected, loaded.path);
-    process.stderr.write(`Enabled profile '${selected}' in ${loaded.path}\n`);
+    await setDefaultProfile(selected, loaded.path);
+    process.stderr.write(
+      `Default profile set to '${selected}' in ${loaded.path}\n`,
+    );
   }
 }
 
@@ -381,7 +396,13 @@ function validateProfile(
   values: Record<string, string | boolean>,
   filePath: string,
 ): MutexProfile {
-  const allowed = new Set(["mode", "enabled", "bind_address", "working_dir"]);
+  const allowed = new Set([
+    "mode",
+    "default",
+    "bind_address",
+    "working_dir",
+    "ssl_negotiation",
+  ]);
   for (const key of Object.keys(values)) {
     if (!allowed.has(key)) {
       throw new ConfigurationError(
@@ -389,14 +410,25 @@ function validateProfile(
       );
     }
   }
+  if (
+    values.ssl_negotiation !== undefined &&
+    values.ssl_negotiation !== "postgres" &&
+    values.ssl_negotiation !== "direct"
+  ) {
+    throw new ConfigurationError(
+      `[${name}] in ${filePath} needs ssl_negotiation = "postgres" or "direct"`,
+      "direct saves a round trip and requires PostgreSQL 17 or newer.",
+    );
+  }
+  const sslNegotiation = values.ssl_negotiation as SslNegotiation | undefined;
   if (values.mode !== "server" && values.mode !== "direct") {
     throw new ConfigurationError(
       `[${name}] in ${filePath} needs mode = "server" or "direct"`,
     );
   }
-  if (typeof values.enabled !== "boolean") {
+  if (typeof values.default !== "boolean") {
     throw new ConfigurationError(
-      `[${name}] in ${filePath} needs enabled = true or false`,
+      `[${name}] in ${filePath} needs default = true or false`,
     );
   }
 
@@ -406,7 +438,12 @@ function validateProfile(
         `[${name}] is direct and must not define bind_address or working_dir`,
       );
     }
-    return { name, mode: "direct", enabled: values.enabled };
+    return {
+      name,
+      mode: "direct",
+      isDefault: values.default,
+      sslNegotiation,
+    };
   }
 
   if (typeof values.bind_address !== "string" || !values.bind_address) {
@@ -423,9 +460,10 @@ function validateProfile(
   return {
     name,
     mode: "server",
-    enabled: values.enabled,
+    isDefault: values.default,
     bindAddress: values.bind_address,
     workingDir: values.working_dir,
+    sslNegotiation,
   };
 }
 

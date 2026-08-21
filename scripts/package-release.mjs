@@ -18,16 +18,18 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { isRealDirectory, isRegularFile, refuseToEmpty } from "./packaging.mjs";
 
 /**
- * Assembles the tree that gets published as the action and versioned CLI.
+ * Assembles the tree that gets published as the action, the versioned CLI, and
+ * the agent skill that drives it.
  *
  * `dist/` is not committed, so what a consumer of `releasetools/mutex@v1`
  * receives is built and staged at release time. This is that staging, kept
  * here rather than inline in the workflow so it can be run and inspected
  * without cutting a release:
  *
- *     npm run package:action
+ *     npm run package:release
  *     node publish/dist/main/index.js
  *
  * That matters more than it sounds. The generated package.json below exists
@@ -40,34 +42,104 @@ import { parseArgs } from "node:util";
 
 /** Copied verbatim into the published tree. */
 const FILES = ["action.yml", "LICENSE", "README.md"];
-const DIRECTORIES = ["bin", "dist", "lib"];
 
-export function packageAction({ root = process.cwd(), out } = {}) {
+/** Committed directories, published as they stand. */
+const DIRECTORIES = ["bin"];
+
+/**
+ * Taken from a checkout of releasetools/agent-plugins, as `[from, to]`.
+ *
+ * The agent plugin is written and released there, not here. It still travels in
+ * the npm package because Hermes, Gemini and Antigravity read no plugin
+ * manifest - they discover skills by walking a directory under their own home,
+ * and for most people a global install is the only checkout there is. So the
+ * installer and the files it copies ship together, fetched at release time
+ * rather than committed in two places.
+ */
+const FROM_MARKETPLACE = [
+  ["plugins/mutex/skills", "skills"],
+  ["plugins/mutex/commands", "commands"],
+  ["scripts/install-agent-skills.mjs", "scripts/install-agent-skills.mjs"],
+];
+
+/** Directories that do not exist until the build has run. */
+const BUILT_DIRECTORIES = ["dist", "lib"];
+
+const CLI_DEPENDENCIES = ["pg", "pg-format"];
+
+export function packageRelease({
+  root = process.cwd(),
+  out,
+  marketplace,
+} = {}) {
   const source = path.resolve(root);
   const target = path.resolve(out ?? path.join(source, "publish"));
+  const plugins = path.resolve(
+    marketplace ?? path.join(source, "..", "agent-plugins"),
+  );
 
   const manifest = readJson(path.join(source, "package.json"));
   if (!manifest.version) {
     throw new Error(`${source}/package.json has no version`);
   }
 
+  refuseToEmpty(target, source, {
+    marker: "action.yml",
+    what: "an assembled release tree",
+  });
+
   fs.rmSync(target, { recursive: true, force: true });
   fs.mkdirSync(target, { recursive: true });
 
   for (const file of FILES) {
     const from = path.join(source, file);
-    if (!fs.existsSync(from)) {
+    // lstat, not existsSync: a name on the list that resolves somewhere else
+    // publishes whatever is at the other end.
+    if (!isRegularFile(from)) {
       throw new Error(`missing ${file} - cannot publish without it`);
     }
-    fs.copyFileSync(from, path.join(target, file));
+    const to = path.join(target, file);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
   }
 
-  for (const dir of DIRECTORIES) {
-    const from = path.join(source, dir);
-    if (!fs.existsSync(from)) {
-      throw new Error(`missing ${dir}/ - run \`npm run build\` first`);
+  // Two lists, because the two absences mean different things: a missing
+  // `lib/` is a forgotten build, and a missing `skills/` is a broken checkout.
+  for (const [directories, remedy] of [
+    [DIRECTORIES, "cannot publish without it"],
+    [BUILT_DIRECTORIES, "run `npm run build` first"],
+  ]) {
+    for (const dir of directories) {
+      const from = path.join(source, dir);
+      if (!fs.existsSync(from)) {
+        throw new Error(`missing ${dir}/ - ${remedy}`);
+      }
+      // `cp -r` follows a link to a directory, so an allowlisted name pointing
+      // elsewhere would publish that tree in place of this one.
+      if (!isRealDirectory(from)) {
+        throw new Error(
+          `${dir} is not a regular directory; nothing published is a symlink`,
+        );
+      }
+      fs.cpSync(from, path.join(target, dir), { recursive: true });
     }
-    fs.cpSync(from, path.join(target, dir), { recursive: true });
+  }
+
+  // A release that quietly shipped without the skill would seed nothing for
+  // three agents and say so nowhere, so a missing marketplace stops it here.
+  for (const [relative, destination] of FROM_MARKETPLACE) {
+    const from = path.join(plugins, relative);
+    const to = path.join(target, destination);
+    if (isRealDirectory(from)) {
+      fs.cpSync(from, to, { recursive: true });
+    } else if (isRegularFile(from)) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(from, to);
+    } else {
+      throw new Error(
+        `missing ${relative} in ${plugins} - pass --marketplace <a checkout of releasetools/agent-plugins>`,
+      );
+    }
   }
 
   // Keep build tooling out, but retain what npm needs to install the compiled
@@ -78,11 +150,14 @@ export function packageAction({ root = process.cwd(), out } = {}) {
     version: manifest.version,
     description: manifest.description,
     license: manifest.license,
-    private: true,
+    repository: manifest.repository,
+    homepage: manifest.homepage,
+    bugs: manifest.bugs,
     type: manifest.type,
     bin: manifest.bin,
     engines: manifest.engines,
-    dependencies: manifest.dependencies,
+    dependencies: dependenciesFor(CLI_DEPENDENCIES, manifest.dependencies),
+    publishConfig: manifest.publishConfig,
   });
 
   verifyEntrypoints(target);
@@ -149,6 +224,17 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+function dependenciesFor(names, dependencies = {}) {
+  return Object.fromEntries(
+    names.map((name) => {
+      if (!dependencies[name]) {
+        throw new Error(`missing runtime dependency ${name}`);
+      }
+      return [name, dependencies[name]];
+    }),
+  );
+}
+
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -159,17 +245,21 @@ if (
   import.meta.url.endsWith(path.basename(process.argv[1]))
 ) {
   const { values } = parseArgs({
-    options: { root: { type: "string" }, out: { type: "string" } },
+    options: {
+      root: { type: "string" },
+      out: { type: "string" },
+      marketplace: { type: "string" },
+    },
   });
 
   try {
-    const { target, version, files } = packageAction(values);
+    const { target, version, files } = packageRelease(values);
     process.stdout.write(`Packaged mutex ${version} into ${target}\n`);
     for (const file of files) {
       process.stdout.write(`  ${file}\n`);
     }
   } catch (error) {
-    process.stderr.write(`package-action: ${error.message}\n`);
+    process.stderr.write(`package-release: ${error.message}\n`);
     process.exit(1);
   }
 }

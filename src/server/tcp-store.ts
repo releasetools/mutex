@@ -19,6 +19,8 @@ import {
 } from "../mutex.js";
 import {
   DEFAULT_REQUEST_TIMEOUT_MS,
+  isLifecycleOperation,
+  LIFECYCLE_PROTOCOL_VERSION,
   MAX_MESSAGE_BYTES,
   Operation,
   parseTcpAddress,
@@ -72,8 +74,8 @@ export class TcpMutexStore implements LockStore {
     return this.request<LockRecord | null>("status", { name });
   }
 
-  listLocks(): Promise<LockRecord[]> {
-    return this.request<LockRecord[]>("list", {});
+  listLocks(owner: string | null = null): Promise<LockRecord[]> {
+    return this.request<LockRecord[]>("list", { owner });
   }
 
   pruneExpired(dryRun = false): Promise<LockRecord[]> {
@@ -98,8 +100,12 @@ export class TcpMutexStore implements LockStore {
     payload: Record<string, unknown>,
   ): Promise<T> {
     const address = parseTcpAddress(this.bindAddress);
+    // Stopping or inspecting a server has to work against one built from other
+    // code, since that is exactly when it is needed: those go in the frozen
+    // lifecycle dialect, and their reply is not held to this client's version.
+    const lifecycle = isLifecycleOperation(operation);
     const request: ProtocolRequest = {
-      version: PROTOCOL_VERSION,
+      version: lifecycle ? LIFECYCLE_PROTOCOL_VERSION : PROTOCOL_VERSION,
       profile: this.profile,
       operation,
       hostname: this.hostname,
@@ -142,7 +148,7 @@ export class TcpMutexStore implements LockStore {
           const response = JSON.parse(
             buffer.slice(0, newline),
           ) as ProtocolResponse;
-          if (response.version !== PROTOCOL_VERSION) {
+          if (!lifecycle && response.version !== PROTOCOL_VERSION) {
             finish(
               new Error(
                 `mutex server protocol ${response.version} is incompatible with client protocol ${PROTOCOL_VERSION}`,
