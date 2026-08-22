@@ -507,7 +507,7 @@ mutex version
 
 ```shell
 claude plugin marketplace add releasetools/agent-plugins
-claude plugin install mutex@releasetools
+claude plugin install mutex@ReleaseTools
 ```
 
 The same two steps work as `/plugin marketplace add` and `/plugin install` inside a session.
@@ -516,7 +516,7 @@ The same two steps work as `/plugin marketplace add` and `/plugin install` insid
 
 ```shell
 codex plugin marketplace add releasetools/agent-plugins
-codex plugin add mutex@releasetools
+codex plugin add mutex@ReleaseTools
 ```
 
 Both install from [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which carries a copy of `plugins/mutex/` written by this repository's release rather than a pointer back at it. So a marketplace install is a published plugin version, independent of what `main` happens to hold, and one marketplace serves every releasetools plugin instead of one per repository.
