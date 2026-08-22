@@ -76,7 +76,7 @@ The pre-commit hook builds and runs the tests, but a manual `npm run lint && npm
 
 The agent plugin is not here. It is written and released in
 [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), where
-Claude Code and Codex install it as `mutex@releasetools`, and where its own
+Claude Code and Codex install it as `mutex@ReleaseTools`, and where its own
 version, tests and validation live. It used to be assembled here and published
 across, which coupled a one-line fix to the skill to somebody cutting a CLI
 release.
