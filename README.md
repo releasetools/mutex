@@ -493,7 +493,7 @@ fi
 
 The mutex agent plugin is an agent skill: what a coding agent needs to know to guard an operation with a lock, and a helper it runs to take one. It lives in [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which is where to change it. It is deliberately narrow. It takes a lock when the user asks for one, hands it back when the work is done, and speaks up before the lease runs out. It never volunteers a lock, never breaks somebody else's, never runs `mutex profile` or `mutex server` on its own, and never reads the connection string.
 
-One directory serves every agent, and every agent installs it. Claude Code and Codex resolve it through a marketplace catalog; Hermes and Antigravity clone the marketplace and read `plugin.json` at the plugin root. Nothing is copied into anybody's home, so `enable`, `update` and `uninstall` mean the same thing everywhere.
+One directory serves every agent, and every agent installs it. Claude Code and Codex resolve it through a marketplace catalog; Hermes and Antigravity clone the marketplace and read `plugin.json` at the plugin root. Each unpacks it under the plugin directory it manages, so `enable`, `update` and `uninstall` mean the same thing everywhere. Nothing arrives by being copied out of this CLI package.
 
 Installing the plugin installs no `mutex` command and supplies no connection string. It runs the CLI, so [install that first](#quickstart) - the short path is below - and set `MUTEX_DATABASE_URL` yourself; the plugin never reads its value. `/mutex:preflight` reports whether the lock table is reachable, and what is missing when it is not.
 
@@ -594,7 +594,7 @@ That is the point of writing it down at all: a deadline that has to be asked abo
 `agent-lock.mjs statusline` prints one line - `🔒 staging 42m`, amber under ten minutes and red under two - and nothing at all when nothing is held. Nothing installs it, and it deliberately replaces nobody's status line: it is a segment to append to whichever one you already have.
 
 ```shell
-# find the copy your agent installed
+# find the copy your agent installed. ~/.gemini is Antigravity's home, not Gemini's
 find ~/.claude/plugins ~/.hermes/plugins ~/.gemini/config/plugins -name agent-lock.mjs 2>/dev/null | head -1
 ```
 

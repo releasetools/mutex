@@ -81,7 +81,8 @@ export function packageRelease({ root = process.cwd(), out } = {}) {
   }
 
   // Two lists, because the two absences mean different things: a missing
-  // `bin/` is a broken checkout, and a missing `lib/` is a forgotten build.
+  // `bin/` is a broken checkout, and a missing `lib/` or `dist/` is a
+  // forgotten build.
   for (const [directories, remedy] of [
     [DIRECTORIES, "cannot publish without it"],
     [BUILT_DIRECTORIES, "run `npm run build` first"],
