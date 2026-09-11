@@ -127,22 +127,12 @@ jobs:
           prune: "false"
           token: ${{ github.token }}
 
-      # The agent plugin is written and released in agent-plugins, and the npm
-      # package still carries its skill so a global install can seed the agents
-      # that read no manifest. Public repository, so no token is involved.
-      - name: Checkout the marketplace
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: ${{ github.repository_owner }}/agent-plugins
-          path: agent-plugins
-          persist-credentials: false
-
       - name: 🔨 Lint, test and package
         run: |
           npm ci
           npm run lint
           npm test
-          npm run package:release -- --marketplace agent-plugins
+          npm run package:release
 
       # signed-push commits onto an existing branch, so the release line has to
       # be there. Seeded from main the first time a major is published.

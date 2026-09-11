@@ -35,12 +35,11 @@ runs:
 `;
 
 /**
- * A checkout, with a checkout of the marketplace beside it.
+ * A checkout, and nothing beside it.
  *
- * That is where the skill comes from now: it is written and released in
- * releasetools/agent-plugins, and copied in here so the npm package can still
- * seed the agents that read no manifest. `packageRelease` looks next door by
- * default, which is how a working copy is usually laid out.
+ * The agent plugin is written, released and installed from
+ * releasetools/agent-plugins. Every agent it serves installs it from there, so
+ * the npm package carries the CLI and the action and nothing else.
  */
 function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pkg-")));
@@ -56,19 +55,6 @@ function repository(overrides: { actionYml?: string; omit?: string[] } = {}) {
   };
   const write = (relative: string, contents: string) =>
     writeIn(root, relative, contents);
-  const marketplace = (relative: string, contents: string) =>
-    writeIn(path.join(base, "agent-plugins"), relative, contents);
-
-  marketplace("scripts/install-agent-skills.mjs", "// installer");
-  marketplace(
-    "plugins/mutex/commands/lock.md",
-    "---\nname: lock\ndescription: Take a lock\n---\n",
-  );
-  marketplace(
-    "plugins/mutex/skills/mutex/SKILL.md",
-    "---\nname: mutex\ndescription: locks\n---\n",
-  );
-  marketplace("plugins/mutex/skills/mutex/agent-lock.mjs", "// helper");
 
   write("action.yml", overrides.actionYml ?? ACTION_YML);
   write("LICENSE", "Apache 2.0");
@@ -144,16 +130,12 @@ describe("packageRelease", () => {
         "README.md",
         "action.yml",
         "bin/mutex.js",
-        "commands/lock.md",
         "dist/main/index.js",
         "dist/main/package.json",
         "dist/post/index.js",
         "dist/post/package.json",
         "lib/cli/main.js",
         "package.json",
-        "scripts/install-agent-skills.mjs",
-        "skills/mutex/SKILL.md",
-        "skills/mutex/agent-lock.mjs",
       ].sort(),
     );
   });
@@ -198,23 +180,6 @@ describe("packageRelease", () => {
     expect(manifest.private).toBeUndefined();
     expect(manifest.scripts).toBeUndefined();
     expect(manifest.devDependencies).toBeUndefined();
-  });
-
-  /**
-   * A release that quietly shipped without the skill would seed nothing for
-   * three agents and say so nowhere.
-   */
-  it("refuses when the marketplace is not there to take the skill from", () => {
-    const root = build({
-      omit: [
-        "plugins/mutex/skills/mutex/SKILL.md",
-        "plugins/mutex/skills/mutex/agent-lock.mjs",
-      ],
-    });
-
-    expect(() => packageRelease({ root, out: path.join(root, "out") })).toThrow(
-      /missing plugins\/mutex\/skills in .*agent-plugins/,
-    );
   });
 
   /**

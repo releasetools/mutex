@@ -493,7 +493,7 @@ fi
 
 The mutex agent plugin is an agent skill: what a coding agent needs to know to guard an operation with a lock, and a helper it runs to take one. It lives in [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which is where to change it. It is deliberately narrow. It takes a lock when the user asks for one, hands it back when the work is done, and speaks up before the lease runs out. It never volunteers a lock, never breaks somebody else's, never runs `mutex profile` or `mutex server` on its own, and never reads the connection string.
 
-One directory serves every agent. Claude Code and Codex install it as a plugin through their own manifests. Hermes, Gemini and Antigravity discover skills by walking a directory under their own home, so they get a copy of the same files - which travels in the npm package, since a global install is the only checkout most people have.
+One directory serves every agent, and every agent installs it. Claude Code and Codex resolve it through a marketplace catalog; Hermes and Antigravity clone the marketplace and read `plugin.json` at the plugin root. Each unpacks it under the plugin directory it manages, so `enable`, `update` and `uninstall` mean the same thing everywhere. Nothing arrives by being copied out of this CLI package.
 
 Installing the plugin installs no `mutex` command and supplies no connection string. It runs the CLI, so [install that first](#quickstart) - the short path is below - and set `MUTEX_DATABASE_URL` yourself; the plugin never reads its value. `/mutex:preflight` reports whether the lock table is reachable, and what is missing when it is not.
 
@@ -521,17 +521,16 @@ codex plugin add mutex@ReleaseTools
 
 Both install from [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which carries a copy of `plugins/mutex/` written by this repository's release rather than a pointer back at it. So a marketplace install is a published plugin version, independent of what `main` happens to hold, and one marketplace serves every releasetools plugin instead of one per repository.
 
-### Hermes, Gemini and Antigravity
+### Hermes and Antigravity
 
-These read a skills directory rather than a plugin manifest, so the skill is copied into each. It ships with the CLI package, so there is nothing else to fetch:
+Both clone the marketplace and read `plugin.json`, so neither needs a marketplace to be added first:
 
 ```shell
-node "$(npm root -g)/@releasetools/mutex/scripts/install-agent-skills.mjs"
+hermes plugins install releasetools/agent-plugins/plugins/mutex
+agy plugin install https://github.com/releasetools/agent-plugins
 ```
 
-From a checkout of the marketplace, `node scripts/install-agent-skills.mjs` does the same thing.
-
-`--check` reports what is missing or out of date and writes nothing, which is what to run after upgrading the CLI. `--target <agent>` names one, including `claude` or `codex` for a plain copy instead of a plugin. An agent whose home directory does not exist is skipped rather than created.
+`agy` reads `plugins/` as a bulk directory and takes every plugin in it. `hermes` takes the one its subdirectory names, and installs it disabled: `hermes plugins enable mutex` turns it on.
 
 ### Commands
 
@@ -564,10 +563,8 @@ There is deliberately no command for starting the pooled server, choosing a
 profile or pruning expired locks: those are yours to run, and the plugin says so
 instead of doing them.
 
-Claude Code and Codex read `commands/` as it stands. Gemini reads TOML, so the
-installer renders the same files into `~/.gemini/commands/mutex/` on the way in:
-one source, translated, rather than two that drift. Hermes has no command
-surface, and gets the skill.
+Claude Code and Codex read `commands/` as it stands. Antigravity converts each
+one into a skill on install. Hermes has no command surface, and gets the skill.
 
 ### What the agent does with it
 
@@ -597,8 +594,8 @@ That is the point of writing it down at all: a deadline that has to be asked abo
 `agent-lock.mjs statusline` prints one line - `🔒 staging 42m`, amber under ten minutes and red under two - and nothing at all when nothing is held. Nothing installs it, and it deliberately replaces nobody's status line: it is a segment to append to whichever one you already have.
 
 ```shell
-# find the copy your agent installed, or use the one in a global CLI install
-find ~/.claude/plugins ~/.hermes/skills ~/.gemini/skills -name agent-lock.mjs 2>/dev/null | head -1
+# find the copy your agent installed. ~/.gemini is Antigravity's home, not Gemini's
+find ~/.claude/plugins ~/.hermes/plugins ~/.gemini/config/plugins -name agent-lock.mjs 2>/dev/null | head -1
 ```
 
 ```shell
@@ -615,13 +612,7 @@ Worth it if you keep long locks and like seeing them; the hook covers the case t
 
 The plugin is in [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins) - its source, its version, its tests and its validation. Change it there, bump the version in both manifests, and the merge is the release.
 
-It carries a version of its own because it is installed from that marketplace rather than from npm or a version tag, so it moves when the plugin changes and not when this CLI does. What this repository still does is carry the skill in the npm package, so that the agents with no plugin manifest can be seeded from a global install:
-
-```shell
-npm run package:release -- --marketplace ../agent-plugins
-```
-
-That copies `skills/`, `commands/` and the installer out of a checkout of the marketplace, and refuses to build without one.
+It carries a version of its own because it is installed from that marketplace rather than from npm or a version tag, so it moves when the plugin changes and not when this CLI does. This repository carries no part of it: the npm package is the CLI and the action, and every agent installs the plugin from the marketplace.
 
 ## Development
 

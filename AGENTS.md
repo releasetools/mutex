@@ -81,21 +81,10 @@ version, tests and validation live. It used to be assembled here and published
 across, which coupled a one-line fix to the skill to somebody cutting a CLI
 release.
 
-What remains here is one dependency, in the other direction. The npm package
-still carries `skills/`, `commands/` and `scripts/install-agent-skills.mjs`,
-because Hermes, Gemini and Antigravity read no plugin manifest - they walk a
-directory under their own home, and for most people a global install is the only
-checkout there is. `package-release.mjs` copies those three out of a checkout of
-the marketplace, which the release workflow checks out beside this one and
-`--marketplace` names:
-
-```shell
-npm run package:release -- --marketplace ../agent-plugins
-```
-
-It defaults to a sibling `../agent-plugins`, and refuses to build without one: a
-release that quietly shipped no skill would seed nothing for three agents and
-say so nowhere.
+Nothing is left in the other direction. The npm package carries the CLI and the
+action, and no part of the agent plugin: every agent the marketplace serves
+installs the plugin from there, so `package-release.mjs` needs no checkout of
+it and the release workflow checks out only this repository.
 
 ### The seam with the plugin
 
