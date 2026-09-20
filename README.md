@@ -519,7 +519,7 @@ codex plugin marketplace add releasetools/agent-plugins
 codex plugin add mutex@release-tools
 ```
 
-Both install from [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which carries a copy of `plugins/mutex/` written by this repository's release rather than a pointer back at it. So a marketplace install is a published plugin version, independent of what `main` happens to hold, and one marketplace serves every releasetools plugin instead of one per repository.
+Both install from [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), where the plugin is developed and released independently of the CLI. The npm package contains the CLI and GitHub Action; the marketplace supplies the agent plugin.
 
 ### Hermes and Antigravity
 
