@@ -39,17 +39,17 @@ Any other job using `id: staging` now waits. The lock goes back when the job end
 Install the public package from npm. Node.js 24 or newer is required:
 
 ```shell
-npm install --global @releasetools/mutex@1.3.0
+npm install --global @releasetools/mutex@1
 mutex version
 ```
 
-Use an exact version as above for a repeatable install, or use `@1` to select
-the newest compatible v1 release at installation time. npm does not update a
-global installation automatically. Re-run the install command to update:
+`@1` picks the newest v1 release at installation time; name an exact version
+instead when the installation has to stay pinned. npm never updates a global
+installation on its own, so re-run the command to move it:
 
 ```shell
 # Move an exact installation to a specific newer release.
-npm install --global @releasetools/mutex@1.3.1
+npm install --global @releasetools/mutex@1.4.0
 
 # Refresh an installation that follows the latest v1 release.
 npm install --global @releasetools/mutex@1
@@ -68,7 +68,7 @@ threshold, explicitly approve it; the exception does not apply to dependencies:
 
 ```shell
 mise use --global \
-  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1'
 mutex version
 ```
 
@@ -76,7 +76,7 @@ For a new mise setup, install the runtime and mutex together:
 
 ```shell
 mise use --global node@24 \
-  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1'
 mutex version
 ```
 
@@ -92,18 +92,42 @@ With mise activated, `mutex` is available directly. Without shell activation,
 run it through `mise exec -- mutex`. `allow_low_downloads` requires mise 2026.8.8
 or newer.
 
+`mutex version` above can report the release before the newest one. mise ignores
+releases younger than `minimum_release_age`, which **defaults to 24 hours**, so
+on the day of a release it installs the one before it and says so:
+
+```text
+mise WARN  1 newer npm:@releasetools/mutex release hidden by minimum_release_age
+```
+
+Nothing has gone wrong, and the new release arrives on its own once it has aged
+in. To have it today, name it exactly - an exact version installs immediately,
+which is how this repository's own release verifies a publication seconds after
+making it:
+
+```shell
+mise use --global \
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1.4.0'
+```
+
+The delay is a supply-chain protection covering every tool mise installs, so
+`minimum_release_age = "0d"` to switch it off, or
+`minimum_release_age_excludes = ["npm:*"]` to exempt this backend, are worth
+setting knowingly rather than to save a day.
+
 Update only a moving mutex installation with:
 
 ```shell
 mise upgrade 'npm:@releasetools/mutex'
 ```
 
-Use an exact package version instead of `latest` when the installation must stay
+`@1` follows the newest v1 release and stops there rather than crossing into a
+future major. Name an exact version instead when the installation must stay
 pinned:
 
 ```shell
 mise use --global \
-  'npm:@releasetools/mutex[allow_low_downloads=true]@1.3.1'
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1.4.0'
 ```
 
 ```shell
@@ -469,13 +493,13 @@ fi
 
 The mutex agent plugin is an agent skill: what a coding agent needs to know to guard an operation with a lock, and a helper it runs to take one. It lives in [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which is where to change it. It is deliberately narrow. It takes a lock when the user asks for one, hands it back when the work is done, and speaks up before the lease runs out. It never volunteers a lock, never breaks somebody else's, never runs `mutex profile` or `mutex server` on its own, and never reads the connection string.
 
-One directory serves every agent. Claude Code and Codex install it as a plugin through their own manifests. Hermes, Gemini and Antigravity discover skills by walking a directory under their own home, so they get a copy of the same files - which travels in the npm package, since a global install is the only checkout most people have.
+One directory serves every agent, and every agent installs it. Claude Code and Codex resolve it through a marketplace catalog; Hermes and Antigravity clone the marketplace and read `plugin.json` at the plugin root. Each unpacks it under the plugin directory it manages, so `enable`, `update` and `uninstall` mean the same thing everywhere. Nothing arrives by being copied out of this CLI package.
 
 Installing the plugin installs no `mutex` command and supplies no connection string. It runs the CLI, so [install that first](#quickstart) - the short path is below - and set `MUTEX_DATABASE_URL` yourself; the plugin never reads its value. `/mutex:preflight` reports whether the lock table is reachable, and what is missing when it is not.
 
 ```shell
 mise use --global node@24 \
-  'npm:@releasetools/mutex[allow_low_downloads=true]@latest'
+  'npm:@releasetools/mutex[allow_low_downloads=true]@1'
 mutex version
 ```
 
@@ -483,7 +507,7 @@ mutex version
 
 ```shell
 claude plugin marketplace add releasetools/agent-plugins
-claude plugin install mutex@releasetools
+claude plugin install mutex@release-tools
 ```
 
 The same two steps work as `/plugin marketplace add` and `/plugin install` inside a session.
@@ -492,22 +516,21 @@ The same two steps work as `/plugin marketplace add` and `/plugin install` insid
 
 ```shell
 codex plugin marketplace add releasetools/agent-plugins
-codex plugin add mutex@releasetools
+codex plugin add mutex@release-tools
 ```
 
-Both install from [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), which carries a copy of `plugins/mutex/` written by this repository's release rather than a pointer back at it. So a marketplace install is a published plugin version, independent of what `main` happens to hold, and one marketplace serves every releasetools plugin instead of one per repository.
+Both install from [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins), where the plugin is developed and released independently of the CLI. The npm package contains the CLI and GitHub Action; the marketplace supplies the agent plugin.
 
-### Hermes, Gemini and Antigravity
+### Hermes and Antigravity
 
-These read a skills directory rather than a plugin manifest, so the skill is copied into each. It ships with the CLI package, so there is nothing else to fetch:
+Both clone the marketplace and read `plugin.json`, so neither needs a marketplace to be added first:
 
 ```shell
-node "$(npm root -g)/@releasetools/mutex/scripts/install-agent-skills.mjs"
+hermes plugins install releasetools/agent-plugins/plugins/mutex
+agy plugin install https://github.com/releasetools/agent-plugins
 ```
 
-From a checkout of the marketplace, `node scripts/install-agent-skills.mjs` does the same thing.
-
-`--check` reports what is missing or out of date and writes nothing, which is what to run after upgrading the CLI. `--target <agent>` names one, including `claude` or `codex` for a plain copy instead of a plugin. An agent whose home directory does not exist is skipped rather than created.
+`agy` reads `plugins/` as a bulk directory and takes every plugin in it. `hermes` takes the one its subdirectory names, and installs it disabled: `hermes plugins enable mutex` turns it on.
 
 ### Commands
 
@@ -540,10 +563,8 @@ There is deliberately no command for starting the pooled server, choosing a
 profile or pruning expired locks: those are yours to run, and the plugin says so
 instead of doing them.
 
-Claude Code and Codex read `commands/` as it stands. Gemini reads TOML, so the
-installer renders the same files into `~/.gemini/commands/mutex/` on the way in:
-one source, translated, rather than two that drift. Hermes has no command
-surface, and gets the skill.
+Claude Code and Codex read `commands/` as it stands. Antigravity converts each
+one into a skill on install. Hermes has no command surface, and gets the skill.
 
 ### What the agent does with it
 
@@ -573,8 +594,8 @@ That is the point of writing it down at all: a deadline that has to be asked abo
 `agent-lock.mjs statusline` prints one line - `🔒 staging 42m`, amber under ten minutes and red under two - and nothing at all when nothing is held. Nothing installs it, and it deliberately replaces nobody's status line: it is a segment to append to whichever one you already have.
 
 ```shell
-# find the copy your agent installed, or use the one in a global CLI install
-find ~/.claude/plugins ~/.hermes/skills ~/.gemini/skills -name agent-lock.mjs 2>/dev/null | head -1
+# find the copy your agent installed. ~/.gemini is Antigravity's home, not Gemini's
+find ~/.claude/plugins ~/.hermes/plugins ~/.gemini/config/plugins -name agent-lock.mjs 2>/dev/null | head -1
 ```
 
 ```shell
@@ -591,13 +612,7 @@ Worth it if you keep long locks and like seeing them; the hook covers the case t
 
 The plugin is in [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins) - its source, its version, its tests and its validation. Change it there, bump the version in both manifests, and the merge is the release.
 
-It carries a version of its own because it is installed from that marketplace rather than from npm or a version tag, so it moves when the plugin changes and not when this CLI does. What this repository still does is carry the skill in the npm package, so that the agents with no plugin manifest can be seeded from a global install:
-
-```shell
-npm run package:release -- --marketplace ../agent-plugins
-```
-
-That copies `skills/`, `commands/` and the installer out of a checkout of the marketplace, and refuses to build without one.
+It carries a version of its own because it is installed from that marketplace rather than from npm or a version tag, so it moves when the plugin changes and not when this CLI does. This repository carries no part of it: the npm package is the CLI and the action, and every agent installs the plugin from the marketplace.
 
 ## Development
 
@@ -705,13 +720,54 @@ and allow `npm publish`.
 
 ### Cutting a release
 
-Add the notes for the new version to [RELEASE.md](./RELEASE.md) under a `## 1.3.0` heading, merge that to `main`, then:
+This repository adopts the [releasetools conventions](https://github.com/releasetools/conventions)
+through [.releasetools.yaml](./.releasetools.yaml). Release notes use the
+[`release-notes` plugin](https://github.com/releasetools/agent-plugins/tree/main/plugins/release-notes)
+from the `release-tools` marketplace. `/release-notes:write` declares each change's
+note or `NONE`; `/release-notes:prepare <version>` collates a release.
+
+Claude's project settings declare both `release` and `release-notes`. Codex's
+project settings enable them, with installation in its user cache:
 
 ```shell
-gh workflow run release.yaml -f version=v1.3.0
+codex plugin marketplace add releasetools/agent-plugins
+codex plugin add release@release-tools
+codex plugin add release-notes@release-tools
 ```
 
-The release bumps `package.json` itself and pushes that to `main` as a signed commit, so there is no version to remember to edit and no way for `package.json` and the tag to disagree.
+The [`release` plugin](https://github.com/releasetools/agent-plugins/tree/main/plugins/release)
+currently publishes by pushing a tag. Mutex requires workflow dispatch, so its
+tag-push step does not apply here.
+
+Release tags point at the packaged tree on `release/<major>`. When preparing
+notes, read the previous release tag's `Source-Commit` trailer with
+`git show --no-patch <tag>` and pass that commit to
+`/release-notes:prepare <version> --since <source-commit>`. The default
+`git describe` baseline follows source history and can select an older release.
+
+Prepare the new version's notes in [CHANGELOG.md](./CHANGELOG.md) under a
+`## <version> - <YYYY-MM-DD>` heading, using the release date and the applicable
+Keep a Changelog categories. Merge the notes to `main`, then dispatch the
+chosen version:
+
+```shell
+gh workflow run release.yaml --ref main -f version=vX.Y.Z
+```
+
+Version bumps belong in pull requests. Run
+`npm version <version> --no-git-tag-version` and commit `package.json`,
+`package-lock.json` and the matching changelog section. CI checks the increment
+against the PR's base version using its Conventional Commits types and requires
+the changelog section. User-visible fixes increment the patch, features increment
+the minor, and breaking changes increment the major.
+
+The release verifies the requested version against the committed manifests.
+It publishes that source commit and records it in the packaged build's
+`Source-Commit` trailer.
+
+The workflow requires a changelog section before it publishes artifacts.
+An empty section produces `No user-visible changes.`
+The GitHub release body contains the notes without their category headings.
 
 Two options, both off by default:
 
@@ -728,11 +784,11 @@ They are separate on purpose. Replacing a release and releasing out of order are
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `check-e2e-pin` | Refuses to publish a major the verify step cannot test                                                                                                                                          |
 | Check           | Rejects a malformed version, one already released, or one below the highest released                                                                                                            |
-| Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                                                                           |
+| Manifests       | Requires the requested version in `package.json` and both version fields in `package-lock.json`                                                                                                 |
 | Build           | `npm ci`, lint, test                                                                                                                                                                            |
 | Package         | `npm run package:release` assembles `publish/`: the Action bundle, compiled CLI, runtime manifest, README, and license                                                                          |
-| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.3.0` and the floating `v1` at it |
-| Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
+| Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.4.0` and the floating `v1` at it |
+| Release         | Creates or updates the GitHub release, with the notes from CHANGELOG.md                                                                                                                         |
 | npm             | Publishes `@releasetools/mutex` with provenance; an older backport gets the `backport` dist-tag instead of moving `latest` backwards                                                            |
 | Verify npm      | Installs the exact version from the public registry and checks `mutex version`                                                                                                                  |
 | Verify mise     | Installs mise-managed Node 24 and the exact public npm package in an isolated configuration, then checks `mutex version` and `mutex help`                                                       |
@@ -752,9 +808,9 @@ npm pack ./publish --dry-run         # shows exactly what npm would receive
 
 ```shell
 git fetch origin 'refs/tags/*:refs/tags/*'
-git show --stat v1.3.0
+git show --stat v1.4.0
 gh api repos/releasetools/mutex/commits/v1 --jq .commit.verification.verified
-npm view @releasetools/mutex@1.3.0 version
+npm view @releasetools/mutex@1.4.0 version
 ```
 
 Each published commit's parent is the previous release, so `release/v1` reads as a history of releases. The source it was built from is a `Source-Commit:` trailer rather than a parent.
