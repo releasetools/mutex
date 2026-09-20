@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish, e.g. v1.3.0. package.json is bumped to match."
+        description: "Version to publish, e.g. v1.4.1. Must match the committed manifests."
         required: true
       allow-lower-version:
         description: "Publish a version below the highest already released. For back-porting a fix to an older line."
@@ -82,50 +82,10 @@ jobs:
 
           node scripts/check-release-version.mjs "${args[@]}"
 
-      # The version lives in package.json because the action reports it at
-      # runtime. Bumping it by hand before every release is a step to forget,
-      # so the release does it - and pushes it to main, because a bump that
-      # only exists on a throwaway branch would leave main claiming the old
-      # version while the next release computed its bump from that stale value.
-      - name: ⬆️ Bump the version
+      - name: Read the changelog before publishing
         env:
           VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-
-          node -e '
-            const fs = require("fs");
-            const version = process.env.VERSION.replace(/^v/, "");
-
-            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            pkg.version = version;
-            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-
-            // The lock file carries the version twice, and npm rewrites both.
-            const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
-            lock.version = version;
-            if (lock.packages && lock.packages[""]) {
-              lock.packages[""].version = version;
-            }
-            fs.writeFileSync("package-lock.json", JSON.stringify(lock, null, 2) + "\n");
-          '
-
-          mkdir -p bump
-          cp package.json package-lock.json bump/
-          echo "package.json is now $(node -p 'require("./package.json").version')"
-
-      # Upsert rather than mirror: source-dir holds only the two files that
-      # changed, and prune would otherwise read the rest of main as deleted.
-      - name: 🔏 Push the bump to main, signed
-        id: bump
-        uses: releasetools/actions/signed-push@3f3a18a1f377882081f82885b82be1c321f90215 # v0.6.0
-        with:
-          source-dir: bump
-          target-repo: ${{ github.repository }}
-          target-branch: main
-          headline: "chore(release): ${{ inputs.version }}"
-          prune: "false"
-          token: ${{ github.token }}
+        run: node scripts/release-notes.mjs --version "$VERSION" > notes.md
 
       - name: 🔨 Lint, test and package
         run: |
@@ -171,12 +131,8 @@ jobs:
           target-repo: ${{ github.repository }}
           target-branch: release/${{ steps.version.outputs.major }}
           headline: "release: ${{ inputs.version }}"
-          # signed-push appends Workflow-Commit and Published-By itself. That
-          # names the checkout the workflow ran from, which is main before the
-          # bump - this names the bump commit, which is the source of the
-          # version actually published.
           body: |
-            Source-Commit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ steps.bump.outputs.commit-sha }}>
+            Source-Commit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}>
           prune: "true"
           # The exact version, and the floating major that follows every
           # release. One per line; signed-push trims and de-duplicates them.
@@ -187,7 +143,7 @@ jobs:
           token: ${{ github.token }}
 
       # The repository has published GitHub releases since v1.0.0, and the
-      # notes people read live in RELEASE.md. Generated notes would be no use:
+      # notes people read live in CHANGELOG.md. Generated notes would be no use:
       # they are built from the commits reachable from the tag, and this tag
       # points into release/<major>, whose history is other releases.
       - name: 🚀 Create or update the GitHub release
@@ -197,7 +153,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          node scripts/release-notes.mjs --version "$VERSION" > notes.md
           echo "Release notes:"
           sed 's/^/  /' notes.md
 
@@ -215,7 +170,7 @@ jobs:
           MAJOR: ${{ steps.version.outputs.major }}
           NEW_SHA: ${{ steps.publish.outputs.commit-sha }}
           NEW_URL: ${{ steps.publish.outputs.commit-url }}
-          BUMP_SHA: ${{ steps.bump.outputs.commit-sha }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           {
             echo "## Published ${VERSION}"
@@ -223,7 +178,7 @@ jobs:
             echo "Signed commit: [\`${NEW_SHA:0:12}\`](${NEW_URL})"
             echo
             echo "- \`${VERSION}\` and \`${MAJOR}\` point at it"
-            echo "- bumped package.json on main in \`${BUMP_SHA:0:12}\`"
+            echo "- source commit: \`${SOURCE_SHA:0:12}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Keep publish authority away from npm ci, tests, and every dependency

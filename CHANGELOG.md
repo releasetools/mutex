@@ -1,4 +1,4 @@
-# Release notes
+# Changelog
 
 Newest first. One line per change.
 

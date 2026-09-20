@@ -19,29 +19,38 @@ import fs from "node:fs";
 import { parseArgs } from "node:util";
 
 /**
- * Pulls one version's section out of RELEASE.md, for the GitHub release body.
+ * Reads one version's section from CHANGELOG.md for the GitHub release body.
  *
  * Auto-generated notes are no use here: they are built from the commits
  * reachable from the tag, and release tags point at built commits on
- * `release/<major>` whose history is other releases, not the work. RELEASE.md
+ * `release/<major>` whose history is other releases, not the work. CHANGELOG.md
  * is where the notes actually live, so this reads them from there.
  */
 export function releaseNotes(markdown, version) {
   const wanted = version.replace(/^v/, "");
   const lines = markdown.split("\n");
 
-  const start = lines.findIndex(
-    (line) => line.trim() === `## ${wanted}` || line.trim() === `## v${wanted}`,
-  );
+  const start = lines.findIndex((line) => {
+    const heading = line
+      .trim()
+      .match(/^## v?(\d+\.\d+\.\d+)(?: - \d{4}-\d{2}-\d{2})?$/);
+    return heading?.[1] === wanted;
+  });
   if (start < 0) {
     return null;
   }
 
   const rest = lines.slice(start + 1);
   const end = rest.findIndex((line) => /^## /.test(line));
-  const body = (end < 0 ? rest : rest.slice(0, end)).join("\n").trim();
-
-  return body === "" ? null : body;
+  return (end < 0 ? rest : rest.slice(0, end))
+    .filter(
+      (line) =>
+        !/^### (Added|Changed|Deprecated|Removed|Fixed|Security)\s*$/.test(
+          line,
+        ),
+    )
+    .join("\n")
+    .trim();
 }
 
 if (
@@ -51,7 +60,7 @@ if (
   const { values } = parseArgs({
     options: {
       version: { type: "string" },
-      file: { type: "string", default: "RELEASE.md" },
+      file: { type: "string", default: "CHANGELOG.md" },
     },
   });
 
@@ -60,9 +69,12 @@ if (
     : "";
   const notes = releaseNotes(markdown, values.version ?? "");
 
-  // No section is not an error: the release still happens, it just says less.
-  process.stdout.write(
-    notes ?? `See [${values.file}](../blob/main/${values.file}).`,
-  );
-  process.stdout.write("\n");
+  if (notes === null) {
+    process.stderr.write(
+      `No section for ${values.version ?? ""} in ${values.file}.\n`,
+    );
+    process.exitCode = 1;
+  } else {
+    process.stdout.write(`${notes || "No user-visible changes."}\n`);
+  }
 }

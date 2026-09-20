@@ -9,6 +9,33 @@ on:
 permissions: {}
 
 jobs:
+  conventions:
+    name: Release conventions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          fetch-tags: false
+
+      # Release tags name packaged builds. Without tags, the version guard
+      # compares against the manifest at the pull request's fork point.
+      - name: Fetch source history without release tags
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags --unshallow origin "$BASE_SHA" "$HEAD_SHA"
+
+      - name: Check version increments
+        uses: releasetools/actions/versions-guard@3f3a18a1f377882081f82885b82be1c321f90215 # v0.6.0
+
+      - name: Check changelog entries
+        uses: releasetools/actions/changelog-guard@3f3a18a1f377882081f82885b82be1c321f90215 # v0.6.0
+
   build-and-test:
     runs-on: ubuntu-latest
     permissions:

@@ -16,6 +16,9 @@
  */
 
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 // @ts-expect-error - build tooling, deliberately plain JS with no types
 import { releaseNotes } from "../scripts/release-notes.mjs";
 
@@ -55,8 +58,28 @@ describe("releaseNotes", () => {
     expect(releaseNotes("", "v1.2.0")).toBeNull();
   });
 
-  it("returns null for a heading with nothing under it", () => {
-    expect(releaseNotes("## 1.2.0\n\n## 1.1.0\n- x\n", "v1.2.0")).toBeNull();
+  it("returns an empty string for a heading with nothing under it", () => {
+    expect(releaseNotes("## 1.2.0\n\n## 1.1.0\n- x\n", "v1.2.0")).toBe("");
+  });
+
+  it.each(["1.2.0", "v1.2.0"])(
+    "reads dated %s headings from the plugin",
+    (version) => {
+      const markdown = `## ${version} - 2026-09-20\n\n### Added\n\n- Added a CLI.\n\n### Fixed\n\n- Fixed lock expiry.\n\n## 1.1.0 - 2026-07-26\n\n- Earlier release.\n`;
+      const notes = releaseNotes(markdown, "v1.2.0");
+      expect(notes).toContain("- Added a CLI.");
+      expect(notes).toContain("- Fixed lock expiry.");
+      expect(notes).not.toMatch(/###|Earlier release/);
+    },
+  );
+
+  it("does not mistake a prerelease or longer version for the requested release", () => {
+    expect(
+      releaseNotes(
+        "## 1.2.0-pre - 2026-09-20\n- Preview.\n## 1.2.01\n- Other.\n",
+        "1.2.0",
+      ),
+    ).toBeNull();
   });
 
   /**
@@ -72,13 +95,74 @@ describe("releaseNotes", () => {
    * reason: `check-release-version.mjs` refuses anything but `vX.Y.Z`, so
    * nothing in production can ever ask it for a prerelease's notes.
    */
-  it("finds the current version in the real RELEASE.md", () => {
+  it("finds the current version in the real CHANGELOG.md", () => {
     const version = (
       JSON.parse(fs.readFileSync("package.json", "utf8")).version as string
     ).replace(/[-+].*$/, "");
 
-    const notes = releaseNotes(fs.readFileSync("RELEASE.md", "utf8"), version);
+    const notes = releaseNotes(
+      fs.readFileSync("CHANGELOG.md", "utf8"),
+      version,
+    );
     expect(notes).not.toBeNull();
-    expect(notes).toContain("-");
+  });
+});
+
+describe("release-notes CLI", () => {
+  const script = path.resolve("scripts/release-notes.mjs");
+  let directory: string;
+
+  beforeEach(() => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), "mutex-release-notes-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("reads CHANGELOG.md by default and prints the selected release", () => {
+    fs.writeFileSync(
+      path.join(directory, "CHANGELOG.md"),
+      "## 1.2.0 - 2026-09-20\n\n### Fixed\n\n- Locks expire on time.\n",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [script, "--version", "v1.2.0"],
+      { cwd: directory, encoding: "utf8" },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("- Locks expire on time.\n");
+    expect(result.stderr).toBe("");
+  });
+
+  it.each([null, "## 1.1.0\n- Earlier release.\n"])(
+    "fails when the requested section is absent from %s",
+    (markdown) => {
+      if (markdown !== null)
+        fs.writeFileSync(path.join(directory, "CHANGELOG.md"), markdown);
+      const result = spawnSync(
+        process.execPath,
+        [script, "--version", "v1.2.0"],
+        { cwd: directory, encoding: "utf8" },
+      );
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toBe("No section for v1.2.0 in CHANGELOG.md.\n");
+    },
+  );
+
+  it("uses the default text for an empty section in an explicit file", () => {
+    fs.writeFileSync(
+      path.join(directory, "notes.md"),
+      "## 1.2.0 - 2026-09-20\n\n",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [script, "--version", "v1.2.0", "--file", "notes.md"],
+      { cwd: directory, encoding: "utf8" },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("No user-visible changes.\n");
+    expect(result.stderr).toBe("");
   });
 });

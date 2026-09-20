@@ -2,20 +2,59 @@
 
 ## Release notes
 
-Every user-visible change goes in [RELEASE.md](./RELEASE.md), newest version first.
+This repository adopts the [releasetools conventions](https://github.com/releasetools/conventions)
+through [.releasetools.yaml](./.releasetools.yaml).
+
+Use `release-notes@release-tools` from
+[releasetools/agent-plugins](https://github.com/releasetools/agent-plugins):
+`/release-notes:write` declares a change's note, and `/release-notes:prepare`
+collates a release. A change declares one fenced `release-note` block in its
+pull request body, with prose or `NONE`. Preserve that block in the merge
+commit. Subjects follow Conventional Commits; a breaking change carries a
+`BREAKING CHANGE:` footer that says what to do instead.
+
+Every user-visible change goes in [CHANGELOG.md](./CHANGELOG.md), newest version first.
 
 - **One line per change.** If a change needs a paragraph, it needs docs in the README instead - link there.
 - **Write for the person who has to decide whether to upgrade.** Say what changed for them, not which files moved.
 - **Plain sentences.** No "feat:"/"fix:" prefixes, no bullet-point telegraphese, no marketing. "Fixed lock expiry on databases whose session time zone is not UTC" beats "TZ handling improvements".
 - **Reads like a person wrote it - every entry, always.** Machine-assembled prose gets rewritten before it merges. A measurement is a clause, not a dangling fragment: "which was about 180 ms per request", not "; against a hosted database that was about 180 ms per request". A consequence takes a finite verb, not an "-ing" tack-on: "which cuts the fixed cost", not "reducing the fixed cost". Every sentence has a subject that can do its verb: "mutex now warns", not "A connection now warns". A sentence carrying three ideas becomes two sentences.
 - **Name the consequence when there is one.** A bug fix should say what was broken, not just what was patched.
-- **Group under a version heading** - `## 1.3.0`, which is what the release reads to fill in the GitHub release body. The version in `package.json` is bumped by the release itself; do not edit it by hand.
+- **Group under a dated version heading** - `## 1.5.0 - YYYY-MM-DD`, with the release date in ISO format. Use the applicable `### Added`, `Changed`, `Deprecated`, `Removed`, `Fixed` or `Security` categories. The release reads this section for its GitHub release body. Historical headings without dates are also supported.
 
-Versioning is semver, judged from the **Action's** public surface (its inputs, outputs and lock-table behaviour), since that is what workflows pin:
+For a user-visible change, run `npm version <version> --no-git-tag-version`
+in its pull request. Commit both manifests and the matching changelog section.
+The version guard compares against the manifest at the PR's fork point;
+its checkout fetches source history without the tags that name packaged builds.
+The changelog guard requires a section for the committed version.
+The release workflow verifies that the requested version matches
+`package.json` and both version fields in `package-lock.json`.
 
-- **patch** - fixes with no change in behaviour;
-- **minor** - new commands, flags or CLI features, and backwards-compatible schema additions;
-- **major** - removing or repurposing an Action input, or a schema change that breaks older versions.
+The project declares `release@release-tools` and `release-notes@release-tools`
+in `.claude/settings.json` and `.codex/config.toml`. Claude installs them with
+project scope. Codex reads the project's enablement settings and keeps the
+plugin cache in the user's Codex directory.
+
+The `release` plugin currently requires a tag-triggered publishing workflow.
+This repository requires `workflow_dispatch`: follow [Cutting a release](./README.md#cutting-a-release)
+for publishing. Version bumps belong in pull requests; do not run the plugin's
+tag-push step here.
+For `/release-notes:prepare`, pass `--since <source-commit>` from the previous
+release tag's `Source-Commit` trailer. Tags point at the packaged tree, so
+`git describe` on source history does not identify the latest release.
+
+Version increments follow the change's Conventional Commits type:
+
+| Change                                                      | Increment |
+| ----------------------------------------------------------- | --------- |
+| `fix`, `perf`, `security`                                   | patch     |
+| `feat`, `deprecate`                                         | minor     |
+| `remove` or any breaking change                             | major     |
+| `docs`, `ci`, `build`, `chore`, `refactor`, `test`, `style` | none      |
+
+A release containing only changes with no user-visible effect still increments
+the patch. Breaking changes include incompatible CLI changes, Action input or
+output changes, and schema changes that break older versions.
 
 The agent plugin has a version of its own, in both plugin manifests, bumped by hand - see [Layout](#layout). It is not the Action's, and a release does not move it.
 
@@ -35,7 +74,7 @@ There is no version to bump: the page pins the Action as
 `releasetools/mutex@v1`, the floating major, which moves on its own. What goes
 stale is the prose - a renamed flag, a new exit code, a changed default.
 
-RELEASE.md is the checklist. Every line under the version being released is a
+CHANGELOG.md is the checklist. Every line under the version being released is a
 user-visible change, which is the same bar the website documents.
 
 ## Build output
@@ -48,7 +87,7 @@ Three consequences, each of which has already bitten:
 
 - **`uses: ./` needs a build step before it.** A fresh checkout has no `dist/`, so `test.yaml`'s lock jobs build first. This works because local actions are read from the workspace when their step runs, unlike remote ones, which are fetched during "Set up job".
 - **The published tree needs its own `package.json`.** The action reports its version by walking up from the bundle to the nearest `package.json` that has a `version` field, and ncc's marker file has none. Without one the published action reports `unknown`, and the release verifies that against the tag. `scripts/package-release.mjs` generates it.
-- **A release is a workflow dispatch, not a tag.** `git tag` publishes nothing, and the tag the workflow creates would collide with one that triggered it - which is why it is dispatched with a version instead. The release bumps `package.json` and pushes that to `main` itself, so the bump cannot be forgotten and the tag cannot disagree with what the action reports.
+- **A release is a workflow dispatch.** The workflow verifies the version committed by a pull request and creates the tags on the packaged build. Pushing a tag by hand does not publish a build.
 
 Anything else that ships a subset of the repository is worth assembling and running before trusting it. Both of the above surfaced that way and neither would have surfaced from reading the code - which is why the packaging lives in `scripts/package-release.mjs` rather than in the workflow:
 
