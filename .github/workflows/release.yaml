@@ -118,7 +118,7 @@ jobs:
       # changed, and prune would otherwise read the rest of main as deleted.
       - name: 🔏 Push the bump to main, signed
         id: bump
-        uses: releasetools/actions/signed-push@e03d8631693c67061fb9d1216cf23b1c370a992c # v0.0.6
+        uses: releasetools/actions/signed-push@129cc787074fadbdcfbf29457f79b44e188de037 # v0.2.0
         with:
           source-dir: bump
           target-repo: ${{ github.repository }}
@@ -165,7 +165,7 @@ jobs:
       # passed, so the version check upstream is the gate, not this flag.
       - name: 🔏 Publish the tree, signed
         id: publish
-        uses: releasetools/actions/signed-push@e03d8631693c67061fb9d1216cf23b1c370a992c # v0.0.6
+        uses: releasetools/actions/signed-push@129cc787074fadbdcfbf29457f79b44e188de037 # v0.2.0
         with:
           source-dir: publish
           target-repo: ${{ github.repository }}
