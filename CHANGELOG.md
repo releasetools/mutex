@@ -2,6 +2,12 @@
 
 Newest first. One line per change.
 
+## 1.5.0 - 2026-09-20
+
+### Changed
+
+- The npm package ships the CLI and GitHub Action without agent skills or a skill installer. Install the agent plugin separately from the [release-tools marketplace](https://github.com/releasetools/agent-plugins).
+
 ## 1.4.0
 
 - The `enabled` profile setting is now named `default`; existing `profiles.toml` files need the rename. A profile with `default = false` is still selectable with `--profile`.
