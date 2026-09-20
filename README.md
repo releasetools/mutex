@@ -720,13 +720,54 @@ and allow `npm publish`.
 
 ### Cutting a release
 
-Add the notes for the new version to [RELEASE.md](./RELEASE.md) under a `## 1.4.0` heading, merge that to `main`, then:
+This repository adopts the [releasetools conventions](https://github.com/releasetools/conventions)
+through [.releasetools.yaml](./.releasetools.yaml). Release notes use the
+[`release-notes` plugin](https://github.com/releasetools/agent-plugins/tree/main/plugins/release-notes)
+from the `release-tools` marketplace. `/release-notes:write` declares each change's
+note or `NONE`; `/release-notes:prepare <version>` collates a release.
+
+Claude's project settings declare both `release` and `release-notes`. Codex's
+project settings enable them, with installation in its user cache:
 
 ```shell
-gh workflow run release.yaml -f version=v1.4.0
+codex plugin marketplace add releasetools/agent-plugins
+codex plugin add release@release-tools
+codex plugin add release-notes@release-tools
 ```
 
-The release bumps `package.json` itself and pushes that to `main` as a signed commit, so there is no version to remember to edit and no way for `package.json` and the tag to disagree.
+The [`release` plugin](https://github.com/releasetools/agent-plugins/tree/main/plugins/release)
+currently publishes by pushing a tag. Mutex requires workflow dispatch, so its
+tag-push step does not apply here.
+
+Release tags point at the packaged tree on `release/<major>`. When preparing
+notes, read the previous release tag's `Source-Commit` trailer with
+`git show --no-patch <tag>` and pass that commit to
+`/release-notes:prepare <version> --since <source-commit>`. The default
+`git describe` baseline follows source history and can select an older release.
+
+Prepare the new version's notes in [CHANGELOG.md](./CHANGELOG.md) under a
+`## <version> - <YYYY-MM-DD>` heading, using the release date and the applicable
+Keep a Changelog categories. Merge the notes to `main`, then dispatch the
+chosen version:
+
+```shell
+gh workflow run release.yaml --ref main -f version=vX.Y.Z
+```
+
+Version bumps belong in pull requests. Run
+`npm version <version> --no-git-tag-version` and commit `package.json`,
+`package-lock.json` and the matching changelog section. CI checks the increment
+against the PR's base version using its Conventional Commits types and requires
+the changelog section. User-visible fixes increment the patch, features increment
+the minor, and breaking changes increment the major.
+
+The release verifies the requested version against the committed manifests.
+It publishes that source commit and records it in the packaged build's
+`Source-Commit` trailer.
+
+The workflow requires a changelog section before it publishes artifacts.
+An empty section produces `No user-visible changes.`
+The GitHub release body contains the notes without their category headings.
 
 Two options, both off by default:
 
@@ -743,11 +784,11 @@ They are separate on purpose. Replacing a release and releasing out of order are
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `check-e2e-pin` | Refuses to publish a major the verify step cannot test                                                                                                                                          |
 | Check           | Rejects a malformed version, one already released, or one below the highest released                                                                                                            |
-| Bump            | Sets the version in `package.json` and `package-lock.json`, and pushes that to `main`                                                                                                           |
+| Manifests       | Requires the requested version in `package.json` and both version fields in `package-lock.json`                                                                                                 |
 | Build           | `npm ci`, lint, test                                                                                                                                                                            |
 | Package         | `npm run package:release` assembles `publish/`: the Action bundle, compiled CLI, runtime manifest, README, and license                                                                          |
 | Publish         | [`signed-push`](https://github.com/releasetools/actions/tree/main/signed-push) commits that tree to `release/v1`, signed server-side by GitHub, and points `v1.4.0` and the floating `v1` at it |
-| Release         | Creates or updates the GitHub release, with the notes from RELEASE.md                                                                                                                           |
+| Release         | Creates or updates the GitHub release, with the notes from CHANGELOG.md                                                                                                                         |
 | npm             | Publishes `@releasetools/mutex` with provenance; an older backport gets the `backport` dist-tag instead of moving `latest` backwards                                                            |
 | Verify npm      | Installs the exact version from the public registry and checks `mutex version`                                                                                                                  |
 | Verify mise     | Installs mise-managed Node 24 and the exact public npm package in an isolated configuration, then checks `mutex version` and `mutex help`                                                       |

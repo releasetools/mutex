@@ -20,6 +20,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  checkManifestVersion,
   checkReleaseVersion,
   compareVersions,
   fetchTags,
@@ -28,6 +29,33 @@ import {
 } from "../scripts/check-release-version.mjs";
 
 const RELEASED = ["v1.0.0", "v1.0.1", "v1.1.0", "v1"];
+
+describe("checkManifestVersion", () => {
+  const manifest = { version: "1.4.1" };
+  const lockfile = { version: "1.4.1", packages: { "": { version: "1.4.1" } } };
+
+  it("accepts a release matching every committed version", () => {
+    expect(() =>
+      checkManifestVersion("v1.4.1", manifest, lockfile),
+    ).not.toThrow();
+  });
+
+  it("rejects a release that would need a manifest bump", () => {
+    expect(() => checkManifestVersion("v1.5.0", manifest, lockfile)).toThrow(
+      /package.json declares 1.4.1/,
+    );
+  });
+
+  it.each([
+    { version: "1.4.0", packages: lockfile.packages },
+    { version: "1.4.1", packages: { "": { version: "1.4.0" } } },
+    { version: "1.4.1" },
+  ])("rejects stale or missing lockfile versions", (stale) => {
+    expect(() => checkManifestVersion("v1.4.1", manifest, stale)).toThrow(
+      /package-lock.json declares|package-lock.json packages/,
+    );
+  });
+});
 
 describe("compareVersions", () => {
   it("orders by number, not by string", () => {
@@ -262,6 +290,18 @@ describe("the script as the workflow runs it", () => {
       "output",
     );
     fs.writeFileSync(outputFile, "");
+    const directory = path.dirname(outputFile);
+    fs.writeFileSync(
+      path.join(directory, "package.json"),
+      JSON.stringify({ version: "1.3.0" }),
+    );
+    fs.writeFileSync(
+      path.join(directory, "package-lock.json"),
+      JSON.stringify({
+        version: "1.3.0",
+        packages: { "": { version: "1.3.0" } },
+      }),
+    );
 
     const result = spawnSync(
       process.execPath,
@@ -270,6 +310,7 @@ describe("the script as the workflow runs it", () => {
         ...args,
       ],
       {
+        cwd: directory,
         encoding: "utf8",
         env: {
           ...process.env,
@@ -282,7 +323,9 @@ describe("the script as the workflow runs it", () => {
       },
     );
 
-    return { ...result, output: fs.readFileSync(outputFile, "utf8") };
+    const output = fs.readFileSync(outputFile, "utf8");
+    fs.rmSync(directory, { recursive: true, force: true });
+    return { ...result, output };
   };
 
   /**
@@ -326,5 +369,18 @@ describe("the script as the workflow runs it", () => {
     expect(status).toBe(1);
     expect(stderr).toContain("::error::");
     expect(output).toBe("");
+  });
+
+  it("fails before reporting an accepted version when the manifests do not match", () => {
+    const { status, stderr, output, stdout } = run([
+      "--version",
+      "v1.4.0",
+      "--tags",
+      "v1.2.0",
+    ]);
+    expect(status).toBe(1);
+    expect(stderr).toContain("package.json declares 1.3.0");
+    expect(output).toBe("");
+    expect(stdout).not.toContain("accepted");
   });
 });

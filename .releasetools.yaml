@@ -1,0 +1,21 @@
+# How this repository releases, read by every releasetools tool.
+#
+# Conventions: https://github.com/releasetools/conventions
+# Tools:       https://github.com/releasetools
+
+projects:
+  - path: ./
+    manifest:
+      - package.json
+      - package-lock.json
+    changelog: CHANGELOG.md
+    bump: npm version {version} --no-git-tag-version
+
+# release.yaml verifies the committed version and publishes through workflow_dispatch.
+# The release plugin's tag-triggered publish setting does not describe this workflow.
+release:
+  branch: main
+  registry: https://registry.npmjs.org/@releasetools/mutex/{version}
+
+conventions:
+  except: []

@@ -16,6 +16,7 @@
  */
 
 import { parseArgs } from "node:util";
+import { readFileSync } from "node:fs";
 
 /**
  * Decides whether a proposed release version is allowed.
@@ -34,6 +35,22 @@ import { parseArgs } from "node:util";
 const SEMVER = /^v(\d+)\.(\d+)\.(\d+)$/;
 
 const TAGS_PER_PAGE = 100;
+
+/** The committed manifests must name the version being published. */
+export function checkManifestVersion(version, manifest, lockfile) {
+  const expected = version.replace(/^v/, "");
+  for (const [file, actual] of [
+    ["package.json", manifest.version],
+    ["package-lock.json", lockfile.version],
+    ['package-lock.json packages[""]', lockfile.packages?.[""]?.version],
+  ]) {
+    if (actual !== expected) {
+      throw new Error(
+        `${file} declares ${actual ?? "no version"}, but the release requests ${version}. Bump the version in a pull request before publishing.`,
+      );
+    }
+  }
+}
 
 /**
  * Every tag name in the repository.
@@ -199,6 +216,12 @@ if (
       allowLowerVersion: values["allow-lower-version"],
       overwriteExisting: values["overwrite-existing"],
     });
+
+    checkManifestVersion(
+      result.version,
+      JSON.parse(readFileSync("package.json", "utf8")),
+      JSON.parse(readFileSync("package-lock.json", "utf8")),
+    );
 
     process.stdout.write(
       `${result.version} accepted (previous release: ${result.previous ?? "none"})\n`,

@@ -3,7 +3,9 @@
   "extends": [
     "github>MihaiBojin/renovate",
     "github>MihaiBojin/renovate:group-github-actions",
-    "helpers:pinGitHubActionDigests"
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)"
   ],
   "lockFileMaintenance": {
     "enabled": true,
