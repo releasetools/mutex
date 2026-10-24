@@ -353,7 +353,7 @@ jobs:
       contents: read
     steps:
       - name: Set up mise
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@8418fedb1110381a0d3ba51a7a415d7c1b884550 # v5.2.2
         with:
           version: "2026.8.8"
           # mise-v2026.8.8-linux-x64 from the release's SHASUMS256.txt.
