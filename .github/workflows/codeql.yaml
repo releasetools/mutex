@@ -31,6 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-26.04]
+        language: [actions, javascript-typescript]
         include:
           - language: actions
             build-mode: none
