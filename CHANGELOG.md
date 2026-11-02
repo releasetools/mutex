@@ -2,6 +2,12 @@
 
 Newest first. One line per change.
 
+## 1.5.1 - 2026-11-02
+
+### Changed
+
+- The GitHub Action bundles pg 8.23.1 and @slack/web-api 8.3.0.
+
 ## 1.5.0 - 2026-09-20
 
 ### Changed
