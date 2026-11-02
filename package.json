@@ -46,7 +46,7 @@
     "@swc/core": "^1.15.0",
     "@swc/jest": "^0.2.39",
     "@types/jest": "^30.0.0",
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.0.0",
     "@types/pg-format": "^1.0.5",
     "@vercel/ncc": "^0.45.0",
     "husky": "^9.1.7",
