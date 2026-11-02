@@ -10,8 +10,12 @@ permissions: {}
 
 jobs:
   conventions:
-    name: Release conventions
-    runs-on: ubuntu-latest
+    name: Release conventions (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     permissions:
       contents: read
     steps:
@@ -37,7 +41,12 @@ jobs:
         uses: releasetools/actions/changelog-guard@3f3a18a1f377882081f82885b82be1c321f90215 # v0.6.0
 
   build-and-test:
-    runs-on: ubuntu-latest
+    name: build-and-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     permissions:
       contents: read
     steps:
@@ -58,11 +67,12 @@ jobs:
           npm test
 
   postgres-integration:
-    name: PostgreSQL ${{ matrix.postgres }}
-    runs-on: ubuntu-latest
+    name: PostgreSQL ${{ matrix.postgres }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
         postgres: ["14", "15", "16", "17", "18"]
     services:
       postgres:
@@ -98,7 +108,16 @@ jobs:
           npm test -- __tests__/database.integration.test.ts --runInBand
 
   test01:
-    runs-on: ubuntu-latest
+    name: test01 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            lock-suffix: u2404
+          - os: ubuntu-26.04
+            lock-suffix: u2604
     needs: build-and-test
     permissions:
       contents: read
@@ -127,7 +146,7 @@ jobs:
         uses: ./
         with:
           command: "lock"
-          id: "test-lock1"
+          id: "test-lock1-${{ matrix.lock-suffix }}"
           reason: "Test mutex action: test01"
           MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -138,7 +157,16 @@ jobs:
         run: sleep 5
 
   test02:
-    runs-on: ubuntu-latest
+    name: test02 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            lock-suffix: u2404
+          - os: ubuntu-26.04
+            lock-suffix: u2604
     needs: build-and-test
     permissions:
       contents: read
@@ -171,7 +199,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
         with:
           command: "lock"
-          id: "test-lock2"
+          id: "test-lock2-${{ matrix.lock-suffix }}"
           auto-release: false
           reason: "Test mutex action: test02"
           slack-channel: "C09CF3TR60P"
@@ -186,10 +214,19 @@ jobs:
           MUTEX_DATABASE_URL: ${{ secrets.DATABASE_URL }}
         with:
           command: "release"
-          id: "test-lock2"
+          id: "test-lock2-${{ matrix.lock-suffix }}"
 
   test03:
-    runs-on: ubuntu-latest
+    name: test03 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            lock-suffix: u2404
+          - os: ubuntu-26.04
+            lock-suffix: u2604
     needs: build-and-test
     permissions:
       contents: read
@@ -221,7 +258,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           command: "lock"
-          id: "test-lock3"
+          id: "test-lock3-${{ matrix.lock-suffix }}"
           reason: "Test mutex action: test03"
 
       - name: ⏳ Mock action - wait 5 seconds and then continue

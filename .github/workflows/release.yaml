@@ -29,7 +29,7 @@ jobs:
   # Runs before anything is published, so a release that cannot be verified is
   # blocked rather than shipped and then reported.
   check-e2e-pin:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions: {}
     steps:
       - name: The verify job must test the release being published
@@ -47,7 +47,7 @@ jobs:
 
   publish:
     needs: check-e2e-pin
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     outputs:
@@ -186,7 +186,7 @@ jobs:
   # under the version tag and invokes npm directly.
   publish_npm:
     needs: publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
@@ -293,7 +293,11 @@ jobs:
   verify-npm:
     if: needs.publish_npm.outputs.npm_available == 'true'
     needs: publish_npm
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     permissions: {}
     steps:
       - name: Set up Node.js
@@ -348,7 +352,11 @@ jobs:
   verify-mise:
     if: needs.publish_npm.outputs.npm_available == 'true'
     needs: [publish_npm, verify-npm]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     permissions:
       contents: read
     steps:
@@ -422,7 +430,7 @@ jobs:
   verify:
     if: startsWith(inputs.version, 'v1.')
     needs: publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: write

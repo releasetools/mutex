@@ -19,8 +19,8 @@ permissions: {}
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    name: Analyze (${{ matrix.language }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     permissions:
       security-events: write
       packages: read
@@ -30,6 +30,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+        language: [actions, javascript-typescript]
         include:
           - language: actions
             build-mode: none
@@ -50,4 +52,4 @@ jobs:
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
         with:
-          category: "/language:${{ matrix.language }}"
+          category: "/language:${{ matrix.language }}/os:${{ matrix.os }}"
