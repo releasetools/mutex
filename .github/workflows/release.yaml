@@ -1,4 +1,5 @@
 name: Release
+run-name: Release ${{ inputs.version }}
 
 # Builds the action and publishes the compiled tree to release/v1, then points
 # the version tags at it. `dist/` is not committed on main - what consumers get
