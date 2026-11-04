@@ -773,14 +773,14 @@ The workflow requires a changelog section before it publishes artifacts.
 An empty section produces `No user-visible changes.`
 The GitHub release body contains the notes without their category headings.
 
-Two options, both off by default:
+`allow-lower-version`, off by default, publishes below the highest released
+version, for back-porting to an older line. Without it, `v1.2.22` after
+`v1.3.0` is refused.
 
-| Option                |                                                                                                                                 |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `allow-lower-version` | Publish below the highest released version, for back-porting to an older line. Without it, `v1.2.22` after `v1.3.0` is refused. |
-| `overwrite-existing`  | Replace an Action version and GitHub release. An npm version is immutable and remains unchanged if it already exists.           |
-
-They are separate on purpose. Replacing a release and releasing out of order are different decisions, so neither flag grants the other.
+A version is released once. mutex follows
+[`immutable-tag`](https://github.com/releasetools/conventions/blob/main/conventions/immutable-tag.md),
+so the workflow refuses a version whose tag exists, and a broken release is
+superseded by the next version.
 
 ### What it does
 
@@ -828,9 +828,10 @@ The verify step failing means the release is published but broken, since `v1` ha
 A version mismatch means `package.json` and the dispatched tag disagree. Nothing has been published.
 
 If npm authentication fails after the GitHub release is created, correct the
-bootstrap token or trusted-publisher settings and dispatch the same version
-with `overwrite-existing`. npm publishing is idempotent: the workflow publishes
-a missing package version and leaves an existing immutable one alone.
+bootstrap token or trusted-publisher settings and re-run the run's failed jobs
+(`gh run rerun <run-id> --failed`). The npm job checks out the existing tag and
+is idempotent: it publishes a missing package version and leaves an existing
+one alone.
 
 `uses: releasetools/mutex@main` does not work, and is not meant to. There is no `dist/` there.
 
