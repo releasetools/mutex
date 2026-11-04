@@ -37,6 +37,17 @@ jobs:
     runs-on: ubuntu-26.04
     permissions: {}
     steps:
+      # A version is bare and the workflow adds the v, so v1.5.2 here would
+      # become vv1.5.2 and fail somewhere that names neither.
+      - name: Refuse a version that carries a v
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like 1.5.2, with no v (got: $VERSION). The tag is v<version>."
+            exit 1
+          fi
+
       # The run builds whatever its ref named when it started. A release tool
       # passes the commit it verified, and a branch that moved past it since
       # would otherwise publish commits nobody released.
