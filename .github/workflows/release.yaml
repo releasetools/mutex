@@ -345,10 +345,11 @@ jobs:
           package="@releasetools/mutex@${expected}"
 
           # npm may acknowledge a publish before the package is visible to
-          # installs. Retry the exact version for roughly two minutes, asking
-          # npm to revalidate its registry metadata on every attempt.
+          # installs. Retry the exact version for roughly six minutes, asking
+          # npm to revalidate its registry metadata on every attempt. 1.5.2
+          # took longer than two, and the run failed with the package live.
           attempt=1
-          max_attempts=12
+          max_attempts=36
           until npm install --global --prefer-online "$package"; do
             if [ "$attempt" -eq "$max_attempts" ]; then
               echo "::error::npm could not install ${package} after ${max_attempts} attempts"
