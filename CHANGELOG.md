@@ -2,6 +2,10 @@
 
 Newest first. One line per change.
 
+## 1.5.2 - 2026-11-04
+
+- No changes to the CLI or the GitHub Action since 1.5.1.
+
 ## 1.5.1 - 2026-11-02
 
 ### Changed
