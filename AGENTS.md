@@ -35,13 +35,13 @@ in `.claude/settings.json` and `.codex/config.toml`. Claude installs them with
 project scope. Codex reads the project's enablement settings and keeps the
 plugin cache in the user's Codex directory.
 
-The `release` plugin currently requires a tag-triggered publishing workflow.
-This repository requires `workflow_dispatch`: follow [Cutting a release](./README.md#cutting-a-release)
-for publishing. Version bumps belong in pull requests; do not run the plugin's
-tag-push step here.
-For `/release-notes:prepare`, pass `--since <source-commit>` from the previous
-release tag's `Source-Commit` trailer. Tags point at the packaged tree, so
-`git describe` on source history does not identify the latest release.
+`.releasetools.yaml` declares `trigger: dispatch`, so the `release` plugin runs
+`release.yaml` with the bare version and the release commit, and the workflow
+creates the tag; [Cutting a release](./README.md#cutting-a-release) has the
+command. Never push a release tag by hand: the workflow refuses a version whose
+tag exists. Version bumps belong in pull requests.
+Tags point at the packaged tree, whose `Source-Commit` trailer names the source
+commit, and `/release-notes:prepare` reads it to find the previous release.
 
 Version increments follow the change's Conventional Commits type:
 

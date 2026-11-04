@@ -1,5 +1,5 @@
 name: Release
-run-name: Release ${{ inputs.version }}
+run-name: Release v${{ inputs.version }}
 
 # Builds the action and publishes the compiled tree to release/v1, then points
 # the version tags at it. `dist/` is not committed on main - what consumers get
@@ -12,8 +12,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish, e.g. v1.4.1. Must match the committed manifests."
+        description: "Version to publish, with no v, e.g. 1.4.1. Must match the committed manifests. The tag is v<version>."
         required: true
+      commit:
+        description: "The release commit: its full SHA, or HEAD for whatever the dispatched ref names when the run starts."
+        required: false
+        default: HEAD
       allow-lower-version:
         description: "Publish a version below the highest already released. For back-porting a fix to an older line."
         type: boolean
@@ -33,9 +37,32 @@ jobs:
     runs-on: ubuntu-26.04
     permissions: {}
     steps:
-      - name: The verify job must test the release being published
+      # A version is bare and the workflow adds the v, so v1.5.2 here would
+      # become vv1.5.2 and fail somewhere that names neither.
+      - name: Refuse a version that carries a v
         env:
           VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like 1.5.2, with no v (got: $VERSION). The tag is v<version>."
+            exit 1
+          fi
+
+      # The run builds whatever its ref named when it started. A release tool
+      # passes the commit it verified, and a branch that moved past it since
+      # would otherwise publish commits nobody released.
+      - name: Refuse a commit other than the release commit
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          if [ "$COMMIT" != "HEAD" ] && [ "$COMMIT" != "$GITHUB_SHA" ]; then
+            echo "::error::asked to publish ${COMMIT}, but ${GITHUB_REF_NAME} is at ${GITHUB_SHA}. Dispatch on a ref that names the release commit."
+            exit 1
+          fi
+
+      - name: The verify job must test the release being published
+        env:
+          VERSION: v${{ inputs.version }}
           # Keep in step with the `uses:` in verify below.
           PINNED: v1
         run: |
@@ -71,7 +98,7 @@ jobs:
           # `npm ci`, so node_modules is not there and octokit is not an
           # option - it uses global fetch.
           GITHUB_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
           ALLOW_LOWER: ${{ inputs.allow-lower-version }}
           OVERWRITE: ${{ inputs.overwrite-existing }}
         run: |
@@ -85,7 +112,7 @@ jobs:
 
       - name: Read the changelog before publishing
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
         run: node scripts/release-notes.mjs --version "$VERSION" > notes.md
 
       - name: 🔨 Lint, test and package
@@ -131,14 +158,14 @@ jobs:
           source-dir: publish
           target-repo: ${{ github.repository }}
           target-branch: release/${{ steps.version.outputs.major }}
-          headline: "release: ${{ inputs.version }}"
+          headline: "release: v${{ inputs.version }}"
           body: |
             Source-Commit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}>
           prune: "true"
           # The exact version, and the floating major that follows every
           # release. One per line; signed-push trims and de-duplicates them.
           tags: |
-            ${{ inputs.version }}
+            v${{ inputs.version }}
             ${{ steps.version.outputs.major }}
           force-tags: "true"
           token: ${{ github.token }}
@@ -150,7 +177,7 @@ jobs:
       - name: 🚀 Create or update the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
         run: |
           set -euo pipefail
 
@@ -167,7 +194,7 @@ jobs:
 
       - name: 📝 Summary
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
           MAJOR: ${{ steps.version.outputs.major }}
           NEW_SHA: ${{ steps.publish.outputs.commit-sha }}
           NEW_URL: ${{ steps.publish.outputs.commit-url }}
@@ -197,7 +224,7 @@ jobs:
       - name: Checkout the signed release package
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.version }}
+          ref: v${{ inputs.version }}
           path: package
 
       - name: Set up Node.js for npm trusted publishing
@@ -219,7 +246,7 @@ jobs:
         id: npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
         working-directory: package
         run: |
           set -euo pipefail
@@ -281,7 +308,7 @@ jobs:
         env:
           NPM_AVAILABLE: ${{ steps.npm.outputs.available }}
           NPM_STATUS: ${{ steps.npm.outputs.status }}
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
         run: |
           if [ "$NPM_AVAILABLE" = "true" ]; then
             echo "npm package (${NPM_STATUS}): [\`@releasetools/mutex@${VERSION#v}\`](https://www.npmjs.com/package/@releasetools/mutex/v/${VERSION#v})" >> "$GITHUB_STEP_SUMMARY"
@@ -310,7 +337,7 @@ jobs:
 
       - name: ✅ Install and verify the npm CLI
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
         run: |
           set -euo pipefail
 
@@ -375,7 +402,7 @@ jobs:
 
       - name: ✅ Install and verify the mise CLI
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
           MISE_VERIFY_ROOT: ${{ runner.temp }}/mutex-mise
           MISE_DATA_DIR: ${{ runner.temp }}/mutex-mise/data
           MISE_CACHE_DIR: ${{ runner.temp }}/mutex-mise/cache
@@ -429,7 +456,7 @@ jobs:
   # a published release that needs fixing forward, which is still far better
   # than finding out from somebody else's workflow.
   verify:
-    if: startsWith(inputs.version, 'v1.')
+    if: startsWith(inputs.version, '1.')
     needs: publish
     runs-on: ubuntu-26.04
     permissions:
@@ -445,7 +472,7 @@ jobs:
         with:
           command: "lock"
           id: "verify-release-v1"
-          reason: "Verify the published ${{ inputs.version }}"
+          reason: "Verify the published v${{ inputs.version }}"
 
       # The point of this job. The tags moved a moment ago, but `uses:`
       # resolves through GitHub's action cache, which is a different system -
@@ -455,7 +482,7 @@ jobs:
       - name: ✅ Verify the published build is the one under test
         env:
           RAN: ${{ steps.lock.outputs.version }}
-          VERSION: ${{ inputs.version }}
+          VERSION: v${{ inputs.version }}
         run: |
           expected="${VERSION#v}"
 

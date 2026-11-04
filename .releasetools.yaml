@@ -11,10 +11,10 @@ projects:
     changelog: CHANGELOG.md
     bump: npm version {version} --no-git-tag-version
 
-# release.yaml verifies the committed version and publishes through workflow_dispatch.
-# The release plugin's tag-triggered publish setting does not describe this workflow.
 release:
   branch: main
+  publish: release.yaml
+  trigger: dispatch
   registry: https://registry.npmjs.org/@releasetools/mutex/{version}
 
 conventions:
