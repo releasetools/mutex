@@ -571,7 +571,7 @@ one into a skill on install. Hermes has no command surface, and gets the skill.
 | Step        |                                                                                                                                     |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `preflight` | Can mutex reach the table here, through a profile or `$MUTEX_DATABASE_URL`. Run when something fails, not before every lock         |
-| permissions | `/mutex:preflight` appends `Bash(mutex:*)` and the helper's own invocation to `permissions.allow`, so the skill never stops to ask  |
+| permissions | `/mutex:preflight` allows each subcommand the skill runs, and its helper. `server start`, `run`, `stop` and `prune` still ask       |
 | `lock`      | An hour by default rather than the CLI's minute, waiting 30 seconds rather than the whole lease, under an owner naming this session |
 | `renew`     | Only after asking. Reminders arrive on their own; the decision to extend does not                                                   |
 | `unlock`    | With the owner it recorded, so it releases what it took and nothing else                                                            |
@@ -735,24 +735,28 @@ codex plugin add release@release-tools
 codex plugin add release-notes@release-tools
 ```
 
-The [`release` plugin](https://github.com/releasetools/agent-plugins/tree/main/plugins/release)
-currently publishes by pushing a tag. Mutex requires workflow dispatch, so its
-tag-push step does not apply here.
+`.releasetools.yaml` declares `trigger: dispatch`, so the
+[`release` plugin](https://github.com/releasetools/agent-plugins/tree/main/plugins/release)
+runs `release.yaml` with the version and the release commit rather than pushing
+a tag, and the workflow creates the tag.
 
-Release tags point at the packaged tree on `release/<major>`. When preparing
-notes, read the previous release tag's `Source-Commit` trailer with
-`git show --no-patch <tag>` and pass that commit to
-`/release-notes:prepare <version> --since <source-commit>`. The default
-`git describe` baseline follows source history and can select an older release.
+Release tags point at the packaged tree on `release/<major>`, and that commit's
+`Source-Commit` trailer names the source commit it was built from.
+`/release-notes:prepare` reads the trailer to find where the previous release
+was cut.
 
 Prepare the new version's notes in [CHANGELOG.md](./CHANGELOG.md) under a
 `## <version> - <YYYY-MM-DD>` heading, using the release date and the applicable
 Keep a Changelog categories. Merge the notes to `main`, then dispatch the
-chosen version:
+chosen version, without a `v`, and the commit it was cut from:
 
 ```shell
-gh workflow run release.yaml --ref main -f version=vX.Y.Z
+gh workflow run release.yaml --ref main -f version=X.Y.Z -f commit=<release commit SHA>
 ```
+
+The run refuses when `main` has moved past that commit, so later merges never
+ship under the version. `commit` defaults to `HEAD`, which publishes whatever
+`main` names when the run starts.
 
 Version bumps belong in pull requests. Run
 `npm version <version> --no-git-tag-version` and commit `package.json`,
