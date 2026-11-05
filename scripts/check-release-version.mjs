@@ -152,7 +152,6 @@ export function checkReleaseVersion({
   version,
   tags = [],
   allowLowerVersion = false,
-  overwriteExisting = false,
 } = {}) {
   if (!SEMVER.test(version)) {
     throw new Error(
@@ -160,9 +159,9 @@ export function checkReleaseVersion({
     );
   }
 
-  if (tags.includes(version) && !overwriteExisting) {
+  if (tags.includes(version)) {
     throw new Error(
-      `${version} has already been released. Pass overwrite-existing to replace it, or pick a new version.`,
+      `${version} has already been released, and a version tag never moves here (immutable-tag). Release the next version.`,
     );
   }
 
@@ -192,7 +191,6 @@ if (
       version: { type: "string" },
       tags: { type: "string" },
       "allow-lower-version": { type: "boolean", default: false },
-      "overwrite-existing": { type: "boolean", default: false },
     },
   });
 
@@ -214,7 +212,6 @@ if (
       version: values.version ?? "",
       tags,
       allowLowerVersion: values["allow-lower-version"],
-      overwriteExisting: values["overwrite-existing"],
     });
 
     checkManifestVersion(

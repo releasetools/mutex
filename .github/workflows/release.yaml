@@ -22,10 +22,6 @@ on:
         description: "Publish a version below the highest already released. For back-porting a fix to an older line."
         type: boolean
         default: false
-      overwrite-existing:
-        description: "Replace a version that has already been published, moving its tag and updating its GitHub release."
-        type: boolean
-        default: false
 
 # Deny by default; each job grants only what it needs.
 permissions: {}
@@ -100,13 +96,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           VERSION: v${{ inputs.version }}
           ALLOW_LOWER: ${{ inputs.allow-lower-version }}
-          OVERWRITE: ${{ inputs.overwrite-existing }}
         run: |
           set -euo pipefail
 
           args=(--version "$VERSION")
           [ "$ALLOW_LOWER" = "true" ] && args+=(--allow-lower-version)
-          [ "$OVERWRITE" = "true" ] && args+=(--overwrite-existing)
 
           node scripts/check-release-version.mjs "${args[@]}"
 
@@ -148,9 +142,9 @@ jobs:
       # parent is the previous release, not the source it came from.
       #
       # The tags are applied here rather than by hand afterwards. force-tags
-      # because the floating major has to move on every release; the version
-      # tag only arrives here already existing when overwrite-existing was
-      # passed, so the version check upstream is the gate, not this flag.
+      # because the floating major has to move on every release. The version
+      # tag never exists yet: the version check upstream refuses one that does,
+      # as immutable-tag asks.
       - name: 🔏 Publish the tree, signed
         id: publish
         uses: releasetools/actions/signed-push@05f197a5d5ed9b47c306389884b7cf79542132db # v0.9.1
@@ -174,7 +168,7 @@ jobs:
       # notes people read live in CHANGELOG.md. Generated notes would be no use:
       # they are built from the commits reachable from the tag, and this tag
       # points into release/<major>, whose history is other releases.
-      - name: 🚀 Create or update the GitHub release
+      - name: 🚀 Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: v${{ inputs.version }}
@@ -184,13 +178,7 @@ jobs:
           echo "Release notes:"
           sed 's/^/  /' notes.md
 
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            gh release edit "$VERSION" --notes-file notes.md --title "Release $VERSION"
-            echo "Updated the existing release"
-          else
-            gh release create "$VERSION" --notes-file notes.md --title "Release $VERSION"
-            echo "Created the release"
-          fi
+          gh release create "$VERSION" --notes-file notes.md --title "Release $VERSION"
 
       - name: 📝 Summary
         env:
@@ -235,7 +223,7 @@ jobs:
           package-manager-cache: false
 
       # npm versions cannot be replaced. The command skips one that already
-      # exists (including an overwrite of the Action release), refuses to
+      # exists, refuses to
       # create retroactive packages before v1.3.0, and keeps a deliberately
       # lower backport from moving the registry's `latest` tag backwards.
       #
@@ -277,8 +265,9 @@ jobs:
 
           echo "available=true" >> "$GITHUB_OUTPUT"
 
-          # A successful Action overwrite may be retried after npm already
-          # published. npm versions are immutable, so leave that one alone.
+          # A re-run of this job can find npm already holding the version, for
+          # example after a later step failed. npm versions are immutable, so
+          # leave that one alone.
           if published="$(npm view "${name}@${expected}" version 2>/dev/null)"; then
             if [ "$published" != "$expected" ]; then
               echo "::error::npm returned unexpected version ${published}"

@@ -239,8 +239,8 @@ describe("checkReleaseVersion", () => {
   });
 
   it("still rejects a released version even when going lower is allowed", () => {
-    // Replacing an existing release is a different decision from releasing
-    // out of order, so one flag must not quietly grant the other.
+    // Releasing out of order is allowed on request; releasing a version again
+    // never is, since its tag would have to move.
     expect(() =>
       checkReleaseVersion({
         version: "v1.1.0",
@@ -248,28 +248,6 @@ describe("checkReleaseVersion", () => {
         allowLowerVersion: true,
       }),
     ).toThrow(/already been released/);
-  });
-
-  it("lets a deliberate replacement through", () => {
-    expect(
-      checkReleaseVersion({
-        version: "v1.1.0",
-        tags: RELEASED,
-        overwriteExisting: true,
-      }),
-    ).toMatchObject({ version: "v1.1.0" });
-  });
-
-  it("does not compare a replacement against itself", () => {
-    // v1.1.0 is the highest release; re-releasing it must not read as going
-    // backwards from itself.
-    expect(
-      checkReleaseVersion({
-        version: "v1.1.0",
-        tags: RELEASED,
-        overwriteExisting: true,
-      }),
-    ).toMatchObject({ previous: "v1.0.1" });
   });
 
   it("reports the major, which the release branch and floating tag need", () => {
