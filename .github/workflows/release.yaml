@@ -147,7 +147,7 @@ jobs:
       # as immutable-tag asks.
       - name: 🔏 Publish the tree, signed
         id: publish
-        uses: releasetools/actions/signed-push@05f197a5d5ed9b47c306389884b7cf79542132db # v0.9.1
+        uses: releasetools/actions/signed-push@76cf0826db3a16eed6baa02d03548628e7a32519 # v0.10.0
         with:
           source-dir: publish
           target-repo: ${{ github.repository }}
@@ -379,7 +379,7 @@ jobs:
       contents: read
     steps:
       - name: Set up mise
-        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+        uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6
         with:
           version: "2026.8.8"
           # mise-v2026.8.8-linux-x64 from the release's SHASUMS256.txt.
