@@ -534,30 +534,35 @@ agy plugin install https://github.com/releasetools/agent-plugins
 
 ### Commands
 
-The plugin puts six commands in the slash menu, so the common operations are
-discoverable rather than something you have to describe:
+The plugin puts seven commands in the slash menu of both clients, so the common
+operations are discoverable rather than something you have to describe:
 
-| Command                       |                                                      |
-| ----------------------------- | ---------------------------------------------------- |
-| `/mutex:preflight`            | Can mutex reach its lock table here, and if not, why |
-| `/mutex:lock <id> [reason]`   | Take a lock, an hour by default                      |
-| `/mutex:status [id]`          | A table of what you hold, and on request the rest    |
-| `/mutex:renew <id> [seconds]` | Extend a lock before it lapses                       |
-| `/mutex:unlock <id>`          | Hand it back                                         |
-| `/mutex:help`                 | What the plugin does, and what it will not           |
+| Claude Code                     | Codex                           |                                                          |
+| ------------------------------- | ------------------------------- | -------------------------------------------------------- |
+| `/mutex:preflight`              | `$mutex:preflight`              | Can mutex reach its lock table here, and if not, why     |
+| `/mutex:lock <id> [reason]`     | `$mutex:lock <id> [reason]`     | Take a lock, an hour by default                          |
+| `/mutex:status [id]`            | `$mutex:status [id]`            | A table of what you hold, and on request the rest        |
+| `/mutex:renew <id> [seconds]`   | `$mutex:renew <id> [seconds]`   | Extend a lock before it lapses                           |
+| `/mutex:unlock <id>`            | `$mutex:unlock <id>`            | Hand it back                                             |
+| `/mutex:callsign <kind> [args]` | `$mutex:callsign <kind> [args]` | The lock id for a resource, derived rather than composed |
+| `/mutex:help`                   | `$mutex:help`                   | What the plugin does, and what it will not               |
+
+`preflight` runs only when called by name, in either client. In Claude Code it
+also adds the permission rules the other commands need to
+`~/.claude/settings.json`; Codex does not read that file, so there it adds none.
 
 `/mutex:status` names this session as the owner and lets the database do the
 narrowing, so what comes back is what you hold rather than the whole table; the
 helper's `--all` asks the wider question, and pays for it in rows.
 
 Each one is a single deterministic invocation rather than a description of what
-to do, because the difference is measured in tens of seconds. `/mutex:preflight`
-and `/mutex:status` run their command before the model is asked anything, so
-they cost one turn and no tool call; the rest name the exact command and say
-what to report. They consult the skill only when an answer comes back that a
-plain report does not cover, and nothing runs a preflight before every
-operation - the operation itself reports a missing connection string perfectly
-well.
+to do, because the difference is measured in tens of seconds. In Claude Code,
+`/mutex:preflight` and `/mutex:status` run their command before the model is
+asked anything, so they cost one turn and no tool call; in Codex the model runs
+that command first. The rest name the exact command and say what to report.
+They consult the skill only when an answer comes back that a plain report does
+not cover, and nothing runs a preflight before every operation: the operation
+itself reports a missing connection string perfectly well.
 
 There is deliberately no command for starting the pooled server, choosing a
 profile or pruning expired locks: those are yours to run, and the plugin says so
