@@ -35,10 +35,10 @@ jobs:
         run: git fetch --no-tags --unshallow origin "$BASE_SHA" "$HEAD_SHA"
 
       - name: Check version increments
-        uses: releasetools/actions/versions-guard@05f197a5d5ed9b47c306389884b7cf79542132db # v0.9.1
+        uses: releasetools/actions/versions-guard@9828828b39bb2261f95b6f45749fb96ce22c9d2d # v0.12.1
 
       - name: Check changelog entries
-        uses: releasetools/actions/changelog-guard@05f197a5d5ed9b47c306389884b7cf79542132db # v0.9.1
+        uses: releasetools/actions/changelog-guard@9828828b39bb2261f95b6f45749fb96ce22c9d2d # v0.12.1
 
   build-and-test:
     name: build-and-test (${{ matrix.os }})
