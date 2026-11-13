@@ -727,17 +727,16 @@ and allow `npm publish`.
 
 This repository adopts the [releasetools conventions](https://github.com/releasetools/conventions)
 through [.releasetools.yaml](./.releasetools.yaml). Release notes use the
-[`release-notes` plugin](https://github.com/releasetools/agent-plugins/tree/main/plugins/release-notes)
-from the `release-tools` marketplace. `/release-notes:write` declares each change's
-note or `NONE`; `/release-notes:prepare <version>` collates a release.
+[`release` plugin](https://github.com/releasetools/agent-plugins/tree/main/plugins/release)
+from the `release-tools` marketplace. `/release:write` declares each change's
+note or `NONE`; `/release:prepare <version>` collates a release.
 
-Claude's project settings declare both `release` and `release-notes`. Codex's
-project settings enable them, with installation in its user cache:
+Claude's project settings declare `release`. Codex's project settings enable
+it, with installation in its user cache:
 
 ```shell
 codex plugin marketplace add releasetools/agent-plugins
 codex plugin add release@release-tools
-codex plugin add release-notes@release-tools
 ```
 
 `.releasetools.yaml` declares `trigger: dispatch`, so the
@@ -747,7 +746,7 @@ a tag, and the workflow creates the tag.
 
 Release tags point at the packaged tree on `release/<major>`, and that commit's
 `Source-Commit` trailer names the source commit it was built from.
-`/release-notes:prepare` reads the trailer to find where the previous release
+`/release:prepare` reads the trailer to find where the previous release
 was cut.
 
 Prepare the new version's notes in [CHANGELOG.md](./CHANGELOG.md) under a

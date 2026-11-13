@@ -5,9 +5,9 @@
 This repository adopts the [releasetools conventions](https://github.com/releasetools/conventions)
 through [.releasetools.yaml](./.releasetools.yaml).
 
-Use `release-notes@release-tools` from
+Use `release@release-tools` from
 [releasetools/agent-plugins](https://github.com/releasetools/agent-plugins):
-`/release-notes:write` declares a change's note, and `/release-notes:prepare`
+`/release:write` declares a change's note, and `/release:prepare`
 collates a release. A change declares one fenced `release-note` block in its
 pull request body, with prose or `NONE`. Preserve that block in the merge
 commit. Subjects follow Conventional Commits; a breaking change carries a
@@ -30,10 +30,10 @@ The changelog guard requires a section for the committed version.
 The release workflow verifies that the requested version matches
 `package.json` and both version fields in `package-lock.json`.
 
-The project declares `release@release-tools` and `release-notes@release-tools`
-in `.claude/settings.json` and `.codex/config.toml`. Claude installs them with
-project scope. Codex reads the project's enablement settings and keeps the
-plugin cache in the user's Codex directory.
+The project declares `release@release-tools` in `.claude/settings.json` and
+`.codex/config.toml`. Claude installs it with project scope. Codex reads the
+project's enablement settings and keeps the plugin cache in the user's Codex
+directory.
 
 `.releasetools.yaml` declares `trigger: dispatch`, so the `release` plugin runs
 `release.yaml` with the bare version and the release commit, and the workflow
@@ -41,7 +41,7 @@ creates the tag; [Cutting a release](./README.md#cutting-a-release) has the
 command. Never push a release tag by hand: the workflow refuses a version whose
 tag exists. Version bumps belong in pull requests.
 Tags point at the packaged tree, whose `Source-Commit` trailer names the source
-commit, and `/release-notes:prepare` reads it to find the previous release.
+commit, and `/release:prepare` reads it to find the previous release.
 
 Version increments follow the change's Conventional Commits type:
 
