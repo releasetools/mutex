@@ -17,5 +17,7 @@ release:
   trigger: dispatch
   registry: https://registry.npmjs.org/@releasetools/mutex/{version}
 
+# The publish workflow creates the version tag on a built commit.
 conventions:
-  except: []
+  except:
+    - tag-version-to-release
